@@ -53,3 +53,116 @@ export function compareVersions(a: string, b: string): number {
   if (A.pre && !B.pre) return -1;
   return A.pre < B.pre ? -1 : A.pre > B.pre ? 1 : 0;
 }
+
+export interface Release {
+  version: string;
+  url: string;
+  body: string;
+  publishedAt: string;
+  prerelease: boolean;
+}
+
+export interface ReleaseInfo {
+  current: string;
+  latest: string | null;
+  hasUpdate: boolean;
+  releases: Release[];
+  repoUrl: string | null;
+  error: string | null;
+}
+
+interface GhRelease {
+  tag_name?: string;
+  html_url?: string;
+  body?: string;
+  published_at?: string;
+  draft?: boolean;
+  prerelease?: boolean;
+}
+
+const OK_TTL = 60 * 60 * 1000;
+const ERR_TTL = 5 * 60 * 1000;
+
+let cache: { at: number; info: ReleaseInfo } | null = null;
+
+/** Только для тестов: сбросить кэш между кейсами. */
+export function _resetCache(): void {
+  cache = null;
+}
+
+/**
+ * Список релизов с GitHub + вывод «есть ли апдейт». Никогда не бросает: любой отказ
+ * сводится к error-строке, current при этом на месте (читается локально).
+ *
+ * Кэш в памяти обязателен, а не желателен: лимит GitHub без токена — 60 запросов в час
+ * на IP, а UI открыт постоянно. Ошибку кэшируем тоже, иначе ретраи выжигают лимит быстрее
+ * успехов. fetch пробрасывается параметром — так тесты идут без сети.
+ */
+export async function releaseInfo(
+  opts: { fetch?: typeof globalThis.fetch } = {},
+): Promise<ReleaseInfo> {
+  const now = Date.now();
+  if (cache && now - cache.at < (cache.info.error ? ERR_TTL : OK_TTL)) return cache.info;
+
+  const current = kddVersion();
+  const slug = repoSlug();
+  const repoUrl = slug ? `https://github.com/${slug.owner}/${slug.repo}` : null;
+
+  const fail = (error: string): ReleaseInfo => {
+    const info: ReleaseInfo = {
+      current, latest: null, hasUpdate: false, releases: [], repoUrl, error,
+    };
+    cache = { at: now, info };
+    return info;
+  };
+
+  if (!slug) return fail('no repository url in package.json');
+
+  try {
+    const f = opts.fetch ?? globalThis.fetch;
+    // /releases, а не /releases/latest: последний выкидывает prerelease и отдаёт 404,
+    // когда стабильных релизов ещё нет.
+    const res = await f(
+      `https://api.github.com/repos/${slug.owner}/${slug.repo}/releases?per_page=10`,
+      {
+        headers: { Accept: 'application/vnd.github+json' },
+        signal: AbortSignal.timeout(5000),
+      },
+    );
+    if (!res.ok) return fail(`GitHub API ${res.status} ${res.statusText}`);
+
+    const rows = (await res.json()) as GhRelease[];
+    if (!Array.isArray(rows)) return fail('unexpected GitHub response');
+
+    const releases: Release[] = rows
+      .filter((r) => !r.draft && r.tag_name)
+      .map((r) => ({
+        version: (r.tag_name as string).replace(/^v/, ''),
+        url: r.html_url ?? `${repoUrl}/releases`,
+        body: r.body ?? '',
+        publishedAt: r.published_at ?? '',
+        prerelease: Boolean(r.prerelease),
+      }));
+    if (releases.length === 0) return fail('no published releases');
+
+    // latest — старший стабильный. prerelease в баннер не идут: до переключателя канала
+    // стабильному пользователю не должно прилетать «обновись на 0.6.0-next.3».
+    const latest = releases
+      .filter((r) => !r.prerelease)
+      .reduce<string | null>(
+        (m, r) => (m === null || compareVersions(r.version, m) > 0 ? r.version : m), null);
+
+    const info: ReleaseInfo = {
+      current,
+      latest,
+      hasUpdate: latest !== null && compareVersions(latest, current) > 0,
+      releases,
+      repoUrl,
+      error: null,
+    };
+    cache = { at: now, info };
+    return info;
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e));
+  }
+}

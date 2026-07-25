@@ -21666,6 +21666,8 @@ function taskDetailCapped(db, id) {
   };
 }
 var DEFAULT_TTL = 15 * 60;
+var OK_TTL = 60 * 60 * 1e3;
+var ERR_TTL = 5 * 60 * 1e3;
 
 // src/handlers.ts
 function getTask(db, id, full = false) {

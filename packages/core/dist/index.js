@@ -1299,6 +1299,69 @@ function compareVersions(a, b) {
   if (A.pre && !B.pre) return -1;
   return A.pre < B.pre ? -1 : A.pre > B.pre ? 1 : 0;
 }
+var OK_TTL = 60 * 60 * 1e3;
+var ERR_TTL = 5 * 60 * 1e3;
+var cache = null;
+function _resetCache() {
+  cache = null;
+}
+async function releaseInfo(opts = {}) {
+  const now2 = Date.now();
+  if (cache && now2 - cache.at < (cache.info.error ? ERR_TTL : OK_TTL)) return cache.info;
+  const current = kddVersion();
+  const slug = repoSlug();
+  const repoUrl = slug ? `https://github.com/${slug.owner}/${slug.repo}` : null;
+  const fail = (error) => {
+    const info = {
+      current,
+      latest: null,
+      hasUpdate: false,
+      releases: [],
+      repoUrl,
+      error
+    };
+    cache = { at: now2, info };
+    return info;
+  };
+  if (!slug) return fail("no repository url in package.json");
+  try {
+    const f = opts.fetch ?? globalThis.fetch;
+    const res = await f(
+      `https://api.github.com/repos/${slug.owner}/${slug.repo}/releases?per_page=10`,
+      {
+        headers: { Accept: "application/vnd.github+json" },
+        signal: AbortSignal.timeout(5e3)
+      }
+    );
+    if (!res.ok) return fail(`GitHub API ${res.status} ${res.statusText}`);
+    const rows = await res.json();
+    if (!Array.isArray(rows)) return fail("unexpected GitHub response");
+    const releases = rows.filter((r) => !r.draft && r.tag_name).map((r) => ({
+      version: r.tag_name.replace(/^v/, ""),
+      url: r.html_url ?? `${repoUrl}/releases`,
+      body: r.body ?? "",
+      publishedAt: r.published_at ?? "",
+      prerelease: Boolean(r.prerelease)
+    }));
+    if (releases.length === 0) return fail("no published releases");
+    const latest = releases.filter((r) => !r.prerelease).reduce(
+      (m, r) => m === null || compareVersions(r.version, m) > 0 ? r.version : m,
+      null
+    );
+    const info = {
+      current,
+      latest,
+      hasUpdate: latest !== null && compareVersions(latest, current) > 0,
+      releases,
+      repoUrl,
+      error: null
+    };
+    cache = { at: now2, info };
+    return info;
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e));
+  }
+}
 export {
   CAPS,
   DEFAULT_TTL,
@@ -1309,6 +1372,7 @@ export {
   PRIORITY_ORDER,
   STATUSES,
   TRANSITIONS,
+  _resetCache,
   addCriterion,
   addDecision,
   addTask,
@@ -1354,6 +1418,7 @@ export {
   reclaimExpired,
   recordFailedAttempt,
   releaseClaim,
+  releaseInfo,
   removeCriterion,
   renderDecisionBody,
   renderDecisionMd,
