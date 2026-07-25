@@ -303,7 +303,7 @@ function readBody(opts) {
   if (opts.body === "-") return readFileSync(0, "utf8");
   return opts.body;
 }
-var WORKER_PROMPT = process.env.KDD_WORKER_PROMPT ?? `You are a kdd agent worker. Read your task: run \`kdd show $KDD_TASK_ID\`. Do the work in this repository. Renew your lease periodically with \`kdd claim $KDD_TASK_ID --renew\` \u2014 if that errors you have LOST the lease, stop immediately. When done, leave ONE concise summary comment (\`kdd comment $KDD_TASK_ID "<what you changed and why; caveats or follow-ups>"\`) \u2014 this is the durable note humans and future sessions read, so keep it tight, not a log. Then check acceptance criteria (\`kdd criteria check\`) and \`kdd move $KDD_TASK_ID review\`. If you get blocked or must stop early, comment the reason first.`;
+var WORKER_PROMPT = process.env.KDD_WORKER_PROMPT ?? `You are a kdd agent worker. Read your task: run \`kdd show $KDD_TASK_ID\`. Do the work in this repository. Renew your lease periodically with \`kdd claim $KDD_TASK_ID --renew\` \u2014 if that errors you have LOST the lease, stop immediately. When done, leave ONE concise summary comment (\`kdd comment $KDD_TASK_ID "<what you changed and why; caveats or follow-ups>"\`) \u2014 this is the durable note humans and future sessions read, so keep it tight, not a log. Then check acceptance criteria (\`kdd criteria ls $KDD_TASK_ID\`, then \`kdd criteria check $KDD_TASK_ID <criterionId>\` for each one) and \`kdd move $KDD_TASK_ID review\`. If you get blocked or must stop early, comment the reason first.`;
 var sq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 var DEFAULT_SPAWN_CMD = `${sq(process.execPath)} ${sq(fileURLToPath(import.meta.url))} worker "$KDD_TASK_ID"`;
 var TICK_LOCK_STALE = 10 * 60 * 1e3;

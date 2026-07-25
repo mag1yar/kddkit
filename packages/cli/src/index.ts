@@ -46,7 +46,10 @@ const WORKER_PROMPT = process.env.KDD_WORKER_PROMPT ??
   `When done, leave ONE concise summary comment ` +
   `(\`kdd comment $KDD_TASK_ID "<what you changed and why; caveats or follow-ups>"\`) — this is the ` +
   `durable note humans and future sessions read, so keep it tight, not a log. Then check acceptance ` +
-  `criteria (\`kdd criteria check\`) and \`kdd move $KDD_TASK_ID review\`. ` +
+  // Сигнатура полностью, с обоими аргументами: на «kdd criteria check» без них агент тратит
+  // ходы на missing required argument и --help, прежде чем добирается до нужной формы.
+  `criteria (\`kdd criteria ls $KDD_TASK_ID\`, then \`kdd criteria check $KDD_TASK_ID <criterionId>\` ` +
+  `for each one) and \`kdd move $KDD_TASK_ID review\`. ` +
   `If you get blocked or must stop early, comment the reason first.`;
 
 // #19: воркер зовём тем же node, что и сам tick (process.execPath) + абс. путём к этому dist/index.js,
