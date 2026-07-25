@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { addTask, getAutoTick, openDb, setLastRun } from '@kddkit/core';
+import { addTask, getAutoTick, openDb, setAutoTick, setLastRun } from '@kddkit/core';
 import { createApp } from '../src/server.js';
 
 const user = { type: 'user' } as const;
@@ -235,5 +235,17 @@ describe('/api/autotick', () => {
     const s = (await (await app.request('/api/autotick')).json()) as
       { last: { spawned: number } | null };
     expect(s.last?.spawned).toBe(2);
+  });
+
+  // KDD_MAX_WORKERS переопределяет сохранённую настройку — GET должен отдавать
+  // действующее число (env), а не то, что оно заменило, иначе задизейбленное
+  // поле в UI подписано "overridden by ..." и врёт про своё собственное значение.
+  it('GET с KDD_MAX_WORKERS — отдаёт env-значение и maxWorkersEnvLocked=true', async () => {
+    const { db, app } = mk();
+    setAutoTick(db, { maxWorkers: 3 });
+    process.env.KDD_MAX_WORKERS = '5';
+    const s = (await (await app.request('/api/autotick')).json()) as
+      { maxWorkers: number; maxWorkersEnvLocked: boolean };
+    expect(s).toMatchObject({ maxWorkers: 5, maxWorkersEnvLocked: true });
   });
 });

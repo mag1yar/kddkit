@@ -7,8 +7,8 @@ import { Hono, type Context } from 'hono';
 import {
   KddError, addCriterion, addTask, blockTask, boardData, commentTask, createTrack, deleteTrack,
   editTask, editTrack, getAutoTick, getLastRun, kddHome, listAgentEvents, listProjects, listTracks,
-  maxWorkersEnvLocked, moveTask, openDb, placeTask, releaseInfo, removeCriterion, setAutoTick,
-  setCriterionChecked, taskDetail, unblockTask, type Priority,
+  maxWorkers, maxWorkersEnvLocked, moveTask, openDb, placeTask, releaseInfo, removeCriterion,
+  setAutoTick, setCriterionChecked, taskDetail, unblockTask, type Priority,
 } from '@kddkit/core';
 
 export { createScheduler, type Scheduler, type TickRunner } from './scheduler.js';
@@ -124,8 +124,17 @@ export function createApp(
   // настройки сохраняются, но таймеров нет и nextAt всегда null.
   const autoTickState = (c: Context): Record<string, unknown> => {
     const db = getDb(c);
+    // maxWorkers(db) — эффективное значение (env > meta > дефолт), а не только
+    // сохранённая настройка: иначе задизейбленное поле подписано "overridden by
+    // KDD_MAX_WORKERS" и показывает число, которое этот override как раз заменил.
+    // maxWorkers() кидает KddError при мусорном KDD_MAX_WORKERS — тут не даём 400
+    // уронить весь GET (без контрола в шапке хуже, чем с неточным числом), падаем
+    // на сохранённую настройку.
+    let effectiveWorkers: number;
+    try { effectiveWorkers = maxWorkers(db); } catch { effectiveWorkers = getAutoTick(db).maxWorkers; }
     return {
       ...getAutoTick(db),
+      maxWorkers: effectiveWorkers,
       maxWorkersEnvLocked: maxWorkersEnvLocked(),
       last: getLastRun(db),
       nextAt: scheduler?.nextAt(projectHash(c)) ?? null,

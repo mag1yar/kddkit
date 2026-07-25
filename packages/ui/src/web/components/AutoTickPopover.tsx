@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Timer } from 'lucide-react';
 import type { AutoTickState } from '../api';
 import { Button } from './ui/button';
@@ -32,17 +32,27 @@ function lastLine(s: AutoTickState): string {
 }
 
 export function AutoTickPopover(
-  { state, patch, error }: {
+  { state, patch, error, clearError }: {
     state: AutoTickState | null;
     patch: (b: Partial<Pick<AutoTickState, 'enabled' | 'intervalSec' | 'maxWorkers'>>) => void;
     error: string | null;
+    clearError: () => void;
   },
 ): React.ReactElement | null {
-  const [open, setOpen] = useState(false);
+  // Буфер поля max workers живёт отдельно от state, пока в фокусе: иначе poll
+  // (5с) или чужая правка (второй таб) стирают то, что человек ещё печатает.
+  // Вне фокуса буфер всегда следует за сервером — в т.ч. откатывается сюда,
+  // если PATCH отклонён, потому что state.maxWorkers в этом случае не менялся.
+  const [workersText, setWorkersText] = useState('');
+  const [workersFocused, setWorkersFocused] = useState(false);
+  useEffect(() => {
+    if (state && !workersFocused) setWorkersText(String(state.maxWorkers));
+  }, [state?.maxWorkers, workersFocused]);
+
   if (!state) return null;
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover>
       <PopoverTrigger
         render={
           <Button
@@ -87,9 +97,11 @@ export function AutoTickPopover(
           <Input
             type="number" min={1} max={10} className="w-28"
             disabled={state.maxWorkersEnvLocked}
-            defaultValue={state.maxWorkers}
-            key={state.maxWorkers} // сервер — источник правды: приняли значение, поле пересоздалось
+            value={workersText}
+            onFocus={() => { setWorkersFocused(true); clearError(); }}
+            onChange={(e) => setWorkersText(e.currentTarget.value)}
             onBlur={(e) => {
+              setWorkersFocused(false);
               const n = Number(e.currentTarget.value);
               if (n !== state.maxWorkers) patch({ maxWorkers: n });
             }}

@@ -168,7 +168,10 @@ export default function App() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <AutoTickPopover state={autoTick.state} patch={autoTick.patch} error={autoTick.error} />
+          <AutoTickPopover
+            state={autoTick.state} patch={autoTick.patch}
+            error={autoTick.error} clearError={autoTick.clearError}
+          />
           {releases?.repoUrl && (
             <Button
               size="sm" variant="ghost"
