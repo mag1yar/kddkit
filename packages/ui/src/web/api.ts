@@ -22,6 +22,9 @@ export interface Comment { id: number; author: string; body: string; created_at:
 export interface EventRow {
   id: number; actor_type: 'user' | 'ai'; actor_id: string | null;
   action: string; detail: string | null; created_at: number;
+  // ядро уже проставляет их (type='claim' у lease-бухгалтерии, level у warn/error) и
+  // отдаёт через SELECT * — History по ним решает, что глушить, а что подсвечивать
+  type: string | null; level: 'info' | 'warn' | 'error';
 }
 export interface Link { id: number; title: string; kind: string; }
 export interface AgentEvent {

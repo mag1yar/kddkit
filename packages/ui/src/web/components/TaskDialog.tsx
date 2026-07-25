@@ -12,12 +12,13 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
 import { AgentFeed } from './AgentFeed';
+import { History } from './History';
 import { MarkdownEditor } from './MarkdownEditor';
 import { Prose } from './Prose';
 import {
   PRIORITIES, STATUSES, addComment, addCriterion, blockTask, editTask, getTask, moveTask,
   removeCriterion, setCriterionChecked, unblockTask,
-  type Criterion, type EventRow, type Priority, type Status, type Task, type TaskDetail,
+  type Criterion, type Priority, type Status, type Task, type TaskDetail,
   type Track,
 } from '../api';
 
@@ -25,25 +26,6 @@ const STATUS_LABEL: Record<Status, string> = {
   backlog: 'Backlog', new: 'New', in_progress: 'In Progress', review: 'Review', done: 'Done',
 };
 const fmtDate = (ts: number) => new Date(ts * 1000).toLocaleString();
-
-function fmtEvent(e: EventRow): string {
-  const d = e.detail ? (JSON.parse(e.detail) as Record<string, unknown>) : null;
-  switch (e.action) {
-    case 'created': return 'created task';
-    case 'moved': return `moved ${d?.from} → ${d?.to}`;
-    case 'blocked': return `blocked: ${d?.reason}`;
-    case 'unblocked': return 'unblocked';
-    case 'linked': return `linked #${d?.to} (${d?.kind})`;
-    case 'commented': return 'commented';
-    case 'criterion_added': return `added criterion: ${d?.text}`;
-    case 'criterion_checked': return `checked: ${d?.text}`;
-    case 'criterion_unchecked': return `unchecked: ${d?.text}`;
-    case 'criterion_removed': return `removed criterion: ${d?.text}`;
-    default: return e.action;
-  }
-}
-const actorLabel = (e: EventRow) =>
-  (e.actor_type === 'ai' ? (e.actor_id ? `ai:${e.actor_id}` : 'ai') : 'user');
 
 export function TaskDialog({ id, version, tracks, onClose, onChanged }: {
   id: number | null; version: number; tracks: Track[];
@@ -149,16 +131,7 @@ export function TaskDialog({ id, version, tracks, onClose, onChanged }: {
               </TabsContent>
 
               <TabsContent value="history" className="pt-2">
-                <ol className="flex flex-col gap-2 text-sm">
-                  {events.length === 0 && <li className="text-muted-foreground">no history</li>}
-                  {events.map((e) => (
-                    <li key={e.id} className="flex items-baseline gap-2">
-                      <span className="text-muted-foreground">{fmtDate(e.created_at)}</span>
-                      <span className="font-medium">{actorLabel(e)}</span>
-                      <span>{fmtEvent(e)}</span>
-                    </li>
-                  ))}
-                </ol>
+                <History events={events} />
               </TabsContent>
 
               <TabsContent value="activity" className="pt-2">
