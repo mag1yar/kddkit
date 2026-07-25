@@ -9,7 +9,7 @@ import lockfile from 'proper-lockfile';
 import {
   KddError, addCriterion, addDecision, addTask, appendAgentEvent, archiveTask, blockTask,
   boardData, claimNext, claimTask, commentTask, createTrack, deleteTrack, DEFAULT_TTL, editTask,
-  editTrack, ensureWorktree, exportBoard, headCommit, linkTasks, listAgentEvents, listCriteria, listProjects, taskBranchHead,
+  editTrack, ensureWorktree, exportBoard, headCommit, kddVersion, linkTasks, listAgentEvents, listCriteria, listProjects, taskBranchHead,
   listTracks, moveTask, mustGetTask, openDb, parseClaudeStreamLine, rebuild, recall, removeCriterion,
   renewClaim, resolveDbPath, resolveDecisionsDir, resolveToplevel, setCriterionChecked, statusDigest,
   sweepWorktrees, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, type Status,
@@ -22,7 +22,8 @@ import {
 
 const program = new Command()
   .name('kdd')
-  .description('kanban substrate for humans and Claude');
+  .description('kanban substrate for humans and Claude')
+  .version(kddVersion());
 
 function out(json: boolean, obj: unknown, text: () => string): void {
   console.log(json ? JSON.stringify(obj) : text());

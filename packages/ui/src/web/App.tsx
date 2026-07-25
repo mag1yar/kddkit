@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Toaster, toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Check, Plus, Settings, Trash2 } from 'lucide-react';
+import { Check, ExternalLink, Plus, Settings, Trash2 } from 'lucide-react';
 import {
   Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
@@ -13,7 +13,9 @@ import {
 import { Board } from './components/Board';
 import { NewTaskDialog } from './components/NewTaskDialog';
 import { NewTrackDialog } from './components/NewTrackDialog';
+import { ReleasesPopover } from './components/ReleasesPopover';
 import { TaskDialog } from './components/TaskDialog';
+import { useReleases } from './useReleases';
 import { useVersion } from './useVersion';
 
 // git-common-dir оканчивается на /.git — показываем имя репо.
@@ -31,6 +33,7 @@ export default function App() {
   const [trackMenu, setTrackMenu] = useState(false); // popover действий над текущим треком
   const current = new URLSearchParams(location.search).get('project') ?? '';
   const version = useVersion();
+  const releases = useReleases();
 
   const loadTracks = useCallback(
     () => getTracks().then(setTracks).catch((e: Error) => toast.error(e.message)), []);
@@ -84,6 +87,7 @@ export default function App() {
       <header className="flex items-center justify-between border-b px-4 py-2">
         <div className="flex items-center gap-3">
           <h1 className="text-sm font-semibold">kdd</h1>
+          <ReleasesPopover info={releases} />
           <Select value={current} onValueChange={(id) => location.assign(`?project=${id}`)}>
             <SelectTrigger size="sm" className="w-52">
               <SelectValue placeholder="Project">
@@ -160,7 +164,18 @@ export default function App() {
             )}
           </div>
         </div>
-        <Button size="sm" onClick={() => setCreating(true)}>New task</Button>
+        <div className="flex items-center gap-2">
+          {releases?.repoUrl && (
+            <Button
+              size="sm" variant="ghost"
+              // текстовая кнопка, а не иконка-логотип: в lucide-react v1 брендовых иконок нет
+              render={<a href={releases.repoUrl} target="_blank" rel="noreferrer" />}
+            >
+              GitHub <ExternalLink />
+            </Button>
+          )}
+          <Button size="sm" onClick={() => setCreating(true)}>New task</Button>
+        </div>
       </header>
       <main className="flex-1 overflow-auto">
         {/* бейдж трека на карточке — только в режиме all tracks: внутри трека он шум */}

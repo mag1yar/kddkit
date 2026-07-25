@@ -50,6 +50,13 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export interface Project { id: string; path: string; }
+export interface Release {
+  version: string; url: string; body: string; publishedAt: string; prerelease: boolean;
+}
+export interface ReleaseInfo {
+  current: string; latest: string | null; hasUpdate: boolean;
+  releases: Release[]; repoUrl: string | null; error: string | null;
+}
 export const getProjects = () => req<Project[]>('/api/projects');
 export const getPing = () => req<{ kdd: boolean; default: string }>('/api/ping');
 export const getTracks = () => req<Track[]>('/api/tracks');
@@ -62,6 +69,7 @@ export const deleteTrack = (id: number) =>
 export const getBoard = (trackId?: number) =>
   req<Board>(trackId ? `/api/board?track=${trackId}` : '/api/board');
 export const getVersion = () => req<{ version: number }>('/api/version');
+export const getReleases = () => req<ReleaseInfo>('/api/releases');
 export const getTask = (id: number) => req<TaskDetail>(`/api/tasks/${id}`);
 export const createTask =
   (b: { title: string; body?: string; priority?: Priority; track_id?: number }) =>

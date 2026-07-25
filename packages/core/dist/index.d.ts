@@ -334,4 +334,57 @@ declare function taskBranchHead(repoRoot: string, taskId: number): string | null
 declare function ensureWorktree(repoRoot: string, dbPath: string, taskId: number, title: string): string;
 declare function sweepWorktrees(db: Database.Database, repoRoot: string): number;
 
-export { type Actor, type AgentEvent, type AgentEventKind, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionInput, type EventRow, KddError, MAX_FAILED_ATTEMPTS, MIGRATIONS, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type RecallHit, type RunResult, STATUSES, type SpawnFn, type Status, TRANSITIONS, type Task, type TaskDetailCapped, type TaskListRow, type TickResult, type Track, addCriterion, addDecision, addTask, appendAgentEvent, appendEvent, archiveTask, authorOf, blockTask, boardData, capText, checkMove, claimNext, claimTask, commentTask, contentHash, createTrack, deleteTrack, editTask, editTrack, ensureWorktree, exportBoard, headCommit, kddHome, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listProjects, listTracks, logError, moveTask, mustGetTask, mustGetTrack, now, openDb, parseClaudeStreamLine, parseDecisionMd, placeTask, rebuild, recall, reclaimExpired, recordFailedAttempt, releaseClaim, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setCriterionChecked, slugify, statusDigest, sweepWorktrees, syncIndex, taskBranchHead, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, worktreePath };
+/** Версия kdd. Все пакеты бампаются в локстепе (bumpp --all), поэтому версия core — общая. */
+declare function kddVersion(): string;
+/**
+ * Разбор `repository.url`. Суффикс `.git` снимаем отдельным шагом, а не запретом точек
+ * в имени: имя репозитория точки содержать может (`acme/kddkit.dev.git`), и запрет резал
+ * его до `kddkit` — форк уходил в вечный 404 ровно в том сценарии, ради которого слаг
+ * вообще выводится из package.json.
+ */
+declare function parseRepoUrl(url: string): {
+    owner: string;
+    repo: string;
+} | null;
+/** Слаг выводим из package.json, а не хардкодим: форк не должен поллить апстрим. */
+declare function repoSlug(): {
+    owner: string;
+    repo: string;
+} | null;
+/**
+ * >0 если a новее b. Хватает MAJOR.MINOR.PATCH[-PRERELEASE] — полный semver не нужен,
+ * зависимость ради этого не тянем.
+ */
+declare function compareVersions(a: string, b: string): number;
+interface Release {
+    version: string;
+    url: string;
+    body: string;
+    publishedAt: string;
+    prerelease: boolean;
+}
+interface ReleaseInfo {
+    current: string;
+    latest: string | null;
+    hasUpdate: boolean;
+    releases: Release[];
+    repoUrl: string | null;
+    error: string | null;
+}
+/** Только для тестов: сбросить кэш между кейсами. */
+declare function _resetCache(): void;
+/** Только для тестов: момент истечения кэша — чтобы проверять, каким TTL накрыт кейс. */
+declare function _cacheUntil(): number | null;
+/**
+ * Список релизов с GitHub + вывод «есть ли апдейт». Никогда не бросает: любой отказ
+ * сводится к error-строке, current при этом на месте (читается локально).
+ *
+ * Кэш в памяти обязателен, а не желателен: лимит GitHub без токена — 60 запросов в час
+ * на IP, а UI открыт постоянно. Ошибку кэшируем тоже, иначе ретраи выжигают лимит быстрее
+ * успехов. fetch пробрасывается параметром — так тесты идут без сети.
+ */
+declare function releaseInfo(opts?: {
+    fetch?: typeof globalThis.fetch;
+}): Promise<ReleaseInfo>;
+
+export { type Actor, type AgentEvent, type AgentEventKind, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionInput, type EventRow, KddError, MAX_FAILED_ATTEMPTS, MIGRATIONS, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type RecallHit, type Release, type ReleaseInfo, type RunResult, STATUSES, type SpawnFn, type Status, TRANSITIONS, type Task, type TaskDetailCapped, type TaskListRow, type TickResult, type Track, _cacheUntil, _resetCache, addCriterion, addDecision, addTask, appendAgentEvent, appendEvent, archiveTask, authorOf, blockTask, boardData, capText, checkMove, claimNext, claimTask, commentTask, compareVersions, contentHash, createTrack, deleteTrack, editTask, editTrack, ensureWorktree, exportBoard, headCommit, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listProjects, listTracks, logError, moveTask, mustGetTask, mustGetTrack, now, openDb, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, rebuild, recall, reclaimExpired, recordFailedAttempt, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setCriterionChecked, slugify, statusDigest, sweepWorktrees, syncIndex, taskBranchHead, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, worktreePath };

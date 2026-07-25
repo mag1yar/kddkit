@@ -14,3 +14,4 @@ export * from './claim.js';
 export * from './driver.js';
 export * from './agent_events.js';
 export * from './worktree.js';
+export * from './release.js';

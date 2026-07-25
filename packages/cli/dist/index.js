@@ -28,6 +28,7 @@ import {
   ensureWorktree,
   exportBoard,
   headCommit,
+  kddVersion,
   linkTasks,
   listAgentEvents,
   listCriteria,
@@ -198,7 +199,7 @@ function renderStatus(d) {
 }
 
 // src/index.ts
-var program = new Command().name("kdd").description("kanban substrate for humans and Claude");
+var program = new Command().name("kdd").description("kanban substrate for humans and Claude").version(kddVersion());
 function out(json, obj, text) {
   console.log(json ? JSON.stringify(obj) : text());
 }
