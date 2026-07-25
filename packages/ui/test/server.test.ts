@@ -149,3 +149,17 @@ describe('unknown api route', () => {
     expect((await app.request('/api/nope')).status).toBe(404);
   });
 });
+
+describe('GET /api/releases', () => {
+  it('returns the app version and never fails the request', async () => {
+    const { app } = mk();
+    const res = await app.request('/api/releases');
+    expect(res.status).toBe(200);
+    const info = (await res.json()) as
+      { current: string; releases: unknown[]; repoUrl: string | null };
+    // current читается локально из package.json — есть даже когда GitHub недоступен
+    expect(info.current).toMatch(/^\d+\.\d+\.\d+/);
+    expect(Array.isArray(info.releases)).toBe(true);
+    expect(info.repoUrl).toBe('https://github.com/mag1yar/kddkit');
+  });
+});

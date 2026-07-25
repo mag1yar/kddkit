@@ -7,7 +7,8 @@ import { Hono, type Context } from 'hono';
 import {
   KddError, addCriterion, addTask, blockTask, boardData, commentTask, createTrack, deleteTrack,
   editTask, editTrack, kddHome, listAgentEvents, listProjects, listTracks, moveTask, openDb,
-  placeTask, removeCriterion, setCriterionChecked, taskDetail, unblockTask, type Priority,
+  placeTask, releaseInfo, removeCriterion, setCriterionChecked, taskDetail, unblockTask,
+  type Priority,
 } from '@kddkit/core';
 
 const hashOf = (dbPath: string) => basename(dirname(dbPath));
@@ -101,6 +102,10 @@ export function createApp(
     version: (getDb(c).prepare(`SELECT COALESCE(MAX(id), 0) AS v FROM events`)
       .get() as { v: number }).v,
   }));
+
+  // Версия приложения и changelog. Без ?project= — свойство процесса, а не доски,
+  // поэтому getDb не трогаем. Кэш живёт в core: один фетч на процесс, а не на вкладку.
+  app.get('/api/releases', async (c) => c.json(await releaseInfo()));
 
   app.get('/api/tasks/:id', (c) => c.json(taskDetail(getDb(c), taskId(c))));
 
