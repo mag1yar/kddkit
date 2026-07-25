@@ -23,7 +23,10 @@ export function parseClaudeStreamLine(line: string): ParsedEvent[] {
     const out: ParsedEvent[] = [];
     for (const b of msg.message.content) {
       if (b?.type === 'text' && typeof b.text === 'string') out.push({ kind: 'text', detail: { text: b.text } });
-      else if (b?.type === 'tool_use') out.push({ kind: 'tool_start', name: b.name, detail: { input: b.input } });
+      // id кладём рядом со входом: результаты параллельных вызовов приезжают пачкой
+      // (start, start, finish, finish), и без него лента склеивает вывод не с тем вызовом.
+      // undefined выпадает при JSON.stringify — старым событиям поле просто не появится.
+      else if (b?.type === 'tool_use') out.push({ kind: 'tool_start', name: b.name, detail: { id: b.id, input: b.input } });
       // thinking и прочее — шум для feed, пропускаем
     }
     return out;
@@ -31,7 +34,9 @@ export function parseClaudeStreamLine(line: string): ParsedEvent[] {
   if (msg?.type === 'user' && Array.isArray(msg.message?.content)) {
     const out: ParsedEvent[] = [];
     for (const b of msg.message.content) {
-      if (b?.type === 'tool_result') out.push({ kind: 'tool_finish', detail: { output: b.content, isError: !!b.is_error } });
+      if (b?.type === 'tool_result') out.push({
+        kind: 'tool_finish', detail: { id: b.tool_use_id, output: b.content, isError: !!b.is_error },
+      });
     }
     return out;
   }

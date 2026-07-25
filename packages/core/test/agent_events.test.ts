@@ -19,6 +19,15 @@ describe('parseClaudeStreamLine', () => {
     expect(parseClaudeStreamLine(line)).toEqual([{ kind: 'tool_start', name: 'Bash', detail: { input: { command: 'ls' } } }]);
   });
 
+  it('keeps tool_use_id on both sides so the ui can pair parallel calls', () => {
+    const call = JSON.stringify({ type: 'assistant', message: { content: [
+      { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'ls' } }] } });
+    expect(parseClaudeStreamLine(call)[0].detail).toEqual({ id: 'toolu_1', input: { command: 'ls' } });
+    const result = JSON.stringify({ type: 'user', message: { content: [
+      { type: 'tool_result', tool_use_id: 'toolu_1', content: 'a' }] } });
+    expect(parseClaudeStreamLine(result)[0].detail).toEqual({ id: 'toolu_1', output: 'a', isError: false });
+  });
+
   it('assistant multi-block → multiple events, thinking skipped', () => {
     const line = JSON.stringify({ type: 'assistant', message: { content: [
       { type: 'thinking', thinking: 'hmm' },

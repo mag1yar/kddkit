@@ -39,9 +39,10 @@ export function boardData(
 export function taskDetail(db: Database.Database, id: number): {
   task: Task; criteria: Criterion[]; comments: Comment[]; events: EventRow[];
   links: { id: number; title: string; kind: string }[];
-  // Не сами события агента, а только их число: лента едет отдельной ручкой (инкрементально,
-  // по since=<id>), а вкладке нужно лишь знать, есть ли там что-нибудь, не открывая её.
-  agent_events_total: number;
+  // Не события агента, а число его прогонов: лента едет отдельной ручкой (инкрементально,
+  // по since=<id>), а вкладке нужно лишь знать, будили ли по задаче агента и сколько раз.
+  // Сырые события считать бесполезно — «30» не соответствует ничему, что видно глазами.
+  agent_runs_total: number;
 } {
   const task = mustGetTask(db, id);
   const criteria = listCriteria(db, id);
@@ -54,9 +55,10 @@ export function taskDetail(db: Database.Database, id: number): {
      JOIN tasks t ON t.id = CASE WHEN l.from_id = ? THEN l.to_id ELSE l.from_id END
      WHERE l.from_id = ? OR l.to_id = ?`,
   ).all(id, id, id) as { id: number; title: string; kind: string }[];
-  const agent_events_total = (db.prepare(
-    `SELECT COUNT(*) c FROM agent_events WHERE task_id = ?`).get(id) as { c: number }).c;
-  return { task, criteria, comments, events, links, agent_events_total };
+  const agent_runs_total = (db.prepare(
+    `SELECT COUNT(*) c FROM agent_events WHERE task_id = ? AND kind = 'run_start'`,
+  ).get(id) as { c: number }).c;
+  return { task, criteria, comments, events, links, agent_runs_total };
 }
 
 export interface TaskDetailCapped {

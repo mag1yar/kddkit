@@ -886,10 +886,10 @@ function taskDetail(db, id) {
      JOIN tasks t ON t.id = CASE WHEN l.from_id = ? THEN l.to_id ELSE l.from_id END
      WHERE l.from_id = ? OR l.to_id = ?`
   ).all(id, id, id);
-  const agent_events_total = db.prepare(
-    `SELECT COUNT(*) c FROM agent_events WHERE task_id = ?`
+  const agent_runs_total = db.prepare(
+    `SELECT COUNT(*) c FROM agent_events WHERE task_id = ? AND kind = 'run_start'`
   ).get(id).c;
-  return { task, criteria, comments, events, links, agent_events_total };
+  return { task, criteria, comments, events, links, agent_runs_total };
 }
 function taskDetailCapped(db, id) {
   const d = taskDetail(db, id);
@@ -945,14 +945,17 @@ function parseClaudeStreamLine(line) {
     const out = [];
     for (const b of msg.message.content) {
       if (b?.type === "text" && typeof b.text === "string") out.push({ kind: "text", detail: { text: b.text } });
-      else if (b?.type === "tool_use") out.push({ kind: "tool_start", name: b.name, detail: { input: b.input } });
+      else if (b?.type === "tool_use") out.push({ kind: "tool_start", name: b.name, detail: { id: b.id, input: b.input } });
     }
     return out;
   }
   if (msg?.type === "user" && Array.isArray(msg.message?.content)) {
     const out = [];
     for (const b of msg.message.content) {
-      if (b?.type === "tool_result") out.push({ kind: "tool_finish", detail: { output: b.content, isError: !!b.is_error } });
+      if (b?.type === "tool_result") out.push({
+        kind: "tool_finish",
+        detail: { id: b.tool_use_id, output: b.content, isError: !!b.is_error }
+      });
     }
     return out;
   }

@@ -21647,10 +21647,10 @@ function taskDetail(db, id) {
      JOIN tasks t ON t.id = CASE WHEN l.from_id = ? THEN l.to_id ELSE l.from_id END
      WHERE l.from_id = ? OR l.to_id = ?`
   ).all(id, id, id);
-  const agent_events_total = db.prepare(
-    `SELECT COUNT(*) c FROM agent_events WHERE task_id = ?`
+  const agent_runs_total = db.prepare(
+    `SELECT COUNT(*) c FROM agent_events WHERE task_id = ? AND kind = 'run_start'`
   ).get(id).c;
-  return { task, criteria, comments, events, links, agent_events_total };
+  return { task, criteria, comments, events, links, agent_runs_total };
 }
 function taskDetailCapped(db, id) {
   const d = taskDetail(db, id);

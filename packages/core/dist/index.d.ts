@@ -236,7 +236,7 @@ declare function taskDetail(db: Database.Database, id: number): {
         title: string;
         kind: string;
     }[];
-    agent_events_total: number;
+    agent_runs_total: number;
 };
 interface TaskDetailCapped {
     task: Task;
