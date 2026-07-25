@@ -387,4 +387,27 @@ declare function releaseInfo(opts?: {
     fetch?: typeof globalThis.fetch;
 }): Promise<ReleaseInfo>;
 
-export { type Actor, type AgentEvent, type AgentEventKind, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionInput, type EventRow, KddError, MAX_FAILED_ATTEMPTS, MIGRATIONS, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type RecallHit, type Release, type ReleaseInfo, type RunResult, STATUSES, type SpawnFn, type Status, TRANSITIONS, type Task, type TaskDetailCapped, type TaskListRow, type TickResult, type Track, _cacheUntil, _resetCache, addCriterion, addDecision, addTask, appendAgentEvent, appendEvent, archiveTask, authorOf, blockTask, boardData, capText, checkMove, claimNext, claimTask, commentTask, compareVersions, contentHash, createTrack, deleteTrack, editTask, editTrack, ensureWorktree, exportBoard, headCommit, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listProjects, listTracks, logError, moveTask, mustGetTask, mustGetTrack, now, openDb, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, rebuild, recall, reclaimExpired, recordFailedAttempt, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setCriterionChecked, slugify, statusDigest, sweepWorktrees, syncIndex, taskBranchHead, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, worktreePath };
+declare const TICK_INTERVALS: readonly [30, 60, 300, 900];
+declare const MAX_WORKERS_CAP = 10;
+interface AutoTick {
+    enabled: boolean;
+    intervalSec: number;
+    maxWorkers: number;
+}
+interface TickRun {
+    at: number;
+    reclaimed: number;
+    spawned: number;
+    active: number;
+    reaped: number;
+    skipped?: boolean;
+    error?: string;
+}
+declare function getAutoTick(db: Database.Database): AutoTick;
+declare function setAutoTick(db: Database.Database, patch: Partial<AutoTick>): AutoTick;
+declare function getLastRun(db: Database.Database): TickRun | null;
+declare function setLastRun(db: Database.Database, run: TickRun): void;
+declare function maxWorkers(db: Database.Database): number;
+declare const maxWorkersEnvLocked: () => boolean;
+
+export { type Actor, type AgentEvent, type AgentEventKind, type AutoTick, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionInput, type EventRow, KddError, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type RecallHit, type Release, type ReleaseInfo, type RunResult, STATUSES, type SpawnFn, type Status, TICK_INTERVALS, TRANSITIONS, type Task, type TaskDetailCapped, type TaskListRow, type TickResult, type TickRun, type Track, _cacheUntil, _resetCache, addCriterion, addDecision, addTask, appendAgentEvent, appendEvent, archiveTask, authorOf, blockTask, boardData, capText, checkMove, claimNext, claimTask, commentTask, compareVersions, contentHash, createTrack, deleteTrack, editTask, editTrack, ensureWorktree, exportBoard, getAutoTick, getLastRun, headCommit, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listProjects, listTracks, logError, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, now, openDb, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, rebuild, recall, reclaimExpired, recordFailedAttempt, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, slugify, statusDigest, sweepWorktrees, syncIndex, taskBranchHead, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, worktreePath };

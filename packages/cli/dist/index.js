@@ -35,6 +35,7 @@ import {
   listProjects,
   taskBranchHead,
   listTracks,
+  maxWorkers,
   moveTask,
   mustGetTask,
   openDb as openDb2,
@@ -312,9 +313,13 @@ program.command("tick").description("agent-mode: reclaim expired leases, claim r
   if (o.watch && (!Number.isFinite(intervalMs) || intervalMs <= 0)) {
     fail(`--interval must be a positive number of seconds (got '${o.interval}')`, o.json);
   }
-  const maxWorkers = Number(process.env.KDD_MAX_WORKERS ?? 3);
   const ttl = Number(process.env.KDD_WORKER_TTL ?? 1800);
-  if (!Number.isInteger(maxWorkers) || maxWorkers < 1) fail("KDD_MAX_WORKERS must be a positive integer", o.json);
+  if (process.env.KDD_MAX_WORKERS !== void 0) {
+    const n = Number(process.env.KDD_MAX_WORKERS);
+    if (!Number.isInteger(n) || n < 1) {
+      fail("KDD_MAX_WORKERS must be a positive integer", o.json);
+    }
+  }
   const onePass = () => {
     const { dbPath, projectPath } = resolveDbPath2();
     let release;
@@ -327,7 +332,7 @@ program.command("tick").description("agent-mode: reclaim expired leases, claim r
     try {
       const toplevel = resolveToplevel();
       return withDbAt(dbPath, projectPath, (db) => {
-        const t = tick(db, { maxWorkers, ttl, projectDir: toplevel, spawn: spawnWorker });
+        const t = tick(db, { maxWorkers: maxWorkers(db), ttl, projectDir: toplevel, spawn: spawnWorker });
         return { ...t, reaped: sweepWorktrees(db, toplevel) };
       });
     } finally {

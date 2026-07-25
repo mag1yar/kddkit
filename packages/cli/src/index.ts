@@ -10,7 +10,7 @@ import {
   KddError, addCriterion, addDecision, addTask, appendAgentEvent, archiveTask, blockTask,
   boardData, claimNext, claimTask, commentTask, createTrack, deleteTrack, DEFAULT_TTL, editTask,
   editTrack, ensureWorktree, exportBoard, headCommit, kddVersion, linkTasks, listAgentEvents, listCriteria, listProjects, taskBranchHead,
-  listTracks, moveTask, mustGetTask, openDb, parseClaudeStreamLine, rebuild, recall, removeCriterion,
+  listTracks, maxWorkers, moveTask, mustGetTask, openDb, parseClaudeStreamLine, rebuild, recall, removeCriterion,
   renewClaim, resolveDbPath, resolveDecisionsDir, resolveToplevel, setCriterionChecked, statusDigest,
   sweepWorktrees, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, type Status,
 } from '@kddkit/core';
@@ -184,9 +184,15 @@ program.command('tick')
     if (o.watch && (!Number.isFinite(intervalMs) || intervalMs <= 0)) {
       fail(`--interval must be a positive number of seconds (got '${o.interval}')`, o.json);
     }
-    const maxWorkers = Number(process.env.KDD_MAX_WORKERS ?? 3);
     const ttl = Number(process.env.KDD_WORKER_TTL ?? 1800);
-    if (!Number.isInteger(maxWorkers) || maxWorkers < 1) fail('KDD_MAX_WORKERS must be a positive integer', o.json);
+    // env-override валидируем ДО цикла: между проходами он не меняется, незачем
+    // сыпать одной и той же ошибкой каждый интервал в --watch.
+    if (process.env.KDD_MAX_WORKERS !== undefined) {
+      const n = Number(process.env.KDD_MAX_WORKERS);
+      if (!Number.isInteger(n) || n < 1) {
+        fail('KDD_MAX_WORKERS must be a positive integer', o.json);
+      }
+    }
 
     // один проход: lock -> tick -> sweep. Возвращает результат ИЛИ {skipped:true} при занятом локе.
     const onePass = (): Record<string, unknown> => {
@@ -201,7 +207,7 @@ program.command('tick')
       try {
         const toplevel = resolveToplevel();
         return withDbAt(dbPath, projectPath, (db) => {
-          const t = tick(db, { maxWorkers, ttl, projectDir: toplevel, spawn: spawnWorker });
+          const t = tick(db, { maxWorkers: maxWorkers(db), ttl, projectDir: toplevel, spawn: spawnWorker });
           // sweep ПОСЛЕ claim-loop: re-claimed задача уже in_progress → её worktree не тронут;
           // истинно брошенная (reclaim без re-claim) → status 'new' → worktree снесён.
           return { ...t, reaped: sweepWorktrees(db, toplevel) };

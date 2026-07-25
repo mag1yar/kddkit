@@ -1377,15 +1377,84 @@ async function load(opts) {
     return fail("release check failed");
   }
 }
+
+// src/settings.ts
+var TICK_INTERVALS = [30, 60, 300, 900];
+var MAX_WORKERS_CAP = 10;
+var DEFAULTS = { enabled: false, intervalSec: 60, maxWorkers: 3 };
+var isInterval = (n) => TICK_INTERVALS.includes(n);
+var isWorkers = (n) => Number.isInteger(n) && n >= 1 && n <= MAX_WORKERS_CAP;
+function readMeta(db, key) {
+  return db.prepare(`SELECT value FROM meta WHERE key = ?`).get(key)?.value;
+}
+function writeMeta(db, key, value) {
+  db.prepare(
+    `INSERT INTO meta (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+  ).run(key, value);
+}
+function getAutoTick(db) {
+  const interval = Number(readMeta(db, "autotick_interval_sec"));
+  const workers = Number(readMeta(db, "autotick_max_workers"));
+  return {
+    enabled: readMeta(db, "autotick_enabled") === "1",
+    intervalSec: isInterval(interval) ? interval : DEFAULTS.intervalSec,
+    maxWorkers: isWorkers(workers) ? workers : DEFAULTS.maxWorkers
+  };
+}
+function setAutoTick(db, patch) {
+  if (patch.intervalSec !== void 0 && !isInterval(patch.intervalSec)) {
+    throw new KddError(`interval must be one of ${TICK_INTERVALS.join(", ")} seconds`);
+  }
+  if (patch.maxWorkers !== void 0 && !isWorkers(patch.maxWorkers)) {
+    throw new KddError(`max workers must be an integer between 1 and ${MAX_WORKERS_CAP}`);
+  }
+  return db.transaction(() => {
+    if (patch.enabled !== void 0) {
+      writeMeta(db, "autotick_enabled", patch.enabled ? "1" : "0");
+    }
+    if (patch.intervalSec !== void 0) {
+      writeMeta(db, "autotick_interval_sec", String(patch.intervalSec));
+    }
+    if (patch.maxWorkers !== void 0) {
+      writeMeta(db, "autotick_max_workers", String(patch.maxWorkers));
+    }
+    return getAutoTick(db);
+  })();
+}
+function getLastRun(db) {
+  const raw = readMeta(db, "autotick_last");
+  if (raw === void 0) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+function setLastRun(db, run) {
+  db.transaction(() => writeMeta(db, "autotick_last", JSON.stringify(run)))();
+}
+function maxWorkers(db) {
+  const env = process.env.KDD_MAX_WORKERS;
+  if (env === void 0) return getAutoTick(db).maxWorkers;
+  const n = Number(env);
+  if (!Number.isInteger(n) || n < 1) {
+    throw new KddError("KDD_MAX_WORKERS must be a positive integer");
+  }
+  return n;
+}
+var maxWorkersEnvLocked = () => process.env.KDD_MAX_WORKERS !== void 0;
 export {
   CAPS,
   DEFAULT_TTL,
   KddError,
   MAX_FAILED_ATTEMPTS,
+  MAX_WORKERS_CAP,
   MIGRATIONS,
   PRIORITIES,
   PRIORITY_ORDER,
   STATUSES,
+  TICK_INTERVALS,
   TRANSITIONS,
   _cacheUntil,
   _resetCache,
@@ -1411,6 +1480,8 @@ export {
   editTrack,
   ensureWorktree,
   exportBoard,
+  getAutoTick,
+  getLastRun,
   headCommit,
   kddHome,
   kddVersion,
@@ -1421,6 +1492,8 @@ export {
   listProjects,
   listTracks,
   logError,
+  maxWorkers,
+  maxWorkersEnvLocked,
   moveTask,
   mustGetTask,
   mustGetTrack,
@@ -1446,7 +1519,9 @@ export {
   resolveToplevel,
   runProduced,
   sanitizeQuery,
+  setAutoTick,
   setCriterionChecked,
+  setLastRun,
   slugify,
   statusDigest,
   sweepWorktrees,
