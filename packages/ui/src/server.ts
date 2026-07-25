@@ -115,6 +115,10 @@ export function createApp(
   // поэтому getDb не трогаем. Кэш живёт в core: один фетч на процесс, а не на вкладку.
   app.get('/api/releases', async (c) => c.json(await releaseInfo()));
 
+  // Тот же fallback, что и getDb в projectPool — единая точка правды на "чей это hash",
+  // а не третья копия ?project || defaultHash рядом с планировщиком.
+  const projectHash = (c: Context): string => c.req.query('project') || defaultHash;
+
   // Авто-tick: настройки в meta проекта, таймер — в планировщике сервера.
   // scheduler необязателен: без него (сервер поднят не через `kdd ui`, тесты)
   // настройки сохраняются, но таймеров нет и nextAt всегда null.
@@ -124,7 +128,7 @@ export function createApp(
       ...getAutoTick(db),
       maxWorkersEnvLocked: maxWorkersEnvLocked(),
       last: getLastRun(db),
-      nextAt: scheduler?.nextAt(c.req.query('project') || defaultHash) ?? null,
+      nextAt: scheduler?.nextAt(projectHash(c)) ?? null,
     };
   };
 
@@ -132,12 +136,16 @@ export function createApp(
 
   app.patch('/api/autotick', async (c) => {
     const b = await jsonBody(c);
+    // Только настоящий boolean: "false"-строка от небрежного клиента не должна тихо включить tick.
+    if (b.enabled !== undefined && typeof b.enabled !== 'boolean') {
+      throw new KddError('enabled must be a boolean');
+    }
     setAutoTick(getDb(c), {
-      enabled: b.enabled === undefined ? undefined : Boolean(b.enabled),
+      enabled: b.enabled as boolean | undefined,
       intervalSec: b.intervalSec as number | undefined,
       maxWorkers: b.maxWorkers as number | undefined,
     });
-    scheduler?.sync(c.req.query('project') || defaultHash);
+    scheduler?.sync(projectHash(c));
     return c.json(autoTickState(c));
   });
 

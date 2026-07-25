@@ -203,6 +203,15 @@ describe('/api/autotick', () => {
     expect(getAutoTick(db).intervalSec).toBe(60);
   });
 
+  it('PATCH с enabled строкой "false" — 400, а не тихое включение', async () => {
+    const { db, app } = mk();
+    const res = await app.request('/api/autotick', {
+      method: 'PATCH', body: JSON.stringify({ enabled: 'false' }),
+    });
+    expect(res.status).toBe(400);
+    expect(getAutoTick(db).enabled).toBe(false);
+  });
+
   it('PATCH дёргает scheduler.sync и отдаёт его nextAt', async () => {
     const db = openDb(':memory:', 'x');
     const synced: string[] = [];

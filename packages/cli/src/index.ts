@@ -19,6 +19,7 @@ import { fail, getActor, parseId, withDb, withDbAt } from './context.js';
 import {
   renderBoard, renderClaim, renderCriteria, renderRecall, renderShow, renderStatus, renderTracks,
 } from './render.js';
+import { parseTickOutput } from './tick-output.js';
 
 const program = new Command()
   .name('kdd')
@@ -82,8 +83,6 @@ function spawnWorker(taskId: number, workerId: string, projectDir: string): void
 // тике. TICK_LOCK межпроцессный, поэтому наложение с `kdd tick --watch` из терминала
 // безопасно даром. node берём тот же (process.execPath) — см. #19 про ABI better-sqlite3.
 const tickRunner: TickRunner = ({ dbPath, projectPath }) => new Promise((resolve) => {
-  const fail = (error: string): void =>
-    resolve({ at: now(), reclaimed: 0, spawned: 0, active: 0, reaped: 0, error });
   const child = spawnProcess(
     process.execPath, [fileURLToPath(import.meta.url), 'tick', '--json'],
     {
@@ -98,18 +97,9 @@ const tickRunner: TickRunner = ({ dbPath, projectPath }) => new Promise((resolve
   let err = '';
   child.stdout.on('data', (d: Buffer) => { out += d.toString(); });
   child.stderr.on('data', (d: Buffer) => { err += d.toString(); });
-  child.on('error', (e) => fail(e.message));
-  child.on('close', (code) => {
-    if (code !== 0) { fail(err.trim() || `kdd tick exited with code ${code}`); return; }
-    let r: { reclaimed?: number; spawned?: number; active?: number; reaped?: number; skipped?: boolean };
-    try { r = JSON.parse(out) as typeof r; } catch { fail(`unparsable tick output: ${out.slice(0, 200)}`); return; }
-    // skipped — не ошибка: лок держит другой tick (например `--watch` из терминала).
-    if (r.skipped) { resolve({ at: now(), reclaimed: 0, spawned: 0, active: 0, reaped: 0, skipped: true }); return; }
-    resolve({
-      at: now(), reclaimed: r.reclaimed ?? 0, spawned: r.spawned ?? 0,
-      active: r.active ?? 0, reaped: r.reaped ?? 0,
-    });
-  });
+  child.on('error', (e) =>
+    resolve({ at: now(), reclaimed: 0, spawned: 0, active: 0, reaped: 0, error: e.message }));
+  child.on('close', (code) => resolve(parseTickOutput(out, err, code, now())));
 });
 
 function run(json: boolean, fn: () => void): void {

@@ -200,6 +200,32 @@ function renderStatus(d) {
   return lines.join("\n");
 }
 
+// src/tick-output.ts
+function parseTickOutput(out2, err, code, at) {
+  const zero = { at, reclaimed: 0, spawned: 0, active: 0, reaped: 0 };
+  let parsed;
+  try {
+    parsed = JSON.parse(out2);
+  } catch {
+    parsed = void 0;
+  }
+  const obj = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : void 0;
+  if (code !== 0) {
+    const stdoutError = obj && typeof obj.error === "string" ? obj.error : void 0;
+    return { ...zero, error: stdoutError || err.trim() || `kdd tick exited with code ${code}` };
+  }
+  if (!obj) return { ...zero, error: `unparsable tick output: ${out2.slice(0, 200)}` };
+  if (obj.skipped) return { ...zero, skipped: true };
+  const num = (v) => typeof v === "number" ? v : 0;
+  return {
+    at,
+    reclaimed: num(obj.reclaimed),
+    spawned: num(obj.spawned),
+    active: num(obj.active),
+    reaped: num(obj.reaped)
+  };
+}
+
 // src/index.ts
 var program = new Command().name("kdd").description("kanban substrate for humans and Claude").version(kddVersion());
 function out(json, obj, text) {
@@ -230,7 +256,6 @@ function spawnWorker(taskId, workerId, projectDir) {
   child.unref();
 }
 var tickRunner = ({ dbPath, projectPath }) => new Promise((resolve) => {
-  const fail2 = (error) => resolve({ at: now2(), reclaimed: 0, spawned: 0, active: 0, reaped: 0, error });
   const child = spawnProcess(
     process.execPath,
     [fileURLToPath(import.meta.url), "tick", "--json"],
@@ -250,31 +275,8 @@ var tickRunner = ({ dbPath, projectPath }) => new Promise((resolve) => {
   child.stderr.on("data", (d) => {
     err += d.toString();
   });
-  child.on("error", (e) => fail2(e.message));
-  child.on("close", (code) => {
-    if (code !== 0) {
-      fail2(err.trim() || `kdd tick exited with code ${code}`);
-      return;
-    }
-    let r;
-    try {
-      r = JSON.parse(out2);
-    } catch {
-      fail2(`unparsable tick output: ${out2.slice(0, 200)}`);
-      return;
-    }
-    if (r.skipped) {
-      resolve({ at: now2(), reclaimed: 0, spawned: 0, active: 0, reaped: 0, skipped: true });
-      return;
-    }
-    resolve({
-      at: now2(),
-      reclaimed: r.reclaimed ?? 0,
-      spawned: r.spawned ?? 0,
-      active: r.active ?? 0,
-      reaped: r.reaped ?? 0
-    });
-  });
+  child.on("error", (e) => resolve({ at: now2(), reclaimed: 0, spawned: 0, active: 0, reaped: 0, error: e.message }));
+  child.on("close", (code) => resolve(parseTickOutput(out2, err, code, now2())));
 });
 function run(json, fn) {
   try {
