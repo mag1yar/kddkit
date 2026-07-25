@@ -10,15 +10,17 @@ import {
   KddError, addCriterion, addDecision, addTask, appendAgentEvent, archiveTask, blockTask,
   boardData, claimNext, claimTask, commentTask, createTrack, deleteTrack, DEFAULT_TTL, editTask,
   editTrack, ensureWorktree, exportBoard, headCommit, kddVersion, linkTasks, listAgentEvents, listCriteria, listProjects, taskBranchHead,
-  listTracks, moveTask, mustGetTask, openDb, parseClaudeStreamLine, rebuild, recall, removeCriterion,
-  renewClaim, resolveDbPath, resolveDecisionsDir, resolveToplevel, setCriterionChecked, statusDigest,
+  listTracks, maxWorkers, moveTask, mustGetTask, openDb, parseClaudeStreamLine, rebuild, recall, removeCriterion,
+  renewClaim, resolveDbPath, resolveDecisionsDir, resolveToplevel, setCriterionChecked,
+  setProjectToplevel, statusDigest,
   sweepWorktrees, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, type Status,
 } from '@kddkit/core';
-import { projectPool, startUi } from '@kddkit/ui';
+import { createScheduler, projectPool, startUi, type TickRunner } from '@kddkit/ui';
 import { fail, getActor, parseId, withDb, withDbAt } from './context.js';
 import {
   renderBoard, renderClaim, renderCriteria, renderRecall, renderShow, renderStatus, renderTracks,
 } from './render.js';
+import { createTickRunner } from './tick-runner.js';
 
 const program = new Command()
   .name('kdd')
@@ -55,7 +57,18 @@ const sq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 const DEFAULT_SPAWN_CMD =
   `${sq(process.execPath)} ${sq(fileURLToPath(import.meta.url))} worker "$KDD_TASK_ID"`;
 
-const TICK_LOCK_STALE = 10 * 60 * 1000; // ms; tick короткоживущий — 10 мин >> его длительности
+// tick короткоживущий — 10 мин >> его длительности. Это окно ЗАГРУЖЕНО смыслом (не просто
+// «щедрое число»): оно гарантирует целостность maxWorkers между процессами. Пока лок держится,
+// второй `tick`/`--watch` видит ELOCKED и не стартует параллельно — оба процесса иначе
+// независимо посчитали бы active < maxWorkers и вместе наспавнили бы вдвое больше воркеров
+// капа. Должно оставаться БОЛЬШЕ TICK_KILL_TIMEOUT ниже: если бы child мог пережить это окно,
+// лок протух бы под ещё живым держателем, и его собственный lockfile-апдейтер, застав лок
+// украденным, кинул бы исключение из таймера без onCompromised — и уронил бы этот child.
+const TICK_LOCK_STALE = 10 * 60 * 1000; // ms
+
+// Жёсткий потолок на один проход tickRunner — см. tick-runner.ts.
+// Ниже TICK_LOCK_STALE: child обязан быть убит и лок освобождён раньше, чем лок сочтут stale.
+const TICK_KILL_TIMEOUT = 5 * 60 * 1000; // ms
 
 // Детач fire-and-forget через login-shell (-lc грузит PATH: детач-процесс иначе не найдёт claude/npx).
 function spawnWorker(taskId: number, workerId: string, projectDir: string): void {
@@ -76,6 +89,8 @@ function spawnWorker(taskId: number, workerId: string, projectDir: string): void
   });
   child.unref(); // tick не ждёт воркера
 }
+
+const tickRunner: TickRunner = createTickRunner(fileURLToPath(import.meta.url), TICK_KILL_TIMEOUT);
 
 function run(json: boolean, fn: () => void): void {
   try { fn(); } catch (e) {
@@ -184,9 +199,15 @@ program.command('tick')
     if (o.watch && (!Number.isFinite(intervalMs) || intervalMs <= 0)) {
       fail(`--interval must be a positive number of seconds (got '${o.interval}')`, o.json);
     }
-    const maxWorkers = Number(process.env.KDD_MAX_WORKERS ?? 3);
     const ttl = Number(process.env.KDD_WORKER_TTL ?? 1800);
-    if (!Number.isInteger(maxWorkers) || maxWorkers < 1) fail('KDD_MAX_WORKERS must be a positive integer', o.json);
+    // env-override валидируем ДО цикла: между проходами он не меняется, незачем
+    // сыпать одной и той же ошибкой каждый интервал в --watch.
+    if (process.env.KDD_MAX_WORKERS !== undefined) {
+      const n = Number(process.env.KDD_MAX_WORKERS);
+      if (!Number.isInteger(n) || n < 1) {
+        fail('KDD_MAX_WORKERS must be a positive integer', o.json);
+      }
+    }
 
     // один проход: lock -> tick -> sweep. Возвращает результат ИЛИ {skipped:true} при занятом локе.
     const onePass = (): Record<string, unknown> => {
@@ -201,7 +222,14 @@ program.command('tick')
       try {
         const toplevel = resolveToplevel();
         return withDbAt(dbPath, projectPath, (db) => {
-          const t = tick(db, { maxWorkers, ttl, projectDir: toplevel, spawn: spawnWorker });
+          // Пишем project_toplevel только когда наш cwd честный: этот tick запущен руками
+          // (терминал, --watch). KDD_TICK_SPAWNED помечает противоположный случай — child,
+          // которого поднял планировщик (tick-runner.ts): его cwd сам может быть
+          // fallback-догадкой (dirname(project_path) для submodule/--separate-git-dir/bare
+          // с worktree), и если поверить в её же git-резолв, неверный toplevel запишется
+          // в meta навсегда — доска перестанет чиниться сама.
+          if (!process.env.KDD_TICK_SPAWNED) setProjectToplevel(db, toplevel);
+          const t = tick(db, { maxWorkers: maxWorkers(db), ttl, projectDir: toplevel, spawn: spawnWorker });
           // sweep ПОСЛЕ claim-loop: re-claimed задача уже in_progress → её worktree не тронут;
           // истинно брошенная (reclaim без re-claim) → status 'new' → worktree снесён.
           return { ...t, reaped: sweepWorktrees(db, toplevel) };
@@ -429,7 +457,13 @@ program.command('ui')
 async function uiStart(port: number): Promise<void> {
   const { dbPath, projectPath } = resolveDbPath();
   const hash = basename(dirname(dbPath));
-  openDb(dbPath, projectPath).close(); // создаём/мигрируем базу → проект виден в /api/projects
+  const db = openDb(dbPath, projectPath); // создаём/мигрируем базу → проект виден в /api/projects
+  try {
+    // `kdd ui` запущен изнутри проекта — второй (после `kdd tick`) путь, который знает
+    // toplevel достоверно. Планировщику он нужен как cwd для дочерних тиков.
+    setProjectToplevel(db, resolveToplevel());
+  } catch { /* не git-репо: путь возможен только с KDD_DB, toplevel останется неизвестным */ }
+  db.close();
   const url = `http://localhost:${port}?project=${hash}`;
   try {
     const res = await fetch(`http://localhost:${port}/api/ping`, { signal: AbortSignal.timeout(500) });
@@ -438,14 +472,16 @@ async function uiStart(port: number): Promise<void> {
       return;
     }
   } catch { /* сервера нет — поднимаем свой */ }
-  const { getDb, closeAll } = projectPool(hash);
+  const { getDb, get, closeAll } = projectPool(hash);
+  const scheduler = createScheduler(tickRunner, get);
   try {
-    await startUi(getDb, port, hash);
+    await startUi(getDb, port, hash, scheduler);
   } catch (e) {
+    scheduler.stopAll();
     closeAll();
     fail(e instanceof Error ? e.message : String(e), false);
   }
-  process.on('SIGINT', () => { closeAll(); process.exit(0); });
+  process.on('SIGINT', () => { scheduler.stopAll(); closeAll(); process.exit(0); });
   console.log(`kdd ui: ${url}`);
 }
 

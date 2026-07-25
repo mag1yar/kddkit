@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,31 +7,50 @@ import { serve } from '@hono/node-server';
 import { Hono, type Context } from 'hono';
 import {
   KddError, addCriterion, addTask, blockTask, boardData, commentTask, createTrack, deleteTrack,
-  editTask, editTrack, kddHome, listAgentEvents, listProjects, listTracks, moveTask, openDb,
-  placeTask, releaseInfo, removeCriterion, setCriterionChecked, taskDetail, unblockTask,
-  type Priority,
+  editTask, editTrack, getAutoTick, getLastRun, kddHome, listAgentEvents, listProjects, listTracks,
+  maxWorkers, maxWorkersEnvLocked, moveTask, openDb, placeTask, releaseInfo, removeCriterion,
+  setAutoTick, setCriterionChecked, taskDetail, unblockTask, type Priority,
 } from '@kddkit/core';
 
+export { createScheduler, type Scheduler, type TickRunner } from './scheduler.js';
+import type { Scheduler } from './scheduler.js';
+
 const hashOf = (dbPath: string) => basename(dirname(dbPath));
+
+// Форма hash-а каталога проекта — ровно то, что пишет resolveDbPath в core/paths.ts:
+// createHash('sha256').update(common).digest('hex').slice(0, 16). Проверка формы, а не
+// только существования файла: hash приходит из ?project= сырым HTTP-параметром, и
+// join(kddHome(), hash, 'kdd.db') с чем угодно кроме hex-строки — path traversal
+// (?project=../../любой/путь) наружу store root. openDb ниже не только читает — она
+// прогоняет миграции, т.е. ПИШЕТ в файл по этому пути, так что дырка не read-only.
+const HASH_RE = /^[0-9a-f]{16}$/;
 
 // Пул баз по hash проекта: один сервер обслуживает все локальные проекты.
 // getDb(c) резолвит базу из ?project=<hash>, иначе дефолт (проект, откуда запущен ui).
 export function projectPool(defaultHash: string): {
-  getDb: (c: Context) => Database.Database; closeAll: () => void;
+  getDb: (c: Context) => Database.Database;
+  get: (hash: string) => Database.Database;
+  closeAll: () => void;
 } {
   const pool = new Map<string, Database.Database>();
-  const getDb = (c: Context): Database.Database => {
-    const hash = c.req.query('project') || defaultHash;
+  const get = (hash: string): Database.Database => {
     const cached = pool.get(hash);
     if (cached) return cached;
-    if (!listProjects().some((p) => hashOf(p.dbPath) === hash)) {
-      throw new KddError(`unknown project '${hash}'`);
-    }
-    const db = openDb(join(kddHome(), hash, 'kdd.db'));
+    if (!HASH_RE.test(hash)) throw new KddError(`unknown project '${hash}'`);
+    const dbPath = join(kddHome(), hash, 'kdd.db');
+    // Существование файла — та же гарантия для «hash из HTTP-запроса не выдуман», что и
+    // обход listProjects(), но без readonly-коннекта ко ВСЕМ остальным доскам на каждый
+    // промах пула. openDb ниже создал бы базу с нуля, поэтому проверка обязательна.
+    if (!existsSync(dbPath)) throw new KddError(`unknown project '${hash}'`);
+    const db = openDb(dbPath);
     pool.set(hash, db);
     return db;
   };
-  return { getDb, closeAll: () => { for (const d of pool.values()) d.close(); } };
+  return {
+    getDb: (c: Context) => get(c.req.query('project') || defaultHash),
+    get,
+    closeAll: () => { for (const d of pool.values()) d.close(); },
+  };
 }
 
 const USER = { type: 'user' } as const;
@@ -53,7 +73,7 @@ async function jsonBody(c: Context): Promise<Record<string, unknown>> {
 }
 
 export function createApp(
-  getDb: (c: Context) => Database.Database, defaultHash = '',
+  getDb: (c: Context) => Database.Database, defaultHash = '', scheduler?: Scheduler,
 ): Hono {
   const app = new Hono();
 
@@ -106,6 +126,53 @@ export function createApp(
   // Версия приложения и changelog. Без ?project= — свойство процесса, а не доски,
   // поэтому getDb не трогаем. Кэш живёт в core: один фетч на процесс, а не на вкладку.
   app.get('/api/releases', async (c) => c.json(await releaseInfo()));
+
+  // Тот же fallback, что и getDb в projectPool — единая точка правды на "чей это hash",
+  // а не третья копия ?project || defaultHash рядом с планировщиком.
+  const projectHash = (c: Context): string => c.req.query('project') || defaultHash;
+
+  // Авто-tick: настройки в meta проекта, таймер — в планировщике сервера.
+  // scheduler необязателен: без него (сервер поднят не через `kdd ui`, тесты)
+  // настройки сохраняются, но таймеров нет и nextAt всегда null.
+  const autoTickState = (c: Context): Record<string, unknown> => {
+    const db = getDb(c);
+    // maxWorkers(db) — эффективное значение (env > meta > дефолт), а не только
+    // сохранённая настройка: иначе задизейбленное поле подписано "overridden by
+    // KDD_MAX_WORKERS" и показывает число, которое этот override как раз заменил.
+    // maxWorkers() кидает KddError при мусорном KDD_MAX_WORKERS — тут не даём 400
+    // уронить весь GET (без контрола в шапке хуже, чем с неточным числом), падаем
+    // на сохранённую настройку.
+    let effectiveWorkers: number;
+    try { effectiveWorkers = maxWorkers(db); } catch { effectiveWorkers = getAutoTick(db).maxWorkers; }
+    return {
+      ...getAutoTick(db),
+      maxWorkers: effectiveWorkers,
+      maxWorkersEnvLocked: maxWorkersEnvLocked(),
+      last: getLastRun(db),
+      nextAt: scheduler?.nextAt(projectHash(c)) ?? null,
+      // Пока проход идёт, nextAt смотрит в прошлое (перевзвод — в хвосте прохода): без этого
+      // флага UI показывал бы «next: in 0 s» всё время работы тика и не отличал бы висящий
+      // проход от простоя.
+      running: scheduler?.isRunning(projectHash(c)) ?? false,
+    };
+  };
+
+  app.get('/api/autotick', (c) => c.json(autoTickState(c)));
+
+  app.patch('/api/autotick', async (c) => {
+    const b = await jsonBody(c);
+    // Только настоящий boolean: "false"-строка от небрежного клиента не должна тихо включить tick.
+    if (b.enabled !== undefined && typeof b.enabled !== 'boolean') {
+      throw new KddError('enabled must be a boolean');
+    }
+    setAutoTick(getDb(c), {
+      enabled: b.enabled as boolean | undefined,
+      intervalSec: b.intervalSec as number | undefined,
+      maxWorkers: b.maxWorkers as number | undefined,
+    });
+    scheduler?.sync(projectHash(c));
+    return c.json(autoTickState(c));
+  });
 
   app.get('/api/tasks/:id', (c) => c.json(taskDetail(getDb(c), taskId(c))));
 
@@ -202,12 +269,14 @@ function mountStatic(app: Hono, publicDir: string): void {
 
 export function startUi(
   getDb: (c: Context) => Database.Database, port: number, defaultHash = '',
+  scheduler?: Scheduler,
 ): Promise<{ url: string; close: () => void }> {
-  const app = createApp(getDb, defaultHash);
+  const app = createApp(getDb, defaultHash, scheduler);
   mountStatic(app, join(dirname(fileURLToPath(import.meta.url)), 'public'));
   return new Promise((res, rej) => {
     const server = serve({ fetch: app.fetch, port }, (info) => {
-      res({ url: `http://localhost:${info.port}`, close: () => server.close() });
+      scheduler?.syncAll(); // таймеры включённых проектов поднимаются сами после рестарта
+      res({ url: `http://localhost:${info.port}`, close: () => { scheduler?.stopAll(); server.close(); } });
     });
     server.on('error', rej); // порт занят не-kdd → отдаём ошибку в cli, а не виснем
   });

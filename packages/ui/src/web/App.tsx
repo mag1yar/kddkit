@@ -10,11 +10,13 @@ import {
   STATUSES, deleteTrack, getBoard, getPing, getProjects, getTracks, moveTask, setTrackDone,
   type Board as BoardData, type Project, type Status, type Track,
 } from './api';
+import { AutoTickPopover } from './components/AutoTickPopover';
 import { Board } from './components/Board';
 import { NewTaskDialog } from './components/NewTaskDialog';
 import { NewTrackDialog } from './components/NewTrackDialog';
 import { ReleasesPopover } from './components/ReleasesPopover';
 import { TaskDialog } from './components/TaskDialog';
+import { useAutoTick } from './useAutoTick';
 import { useReleases } from './useReleases';
 import { useVersion } from './useVersion';
 
@@ -34,6 +36,7 @@ export default function App() {
   const current = new URLSearchParams(location.search).get('project') ?? '';
   const version = useVersion();
   const releases = useReleases();
+  const autoTick = useAutoTick();
 
   const loadTracks = useCallback(
     () => getTracks().then(setTracks).catch((e: Error) => toast.error(e.message)), []);
@@ -165,6 +168,10 @@ export default function App() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <AutoTickPopover
+            state={autoTick.state} patch={autoTick.patch}
+            error={autoTick.error} clearError={autoTick.clearError}
+          />
           {releases?.repoUrl && (
             <Button
               size="sm" variant="ghost"

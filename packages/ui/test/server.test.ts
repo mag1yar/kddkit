@@ -1,6 +1,9 @@
-import { describe, it, expect } from 'vitest';
-import { addTask, openDb } from '@kddkit/core';
-import { createApp } from '../src/server.js';
+import { describe, it, expect, afterEach } from 'vitest';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { addTask, getAutoTick, openDb, setAutoTick, setLastRun } from '@kddkit/core';
+import { createApp, projectPool } from '../src/server.js';
 
 const user = { type: 'user' } as const;
 const mk = () => {
@@ -166,4 +169,133 @@ describe('GET /api/releases', () => {
     expect(Array.isArray(info.releases)).toBe(true);
     expect(info.repoUrl).toBe('https://github.com/mag1yar/kddkit');
   }, 20_000);
+});
+
+// KDD_MAX_WORKERS с машины разработчика перевернул бы maxWorkersEnvLocked
+afterEach(() => { delete process.env.KDD_MAX_WORKERS; });
+
+describe('/api/autotick', () => {
+  it('GET на пустой базе — дефолты, без таймера', async () => {
+    const { app } = mk();
+    const res = await app.request('/api/autotick');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      enabled: false, intervalSec: 60, maxWorkers: 3,
+      maxWorkersEnvLocked: false, last: null, nextAt: null, running: false,
+    });
+  });
+
+  it('PATCH пишет настройки и отдаёт новое состояние', async () => {
+    const { db, app } = mk();
+    const res = await app.request('/api/autotick', {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled: true, intervalSec: 300, maxWorkers: 4 }),
+    });
+    expect(res.status).toBe(200);
+    const s = (await res.json()) as { enabled: boolean; intervalSec: number; maxWorkers: number };
+    expect(s).toMatchObject({ enabled: true, intervalSec: 300, maxWorkers: 4 });
+    expect(getAutoTick(db)).toMatchObject({ enabled: true, intervalSec: 300, maxWorkers: 4 });
+  });
+
+  it('PATCH с мусорным интервалом — 400 и ничего не записано', async () => {
+    const { db, app } = mk();
+    const res = await app.request('/api/autotick', {
+      method: 'PATCH', body: JSON.stringify({ intervalSec: 7 }),
+    });
+    expect(res.status).toBe(400);
+    expect(getAutoTick(db).intervalSec).toBe(60);
+  });
+
+  it('PATCH с enabled строкой "false" — 400, а не тихое включение', async () => {
+    const { db, app } = mk();
+    const res = await app.request('/api/autotick', {
+      method: 'PATCH', body: JSON.stringify({ enabled: 'false' }),
+    });
+    expect(res.status).toBe(400);
+    expect(getAutoTick(db).enabled).toBe(false);
+  });
+
+  it('PATCH дёргает scheduler.sync и отдаёт его nextAt', async () => {
+    const db = openDb(':memory:', 'x');
+    const synced: string[] = [];
+    const app = createApp(() => db, 'proj', {
+      sync: (h: string) => { synced.push(h); },
+      syncAll: () => {},
+      nextAt: () => 1700000060,
+      isRunning: () => false,
+      stopAll: () => {},
+    });
+    const res = await app.request('/api/autotick', {
+      method: 'PATCH', body: JSON.stringify({ enabled: true }),
+    });
+    const s = (await res.json()) as { nextAt: number | null };
+    expect(synced).toEqual(['proj']);
+    expect(s.nextAt).toBe(1700000060);
+  });
+
+  // Пока проход идёт, nextAt смотрит в прошлое — UI обязан узнать про это из ответа,
+  // иначе показывает «next: in 0 s» все пять минут таймаута.
+  it('GET отдаёт running=true, пока проход в полёте', async () => {
+    const db = openDb(':memory:', 'x');
+    const app = createApp(() => db, 'proj', {
+      sync: () => {}, syncAll: () => {}, nextAt: () => 1700000000,
+      isRunning: () => true, stopAll: () => {},
+    });
+    const s = (await (await app.request('/api/autotick')).json()) as { running: boolean };
+    expect(s.running).toBe(true);
+  });
+
+  it('GET отдаёт последний проход', async () => {
+    const { db, app } = mk();
+    setLastRun(db, { at: 1700000000, reclaimed: 1, spawned: 2, active: 3, reaped: 0 });
+    const s = (await (await app.request('/api/autotick')).json()) as
+      { last: { spawned: number } | null };
+    expect(s.last?.spawned).toBe(2);
+  });
+
+  // KDD_MAX_WORKERS переопределяет сохранённую настройку — GET должен отдавать
+  // действующее число (env), а не то, что оно заменило, иначе задизейбленное
+  // поле в UI подписано "overridden by ..." и врёт про своё собственное значение.
+  it('GET с KDD_MAX_WORKERS — отдаёт env-значение и maxWorkersEnvLocked=true', async () => {
+    const { db, app } = mk();
+    setAutoTick(db, { maxWorkers: 3 });
+    process.env.KDD_MAX_WORKERS = '5';
+    const s = (await (await app.request('/api/autotick')).json()) as
+      { maxWorkers: number; maxWorkersEnvLocked: boolean };
+    expect(s).toMatchObject({ maxWorkers: 5, maxWorkersEnvLocked: true });
+  });
+});
+
+describe('projectPool', () => {
+  afterEach(() => { delete process.env.KDD_HOME; });
+
+  // Форма hash-а — то, что реально пишет resolveDbPath: 16 hex-символов sha256. get(hash)
+  // раньше проверял только existsSync(join(kddHome(), hash, 'kdd.db')) — не гарантия членства
+  // в store, hash приходит сырым из ?project=. Traversal-строка обязана падать ДО join/openDb,
+  // а не найти существующий файл где-то ещё на диске.
+  it('rejects a traversal-shaped project hash before touching the filesystem', () => {
+    const home = mkdtempSync(join(tmpdir(), 'kdd-pool-'));
+    process.env.KDD_HOME = home;
+    const pool = projectPool('');
+    expect(() => pool.get('../../etc/passwd')).toThrow(/unknown project/);
+  });
+
+  it('rejects a well-formed but unknown hash the same way', () => {
+    const home = mkdtempSync(join(tmpdir(), 'kdd-pool-'));
+    process.env.KDD_HOME = home;
+    const pool = projectPool('');
+    expect(() => pool.get('0123456789abcdef')).toThrow(/unknown project/);
+  });
+
+  it('accepts a real project hash and returns a cached db on the second call', () => {
+    const home = mkdtempSync(join(tmpdir(), 'kdd-pool-'));
+    process.env.KDD_HOME = home;
+    const hash = 'abc123abc123abc1';
+    openDb(join(home, hash, 'kdd.db'), '/repo/.git').close();
+    const pool = projectPool('');
+    const db1 = pool.get(hash);
+    const db2 = pool.get(hash);
+    expect(db1).toBe(db2);
+    pool.closeAll();
+  });
 });

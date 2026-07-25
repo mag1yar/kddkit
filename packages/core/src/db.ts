@@ -161,3 +161,30 @@ export function openDb(dbPath: string, projectPath?: string): Database.Database 
   }
   return db;
 }
+
+// Читает project_path напрямую из уже открытой базы — без обхода ~/.kdd через listProjects(),
+// который каждому проекту стоит отдельного readonly-подключения ко всем остальным.
+export function projectPathOf(db: Database.Database): string | null {
+  return (db.prepare(`SELECT value FROM meta WHERE key = 'project_path'`).get() as
+    { value: string } | undefined)?.value ?? null;
+}
+
+// Рабочее дерево проекта. Хранится отдельно от project_path, потому что project_path — это
+// git common-dir, и вывести toplevel из него нельзя: у submodule он лежит в
+// <super>/.git/modules/<name>, у `git init --separate-git-dir` — вообще вне репозитория,
+// у bare-репо с linked worktree — сам по себе. Пишут те, кто резолвил toplevel из настоящего
+// cwd внутри репозитория (`kdd tick`, `kdd ui`); читают те, кому нужен cwd для дочерних
+// процессов, но у кого нет своего cwd в проекте (планировщик web-сервера).
+export function projectToplevelOf(db: Database.Database): string | null {
+  return (db.prepare(`SELECT value FROM meta WHERE key = 'project_toplevel'`).get() as
+    { value: string } | undefined)?.value ?? null;
+}
+
+export function setProjectToplevel(db: Database.Database, toplevel: string): void {
+  db.transaction(() => {
+    db.prepare(
+      `INSERT INTO meta (key, value) VALUES ('project_toplevel', ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    ).run(toplevel);
+  })();
+}

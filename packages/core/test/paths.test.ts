@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { resolveDbPath, listProjects, kddHome } from '../src/paths.js';
 import { openDb } from '../src/db.js';
+import { setAutoTick } from '../src/settings.js';
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'kdd-t-')); });
@@ -40,7 +41,18 @@ describe('listProjects', () => {
     mkdirSync(join(dir, 'home', 'abc123'), { recursive: true });
     openDb(join(dir, 'home', 'abc123', 'kdd.db'), 'C:/my/proj').close();
     expect(listProjects()).toEqual([
-      { dbPath: join(kddHome(), 'abc123', 'kdd.db'), projectPath: 'C:/my/proj' },
+      { dbPath: join(kddHome(), 'abc123', 'kdd.db'), projectPath: 'C:/my/proj', autoTickEnabled: false },
     ]);
+  });
+
+  // Планировщик на старте решает по этому полю, открывать ли базу на запись, — оно обязано
+  // приходить из самого перечисления, иначе решение стоит лишнего открытия каждой доски.
+  it('reports auto-tick state without a second connection', () => {
+    process.env.KDD_HOME = join(dir, 'home2');
+    mkdirSync(join(dir, 'home2', 'def456'), { recursive: true });
+    const db = openDb(join(dir, 'home2', 'def456', 'kdd.db'), '/repo/.git');
+    setAutoTick(db, { enabled: true });
+    db.close();
+    expect(listProjects()[0]?.autoTickEnabled).toBe(true);
   });
 });

@@ -44,20 +44,30 @@ export function resolveToplevel(cwd: string = process.cwd()): string {
   }
 }
 
-export function listProjects(): { dbPath: string; projectPath: string }[] {
+// autoTickEnabled едет вместе со списком не для красоты: планировщику на старте нужно знать
+// это про каждый проект, а readonly-коннект тут уже открыт. Спрашивать отдельно значило бы
+// открывать базу на запись — а openDb прогоняет миграции, и сервер молча менял бы схему досок
+// репозиториев, которые человек в этой сессии даже не открывал.
+export function listProjects(): { dbPath: string; projectPath: string; autoTickEnabled: boolean }[] {
   const home = kddHome();
   if (!existsSync(home)) return [];
-  const out: { dbPath: string; projectPath: string }[] = [];
+  const out: { dbPath: string; projectPath: string; autoTickEnabled: boolean }[] = [];
   for (const entry of readdirSync(home, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const dbPath = join(home, entry.name, 'kdd.db');
     if (!existsSync(dbPath)) continue;
     try {
       const db = new Database(dbPath, { readonly: true });
-      const row = db.prepare(`SELECT value FROM meta WHERE key='project_path'`).get() as
-        { value: string } | undefined;
+      const rows = db.prepare(
+        `SELECT key, value FROM meta WHERE key IN ('project_path','autotick_enabled')`,
+      ).all() as { key: string; value: string }[];
       db.close();
-      out.push({ dbPath, projectPath: row?.value ?? '(unknown)' });
+      const meta = new Map(rows.map((r) => [r.key, r.value]));
+      out.push({
+        dbPath,
+        projectPath: meta.get('project_path') ?? '(unknown)',
+        autoTickEnabled: meta.get('autotick_enabled') === '1',
+      });
     } catch { /* повреждённая база — пропускаем, не падаем */ }
   }
   return out;

@@ -3,8 +3,8 @@
 // src/index.ts
 import { Command } from "commander";
 import { readFileSync } from "fs";
-import { basename, dirname, join } from "path";
-import { spawn as spawnProcess } from "child_process";
+import { basename, dirname as dirname2, join } from "path";
+import { spawn as spawnProcess2 } from "child_process";
 import { createInterface } from "readline";
 import { fileURLToPath } from "url";
 import lockfile from "proper-lockfile";
@@ -35,6 +35,7 @@ import {
   listProjects,
   taskBranchHead,
   listTracks,
+  maxWorkers,
   moveTask,
   mustGetTask,
   openDb as openDb2,
@@ -47,6 +48,7 @@ import {
   resolveDecisionsDir,
   resolveToplevel,
   setCriterionChecked,
+  setProjectToplevel,
   statusDigest,
   sweepWorktrees,
   taskDetail,
@@ -55,7 +57,7 @@ import {
   unarchiveTask,
   unblockTask
 } from "@kddkit/core";
-import { projectPool, startUi } from "@kddkit/ui";
+import { createScheduler, projectPool, startUi } from "@kddkit/ui";
 
 // src/context.ts
 import { KddError, openDb, resolveDbPath } from "@kddkit/core";
@@ -198,6 +200,99 @@ function renderStatus(d) {
   return lines.join("\n");
 }
 
+// src/tick-runner.ts
+import { spawn as spawnProcess } from "child_process";
+import { dirname } from "path";
+import { now as now2 } from "@kddkit/core";
+
+// src/tick-output.ts
+function parseTickOutput(out2, err, code, at) {
+  const zero = { at, reclaimed: 0, spawned: 0, active: 0, reaped: 0 };
+  let parsed;
+  try {
+    parsed = JSON.parse(out2);
+  } catch {
+    parsed = void 0;
+  }
+  const obj = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : void 0;
+  if (code !== 0) {
+    const stdoutError = obj && typeof obj.error === "string" ? obj.error : void 0;
+    return { ...zero, error: stdoutError || err.trim() || `kdd tick exited with code ${code}` };
+  }
+  if (!obj) return { ...zero, error: `unparsable tick output: ${out2.slice(0, 200)}` };
+  if (obj.skipped) return { ...zero, skipped: true };
+  const num = (v) => typeof v === "number" ? v : 0;
+  return {
+    at,
+    reclaimed: num(obj.reclaimed),
+    spawned: num(obj.spawned),
+    active: num(obj.active),
+    reaped: num(obj.reaped)
+  };
+}
+
+// src/tick-runner.ts
+function createTickRunner(scriptPath, killTimeoutMs, spawnFn = spawnProcess, killGraceMs = 5e3) {
+  return ({ dbPath, projectPath, toplevel }) => new Promise((resolve) => {
+    const child = spawnFn(
+      process.execPath,
+      [scriptPath, "tick", "--json"],
+      {
+        // cwd нужен tick'у, чтобы резолвить toplevel для воркеров; базу пиннит KDD_DB.
+        // Родитель projectPath (git common-dir) — верный toplevel только для обычного
+        // <repo>/.git: у submodule это <super>/.git/modules, у --separate-git-dir и у
+        // bare-репо с linked worktree он тоже расходится с toplevel. Fallback нужен
+        // только для досок без project_toplevel в meta (созданы до этого поля) — и это
+        // ДОГАДКА по чужому cwd, а не факт: KDD_TICK_SPAWNED ниже запрещает этому же
+        // ребёнку поверить в свою догадку и записать её обратно в meta как истину.
+        // Такую доску чинит только `kdd tick`/`kdd ui`, запущенный руками из настоящего
+        // репозитория — там cwd honest, см. onePass/uiStart в index.ts.
+        cwd: toplevel ?? dirname(projectPath),
+        env: { ...process.env, KDD_DB: dbPath, KDD_TICK_SPAWNED: "1" },
+        stdio: ["ignore", "pipe", "pipe"]
+      }
+    );
+    let out2 = "";
+    let err = "";
+    let timedOut = false;
+    child.stdout.on("data", (d) => {
+      out2 += d.toString();
+    });
+    child.stderr.on("data", (d) => {
+      err += d.toString();
+    });
+    let escalation;
+    const killer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      escalation = setTimeout(() => child.kill("SIGKILL"), killGraceMs);
+      escalation.unref?.();
+    }, killTimeoutMs);
+    const settle = (run2) => {
+      clearTimeout(killer);
+      if (escalation) clearTimeout(escalation);
+      resolve(run2);
+    };
+    child.on("error", (e) => {
+      settle({ at: now2(), reclaimed: 0, spawned: 0, active: 0, reaped: 0, error: e.message });
+    });
+    child.on("close", (code) => {
+      if (timedOut) {
+        settle({
+          at: now2(),
+          reclaimed: 0,
+          spawned: 0,
+          active: 0,
+          reaped: 0,
+          error: `kdd tick killed after exceeding ${killTimeoutMs}ms timeout`
+        });
+        return;
+      }
+      settle(parseTickOutput(out2, err, code, now2()));
+    });
+  });
+}
+
 // src/index.ts
 var program = new Command().name("kdd").description("kanban substrate for humans and Claude").version(kddVersion());
 function out(json, obj, text) {
@@ -212,10 +307,11 @@ var WORKER_PROMPT = process.env.KDD_WORKER_PROMPT ?? `You are a kdd agent worker
 var sq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 var DEFAULT_SPAWN_CMD = `${sq(process.execPath)} ${sq(fileURLToPath(import.meta.url))} worker "$KDD_TASK_ID"`;
 var TICK_LOCK_STALE = 10 * 60 * 1e3;
+var TICK_KILL_TIMEOUT = 5 * 60 * 1e3;
 function spawnWorker(taskId, workerId, projectDir) {
   const cmd = process.env.KDD_SPAWN_CMD ?? DEFAULT_SPAWN_CMD;
   const shell = process.env.SHELL || "/bin/sh";
-  const child = spawnProcess(shell, ["-lc", cmd], {
+  const child = spawnProcess2(shell, ["-lc", cmd], {
     cwd: projectDir,
     env: { ...process.env, KDD_TASK_ID: String(taskId), KDD_ACTOR: "ai", KDD_SESSION: workerId },
     detached: true,
@@ -227,6 +323,7 @@ function spawnWorker(taskId, workerId, projectDir) {
   });
   child.unref();
 }
+var tickRunner = createTickRunner(fileURLToPath(import.meta.url), TICK_KILL_TIMEOUT);
 function run(json, fn) {
   try {
     fn();
@@ -312,14 +409,18 @@ program.command("tick").description("agent-mode: reclaim expired leases, claim r
   if (o.watch && (!Number.isFinite(intervalMs) || intervalMs <= 0)) {
     fail(`--interval must be a positive number of seconds (got '${o.interval}')`, o.json);
   }
-  const maxWorkers = Number(process.env.KDD_MAX_WORKERS ?? 3);
   const ttl = Number(process.env.KDD_WORKER_TTL ?? 1800);
-  if (!Number.isInteger(maxWorkers) || maxWorkers < 1) fail("KDD_MAX_WORKERS must be a positive integer", o.json);
+  if (process.env.KDD_MAX_WORKERS !== void 0) {
+    const n = Number(process.env.KDD_MAX_WORKERS);
+    if (!Number.isInteger(n) || n < 1) {
+      fail("KDD_MAX_WORKERS must be a positive integer", o.json);
+    }
+  }
   const onePass = () => {
     const { dbPath, projectPath } = resolveDbPath2();
     let release;
     try {
-      release = lockfile.lockSync(join(dirname(dbPath), "tick"), { stale: TICK_LOCK_STALE, realpath: false });
+      release = lockfile.lockSync(join(dirname2(dbPath), "tick"), { stale: TICK_LOCK_STALE, realpath: false });
     } catch (e) {
       if (e.code === "ELOCKED") return { skipped: true };
       throw e;
@@ -327,7 +428,8 @@ program.command("tick").description("agent-mode: reclaim expired leases, claim r
     try {
       const toplevel = resolveToplevel();
       return withDbAt(dbPath, projectPath, (db) => {
-        const t = tick(db, { maxWorkers, ttl, projectDir: toplevel, spawn: spawnWorker });
+        if (!process.env.KDD_TICK_SPAWNED) setProjectToplevel(db, toplevel);
+        const t = tick(db, { maxWorkers: maxWorkers(db), ttl, projectDir: toplevel, spawn: spawnWorker });
         return { ...t, reaped: sweepWorktrees(db, toplevel) };
       });
     } finally {
@@ -409,7 +511,7 @@ program.command("worker").argument("<id>").description("agent-mode supervisor: r
     const workdir = ensureWorktree(toplevel, dbPath, taskId, task.title);
     await new Promise((resolve) => {
       appendAgentEvent(db, taskId, workerId, "run_start", { detail: { head: headCommit(workdir) } });
-      const child = spawnProcess(bin, args, {
+      const child = spawnProcess2(bin, args, {
         cwd: workdir,
         stdio: ["ignore", "pipe", "inherit"],
         // KDD_ACTOR/KDD_SESSION НЕ хардкодим здесь — они текут из окружения самого воркера.
@@ -515,8 +617,13 @@ program.command("ui").option("--port <n>", "port", "4499").action((o) => run(fal
 }));
 async function uiStart(port) {
   const { dbPath, projectPath } = resolveDbPath2();
-  const hash = basename(dirname(dbPath));
-  openDb2(dbPath, projectPath).close();
+  const hash = basename(dirname2(dbPath));
+  const db = openDb2(dbPath, projectPath);
+  try {
+    setProjectToplevel(db, resolveToplevel());
+  } catch {
+  }
+  db.close();
   const url = `http://localhost:${port}?project=${hash}`;
   try {
     const res = await fetch(`http://localhost:${port}/api/ping`, { signal: AbortSignal.timeout(500) });
@@ -526,14 +633,17 @@ async function uiStart(port) {
     }
   } catch {
   }
-  const { getDb, closeAll } = projectPool(hash);
+  const { getDb, get, closeAll } = projectPool(hash);
+  const scheduler = createScheduler(tickRunner, get);
   try {
-    await startUi(getDb, port, hash);
+    await startUi(getDb, port, hash, scheduler);
   } catch (e) {
+    scheduler.stopAll();
     closeAll();
     fail(e instanceof Error ? e.message : String(e), false);
   }
   process.on("SIGINT", () => {
+    scheduler.stopAll();
     closeAll();
     process.exit(0);
   });
