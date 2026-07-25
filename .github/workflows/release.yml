@@ -1,0 +1,22 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # создать Release
+
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # changelogithub читает историю между тегами
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22 # engines floor, как в test.yml
+      - run: npx -y changelogithub@14
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
