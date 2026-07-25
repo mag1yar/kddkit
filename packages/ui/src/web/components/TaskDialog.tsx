@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { Ban, Link2, Pencil, Send, X } from 'lucide-react';
+import { Ban, Link2, ListPlus, Pencil, Send, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -34,6 +34,9 @@ export function TaskDialog({ id, version, tracks, onClose, onChanged }: {
   const [detail, setDetail] = useState<TaskDetail | null>(null);
   const [editing, setEditing] = useState(false);
   const [comment, setComment] = useState('');
+  // черновик критерия живёт здесь, а не в CriteriaList: закрытие диалога обязано о нём знать
+  const [criterion, setCriterion] = useState('');
+  const [discard, setDiscard] = useState(false);
   const [tab, setTab] = useState<'comments' | 'history' | 'activity'>('comments');
 
   const reload = () => getTask(id!).then(setDetail).catch((e: Error) => toast.error(e.message));
@@ -41,6 +44,14 @@ export function TaskDialog({ id, version, tracks, onClose, onChanged }: {
     if (id === null) { setDetail(null); setEditing(false); return; }
     getTask(id).then(setDetail).catch((e: Error) => toast.error(e.message));
   }, [id, version]); // version: изменения из CLI подтягиваются в открытый диалог
+
+  // Черновики принадлежат задаче: без сброса текст, набранный в одной, всплывал в следующей.
+  // Отдельный эффект — на id, НЕ на version: version дёргает каждая галочка в чеклисте,
+  // и общий эффект стирал бы недописанный комментарий на ровном месте.
+  useEffect(() => { setComment(''); setCriterion(''); setDiscard(false); }, [id]);
+  // Правка черновика снимает разрешение выбросить его: «закрыть ещё раз» относится
+  // к тому тексту, о котором предупредили, а не к следующему.
+  useEffect(() => { setDiscard(false); }, [comment, criterion]);
 
   if (id === null || !detail) return null;
   const { task, criteria, comments, events, links, agent_runs_total } = detail;
@@ -57,8 +68,18 @@ export function TaskDialog({ id, version, tracks, onClose, onChanged }: {
     moveTask(task.id, to).then(after).catch((e: Error) => toast.error(e.message));
   };
 
+  // Набранный, но не отправленный текст пропадал молча — критерий без Enter выглядел
+  // добавленным, пока задачу не откроют снова. Первое закрытие с черновиком не закрывает,
+  // а называет причину; повторное — закрывает (отказ от текста тоже должен быть в один жест).
+  const draft = comment.trim() || criterion.trim();
+  const tryClose = () => {
+    if (!draft || discard) { onClose(); return; }
+    setDiscard(true);
+    toast.warning('Unsaved text', { description: 'Send it, or close again to discard.' });
+  };
+
   return (
-    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+    <Dialog open onOpenChange={(o) => { if (!o) tryClose(); }}>
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -88,7 +109,10 @@ export function TaskDialog({ id, version, tracks, onClose, onChanged }: {
               </div>
             )}
 
-            <CriteriaList taskId={task.id} criteria={criteria} onChanged={after} />
+            <CriteriaList
+              taskId={task.id} criteria={criteria} onChanged={after}
+              text={criterion} setText={setCriterion}
+            />
 
             <Tabs
               value={tab}
@@ -223,10 +247,12 @@ export function TaskDialog({ id, version, tracks, onClose, onChanged }: {
   );
 }
 
-function CriteriaList({ taskId, criteria, onChanged }: {
+function CriteriaList({ taskId, criteria, onChanged, text, setText }: {
   taskId: number; criteria: Criterion[]; onChanged: () => void;
+  text: string; setText: (v: string) => void;
 }) {
-  const [text, setText] = useState('');
+  // взведённое удаление; одно на список — взвести второй критерий значит отпустить первый
+  const [armed, setArmed] = useState<number | null>(null);
   const err = (e: Error) => toast.error(e.message);
   const done = criteria.filter((c) => c.checked_at !== null).length;
   const add = () => {
@@ -234,7 +260,8 @@ function CriteriaList({ taskId, criteria, onChanged }: {
     addCriterion(taskId, text).then(() => { setText(''); onChanged(); }).catch(err);
   };
   return (
-    <div className="flex flex-col gap-1.5">
+    // увели мышь со списка — взвод снят: подтверждение не должно ждать вечно
+    <div className="flex flex-col gap-1.5" onMouseLeave={() => setArmed(null)}>
       <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
         Criteria{criteria.length > 0 && ` ${done}/${criteria.length}`}
       </span>
@@ -248,20 +275,49 @@ function CriteriaList({ taskId, criteria, onChanged }: {
           <span className={cn('flex-1', c.checked_at !== null && 'text-muted-foreground line-through')}>
             {c.text}
           </span>
+          {/* Удаление критерия необратимо — undo на доске нет, текст не восстановить.
+              Поэтому первый клик взводит, второй удаляет. Раскрывается и по фокусу, а не
+              только по hover: invisible-кнопка ловила таб и оставалась невидимой. */}
           <button
-            type="button" aria-label="Remove criterion"
-            className="invisible text-muted-foreground hover:text-destructive group-hover:visible"
-            onClick={() => removeCriterion(taskId, c.id).then(onChanged).catch(err)}
+            type="button"
+            aria-label={armed === c.id ? 'Confirm remove criterion' : 'Remove criterion'}
+            className={cn(
+              'flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-xs opacity-0 transition',
+              'group-hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none',
+              armed === c.id
+                ? 'bg-destructive/10 text-destructive opacity-100'
+                : 'text-muted-foreground hover:text-destructive',
+            )}
+            onBlur={() => setArmed(null)}
+            onClick={() => {
+              if (armed !== c.id) { setArmed(c.id); return; }
+              removeCriterion(taskId, c.id)
+                .then(() => { setArmed(null); onChanged(); }).catch(err);
+            }}
           >
-            <X className="size-3.5" />
+            <Trash2 className="size-3.5" />
+            {armed === c.id && <span>Remove?</span>}
           </button>
         </div>
       ))}
-      <Input
-        value={text} placeholder="Add criterion..." className="h-8"
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => { if (e.key === 'Enter') add(); }}
-      />
+      {/* Кнопка в поле, а не только Enter: без неё набранный критерий выглядел добавленным —
+          поле молчит одинаково и с отправленным текстом, и с забытым. Внутри, а не рядом:
+          соседняя кнопка отъедала бы ширину у строки критерия на всей высоте списка.
+          pr под её ширину — иначе длинный текст уезжает под кнопку. */}
+      <div className="relative">
+        <Input
+          value={text} placeholder="Add criterion..." className="h-8 pr-[4.25rem]"
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') add(); }}
+        />
+        <Button
+          size="sm" variant={text.trim() ? 'default' : 'ghost'}
+          className="absolute top-1 right-1 h-6 gap-1 px-2 text-xs [&_svg]:size-3"
+          disabled={!text.trim()} onClick={add}
+        >
+          <ListPlus /> Add
+        </Button>
+      </div>
     </div>
   );
 }
