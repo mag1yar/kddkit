@@ -36,5 +36,10 @@ pnpm release:publish
    which creates a GitHub Release with the same notes
 
 Requirements: clean working tree, `npm whoami` succeeds (`npm login` otherwise).
-If publish fails after the tag exists (OTP, network), just rerun `pnpm -r publish` —
-pnpm skips versions already in the registry.
+If publish fails after the tag exists (OTP, network), just rerun `pnpm release:publish` —
+pnpm skips versions already in the registry, and the push/tag step is idempotent.
+
+**After publishing:** check that the workflow run succeeded and the GitHub Release
+appeared (Actions tab / Releases page). If the run failed, re-run the job from the
+Actions UI — no need to re-tag, `changelogithub` updates the existing Release rather
+than creating a duplicate.

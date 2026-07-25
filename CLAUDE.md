@@ -29,7 +29,7 @@ pnpm dev:cli   # KDD_HOME=~/.kdd-dev  kdd via built dist
 pnpm dev:ui    # same store, UI on :4488
 ```
 
-Release: `pnpm release` (bumpp + build + test + publish).
+Release in two steps: `pnpm release` (bumpp + build + test + tag + changelog preview, no push/publish), then `pnpm release:publish` (`pnpm -r publish` + `git push --follow-tags`). See `RELEASING.md`.
 
 ## Architecture
 

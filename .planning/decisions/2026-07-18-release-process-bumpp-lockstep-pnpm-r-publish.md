@@ -1,7 +1,7 @@
 ---
 created: 2026-07-18
-status: active
-superseded_by:
+status: superseded
+superseded_by: 2026-07-25-release-process-two-step-preview-then-publish
 ---
 # Release process: bumpp lockstep + pnpm -r publish
 
