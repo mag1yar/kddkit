@@ -1299,6 +1299,7 @@ function compareVersions(a, b) {
   if (A.pre && !B.pre) return -1;
   return A.pre < B.pre ? -1 : A.pre > B.pre ? 1 : 0;
 }
+var TAG_STRIP_RE = /<\/?samp>/gi;
 var OK_TTL = 60 * 60 * 1e3;
 var ERR_TTL = 5 * 60 * 1e3;
 var cache = null;
@@ -1340,9 +1341,12 @@ async function releaseInfo(opts = {}) {
     if (!Array.isArray(rows)) return fail("unexpected GitHub response");
     const releases = rows.filter((r) => !r.draft && r.tag_name).map((r) => ({
       version: r.tag_name.replace(/^v/, ""),
-      url: r.html_url ?? `${repoUrl}/releases`,
-      body: r.body ?? "",
-      publishedAt: r.published_at ?? "",
+      // String(...) на трёх полях ниже — не косметика: GitHub отдаёт JSON без
+      // схемы, и если body/published_at/html_url когда-нибудь придут не строкой,
+      // .replace() в клиенте роняет весь UI (ErrorBoundary в packages/ui нет).
+      url: String(r.html_url ?? `${repoUrl}/releases`),
+      body: String(r.body ?? "").replace(TAG_STRIP_RE, ""),
+      publishedAt: String(r.published_at ?? ""),
       prerelease: Boolean(r.prerelease)
     }));
     if (releases.length === 0) return fail("no published releases");
@@ -1358,8 +1362,8 @@ async function releaseInfo(opts = {}) {
       repoUrl,
       error: null
     });
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : String(e));
+  } catch {
+    return fail("failed to reach GitHub");
   }
 }
 export {

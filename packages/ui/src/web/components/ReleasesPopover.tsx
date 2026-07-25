@@ -30,9 +30,13 @@ export function ReleasesPopover({ info }: { info: ReleaseInfo | null }) {
             Update available: {info.current} → {info.latest}
           </p>
         )}
-        {!info?.releases.length ? (
+        {!info ? (
+          // ещё не пришёл первый ответ (или getReleases() отклонился) — отличаем
+          // от «загрузили и релизов нет», иначе чип молча врёт во время загрузки
+          <p className="text-xs text-muted-foreground">Loading…</p>
+        ) : !info.releases.length ? (
           <p className="text-xs text-muted-foreground">
-            {info?.error ?? 'No releases yet'}
+            {info.error ?? 'No releases yet'}
           </p>
         ) : (
           info.releases.map((r) => (
@@ -48,10 +52,9 @@ export function ReleasesPopover({ info }: { info: ReleaseInfo | null }) {
                   {r.publishedAt.slice(0, 10)}
                 </span>
               </div>
-              {/* changelogithub оборачивает short sha в <samp> — react-markdown не рендерит raw HTML,
-                  теги остались бы видны буквально; rehype-raw это тело с GitHub не стоит превращать
-                  в живой HTML, поэтому просто вырезаем теги, текст внутри (sha) остаётся */}
-              <Prose>{r.body.replace(/<\/?[a-z][^>]*>/gi, '')}</Prose>
+              {/* body приходит из core уже без <samp> (changelogithub's short-sha wrapper) —
+                  чистка тела релиза общая для всех клиентов, ей не место здесь */}
+              <Prose>{r.body}</Prose>
             </div>
           ))
         )}

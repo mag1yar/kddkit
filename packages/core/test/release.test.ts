@@ -153,11 +153,42 @@ describe('releaseInfo', () => {
     expect(info.releases).toEqual([]);
   });
 
-  it('swallows a thrown fetch into error', async () => {
+  it('swallows a thrown fetch into a fixed error, not the raw exception message', async () => {
+    // сообщение исключения (стектрейс, внутренние детали) не должно всплывать в
+    // UI как будто это диагноз сетевого сбоя — см. Finding 2
     const boom = (async () => { throw new Error('getaddrinfo ENOTFOUND'); }) as
       unknown as typeof globalThis.fetch;
     const info = await releaseInfo({ fetch: boom });
-    expect(info.error).toBe('getaddrinfo ENOTFOUND');
+    expect(info.error).toBe('failed to reach GitHub');
+  });
+
+  it('strips the <samp> wrapper changelogithub puts around short shas', async () => {
+    const { fetchImpl } = ghStub([
+      row({ body: 'Fixed a bug in <samp>(cc674)</samp> — see details.' }),
+    ]);
+    const info = await releaseInfo({ fetch: fetchImpl });
+    expect(info.releases[0]?.body).toBe('Fixed a bug in (cc674) — see details.');
+  });
+
+  it('leaves markdown autolinks and prose angle brackets untouched', async () => {
+    const { fetchImpl } = ghStub([
+      row({ body: 'See <https://example.com> or <me@example.com>, and a<b and c>d.' }),
+    ]);
+    const info = await releaseInfo({ fetch: fetchImpl });
+    expect(info.releases[0]?.body).toBe(
+      'See <https://example.com> or <me@example.com>, and a<b and c>d.',
+    );
+  });
+
+  it('coerces non-string GitHub fields instead of propagating them as objects', async () => {
+    const { fetchImpl } = ghStub([
+      row({ body: { a: 1 }, published_at: null, html_url: 42 }),
+    ]);
+    const info = await releaseInfo({ fetch: fetchImpl });
+    const r = info.releases[0] as Release;
+    expect(typeof r.body).toBe('string');
+    expect(typeof r.publishedAt).toBe('string');
+    expect(typeof r.url).toBe('string');
   });
 
   it('serves the second call from cache', async () => {

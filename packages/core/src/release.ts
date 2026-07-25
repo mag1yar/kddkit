@@ -80,6 +80,13 @@ interface GhRelease {
   prerelease?: boolean;
 }
 
+// changelogithub — единственный источник тела релиза — оборачивает short sha ровно
+// в <samp>...</samp> и больше никаких тегов не эмитит (проверено по его исходникам).
+// Вырезаем только этот тег, а не «что угодно похожее на тег»: более широкий паттерн
+// заодно съедает markdown-автоссылки (<https://...>, <me@example.com>), HTML внутри
+// code-фенсов и обычные '<'/'>' в прозе.
+const TAG_STRIP_RE = /<\/?samp>/gi;
+
 const OK_TTL = 60 * 60 * 1000;
 const ERR_TTL = 5 * 60 * 1000;
 
@@ -103,8 +110,10 @@ export async function releaseInfo(
 ): Promise<ReleaseInfo> {
   const now = Date.now();
   // cache.info — синглтон, общий на все вызовы. Отдаём клон и на хите, и при записи:
-  // UI кладёт releases прямо в React state и может .sort()/.reverse() их на месте —
-  // без клона такая мутация тихо портит кэш для всех последующих вызовов до истечения TTL.
+  // сегодня единственный вызывающий — Hono-роут, который сразу JSON.stringify'ит
+  // результат, так что мутировать общий объект in-process некому. Клон — дешёвая
+  // страховка на будущего consumer (CLI), который может держать ссылку дольше
+  // одного запроса, а не защита от существующего бага.
   if (cache && now - cache.at < (cache.info.error ? ERR_TTL : OK_TTL)) {
     return structuredClone(cache.info);
   }
@@ -144,9 +153,12 @@ export async function releaseInfo(
       .filter((r) => !r.draft && r.tag_name)
       .map((r) => ({
         version: (r.tag_name as string).replace(/^v/, ''),
-        url: r.html_url ?? `${repoUrl}/releases`,
-        body: r.body ?? '',
-        publishedAt: r.published_at ?? '',
+        // String(...) на трёх полях ниже — не косметика: GitHub отдаёт JSON без
+        // схемы, и если body/published_at/html_url когда-нибудь придут не строкой,
+        // .replace() в клиенте роняет весь UI (ErrorBoundary в packages/ui нет).
+        url: String(r.html_url ?? `${repoUrl}/releases`),
+        body: String(r.body ?? '').replace(TAG_STRIP_RE, ''),
+        publishedAt: String(r.published_at ?? ''),
         prerelease: Boolean(r.prerelease),
       }));
     if (releases.length === 0) return fail('no published releases');
@@ -166,7 +178,11 @@ export async function releaseInfo(
       repoUrl,
       error: null,
     });
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : String(e));
+  } catch {
+    // Не пробрасываем e.message наружу: это может быть внутренний TypeError
+    // (например, из-за неожиданной формы ответа), а не диагноз сетевого сбоя —
+    // пользователю в тултипе чипа он ничего не скажет и раскроет детали реализации.
+    // Держим тот же фиксированный словарь строк, что и у остальных fail() здесь.
+    return fail('failed to reach GitHub');
   }
 }
