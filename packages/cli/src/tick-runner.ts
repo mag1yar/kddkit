@@ -23,11 +23,15 @@ export function createTickRunner(
       {
         // cwd нужен tick'у, чтобы резолвить toplevel для воркеров; базу пиннит KDD_DB.
         // Родитель projectPath (git common-dir) — верный toplevel только для обычного
-        // <repo>/.git: у submodule это <super>/.git/modules, и тик работал бы не в том
-        // репозитории. Fallback на него нужен для досок, созданных до появления
-        // project_toplevel в meta: их первый же `kdd tick` этот ключ и запишет.
+        // <repo>/.git: у submodule это <super>/.git/modules, у --separate-git-dir и у
+        // bare-репо с linked worktree он тоже расходится с toplevel. Fallback нужен
+        // только для досок без project_toplevel в meta (созданы до этого поля) — и это
+        // ДОГАДКА по чужому cwd, а не факт: KDD_TICK_SPAWNED ниже запрещает этому же
+        // ребёнку поверить в свою догадку и записать её обратно в meta как истину.
+        // Такую доску чинит только `kdd tick`/`kdd ui`, запущенный руками из настоящего
+        // репозитория — там cwd honest, см. onePass/uiStart в index.ts.
         cwd: toplevel ?? dirname(projectPath),
-        env: { ...process.env, KDD_DB: dbPath },
+        env: { ...process.env, KDD_DB: dbPath, KDD_TICK_SPAWNED: '1' },
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     );

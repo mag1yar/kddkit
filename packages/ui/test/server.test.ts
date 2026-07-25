@@ -1,6 +1,9 @@
 import { describe, it, expect, afterEach } from 'vitest';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { addTask, getAutoTick, openDb, setAutoTick, setLastRun } from '@kddkit/core';
-import { createApp } from '../src/server.js';
+import { createApp, projectPool } from '../src/server.js';
 
 const user = { type: 'user' } as const;
 const mk = () => {
@@ -260,5 +263,39 @@ describe('/api/autotick', () => {
     const s = (await (await app.request('/api/autotick')).json()) as
       { maxWorkers: number; maxWorkersEnvLocked: boolean };
     expect(s).toMatchObject({ maxWorkers: 5, maxWorkersEnvLocked: true });
+  });
+});
+
+describe('projectPool', () => {
+  afterEach(() => { delete process.env.KDD_HOME; });
+
+  // Форма hash-а — то, что реально пишет resolveDbPath: 16 hex-символов sha256. get(hash)
+  // раньше проверял только existsSync(join(kddHome(), hash, 'kdd.db')) — не гарантия членства
+  // в store, hash приходит сырым из ?project=. Traversal-строка обязана падать ДО join/openDb,
+  // а не найти существующий файл где-то ещё на диске.
+  it('rejects a traversal-shaped project hash before touching the filesystem', () => {
+    const home = mkdtempSync(join(tmpdir(), 'kdd-pool-'));
+    process.env.KDD_HOME = home;
+    const pool = projectPool('');
+    expect(() => pool.get('../../etc/passwd')).toThrow(/unknown project/);
+  });
+
+  it('rejects a well-formed but unknown hash the same way', () => {
+    const home = mkdtempSync(join(tmpdir(), 'kdd-pool-'));
+    process.env.KDD_HOME = home;
+    const pool = projectPool('');
+    expect(() => pool.get('0123456789abcdef')).toThrow(/unknown project/);
+  });
+
+  it('accepts a real project hash and returns a cached db on the second call', () => {
+    const home = mkdtempSync(join(tmpdir(), 'kdd-pool-'));
+    process.env.KDD_HOME = home;
+    const hash = 'abc123abc123abc1';
+    openDb(join(home, hash, 'kdd.db'), '/repo/.git').close();
+    const pool = projectPool('');
+    const db1 = pool.get(hash);
+    const db2 = pool.get(hash);
+    expect(db1).toBe(db2);
+    pool.closeAll();
   });
 });

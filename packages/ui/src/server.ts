@@ -17,6 +17,14 @@ import type { Scheduler } from './scheduler.js';
 
 const hashOf = (dbPath: string) => basename(dirname(dbPath));
 
+// Форма hash-а каталога проекта — ровно то, что пишет resolveDbPath в core/paths.ts:
+// createHash('sha256').update(common).digest('hex').slice(0, 16). Проверка формы, а не
+// только существования файла: hash приходит из ?project= сырым HTTP-параметром, и
+// join(kddHome(), hash, 'kdd.db') с чем угодно кроме hex-строки — path traversal
+// (?project=../../любой/путь) наружу store root. openDb ниже не только читает — она
+// прогоняет миграции, т.е. ПИШЕТ в файл по этому пути, так что дырка не read-only.
+const HASH_RE = /^[0-9a-f]{16}$/;
+
 // Пул баз по hash проекта: один сервер обслуживает все локальные проекты.
 // getDb(c) резолвит базу из ?project=<hash>, иначе дефолт (проект, откуда запущен ui).
 export function projectPool(defaultHash: string): {
@@ -28,6 +36,7 @@ export function projectPool(defaultHash: string): {
   const get = (hash: string): Database.Database => {
     const cached = pool.get(hash);
     if (cached) return cached;
+    if (!HASH_RE.test(hash)) throw new KddError(`unknown project '${hash}'`);
     const dbPath = join(kddHome(), hash, 'kdd.db');
     // Существование файла — та же гарантия для «hash из HTTP-запроса не выдуман», что и
     // обход listProjects(), но без readonly-коннекта ко ВСЕМ остальным доскам на каждый

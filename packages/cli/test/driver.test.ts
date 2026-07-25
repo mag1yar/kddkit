@@ -3,6 +3,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { readFileSync, writeFileSync, chmodSync, mkdirSync, utimesSync } from 'node:fs';
 import lockfile from 'proper-lockfile';
+import { openDb, projectToplevelOf } from '@kddkit/core';
 import { makeEnv, kdd, BIN } from './run.js';
 
 const TICK_LOCK_STALE = 10 * 60 * 1000; // mirrors index.ts's tick lock staleness window
@@ -95,6 +96,27 @@ describe('kdd tick', () => {
     env.KDD_MAX_WORKERS = '1';
     const out = kdd(env, 'tick'); // throws (execFileSync) if the process crashed
     expect(out).toMatch(/^tick:/);
+  });
+
+  // Настоящий cwd этого процесса — сам репозиторий kddkit, resolveToplevel() честно
+  // резолвит его через git. Такой tick вправе записать результат в meta.
+  it('a user-run tick records project_toplevel in meta', () => {
+    const env = makeEnv();
+    kdd(env, 'tick');
+    const db = openDb(env.KDD_DB!);
+    expect(projectToplevelOf(db)).not.toBeNull();
+  });
+
+  // KDD_TICK_SPAWNED — маркер, который tick-runner.ts ставит на child'а, поднятого
+  // планировщиком: его cwd может быть fallback-догадкой (dirname(project_path) для
+  // submodule/--separate-git-dir/bare-репо с worktree), а не настоящим toplevel. Если бы
+  // такой tick писал meta, неверная догадка становилась бы постоянной без ручного вмешательства.
+  it('a scheduler-spawned tick (KDD_TICK_SPAWNED) does not record project_toplevel', () => {
+    const env = makeEnv();
+    env.KDD_TICK_SPAWNED = '1';
+    kdd(env, 'tick');
+    const db = openDb(env.KDD_DB!);
+    expect(projectToplevelOf(db)).toBeNull();
   });
 
   it('--watch loops (≥2 passes) and exits 0 on SIGINT', async () => {

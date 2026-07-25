@@ -222,10 +222,13 @@ program.command('tick')
       try {
         const toplevel = resolveToplevel();
         return withDbAt(dbPath, projectPath, (db) => {
-          // Мы здесь единственные, кто знает toplevel достоверно (резолвили из своего cwd
-          // внутри репозитория). Планировщик web-сервера своего cwd в проекте не имеет —
-          // запоминаем ответ для него.
-          setProjectToplevel(db, toplevel);
+          // Пишем project_toplevel только когда наш cwd честный: этот tick запущен руками
+          // (терминал, --watch). KDD_TICK_SPAWNED помечает противоположный случай — child,
+          // которого поднял планировщик (tick-runner.ts): его cwd сам может быть
+          // fallback-догадкой (dirname(project_path) для submodule/--separate-git-dir/bare
+          // с worktree), и если поверить в её же git-резолв, неверный toplevel запишется
+          // в meta навсегда — доска перестанет чиниться сама.
+          if (!process.env.KDD_TICK_SPAWNED) setProjectToplevel(db, toplevel);
           const t = tick(db, { maxWorkers: maxWorkers(db), ttl, projectDir: toplevel, spawn: spawnWorker });
           // sweep ПОСЛЕ claim-loop: re-claimed задача уже in_progress → её worktree не тронут;
           // истинно брошенная (reclaim без re-claim) → status 'new' → worktree снесён.
