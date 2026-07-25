@@ -48,7 +48,10 @@ export function ReleasesPopover({ info }: { info: ReleaseInfo | null }) {
                   {r.publishedAt.slice(0, 10)}
                 </span>
               </div>
-              <Prose>{r.body}</Prose>
+              {/* changelogithub оборачивает short sha в <samp> — react-markdown не рендерит raw HTML,
+                  теги остались бы видны буквально; rehype-raw это тело с GitHub не стоит превращать
+                  в живой HTML, поэтому просто вырезаем теги, текст внутри (sha) остаётся */}
+              <Prose>{r.body.replace(/<\/?[a-z][^>]*>/gi, '')}</Prose>
             </div>
           ))
         )}
