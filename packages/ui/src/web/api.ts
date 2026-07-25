@@ -32,6 +32,7 @@ export interface AgentEvent {
 export type Board = Record<Status, Task[]>;
 export interface TaskDetail {
   task: Task; criteria: Criterion[]; comments: Comment[]; events: EventRow[]; links: Link[];
+  agent_events_total: number;
 }
 
 // ?project=<hash> из URL пробрасывается во все запросы — сервер отдаёт нужную базу.

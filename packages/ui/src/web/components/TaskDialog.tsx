@@ -61,7 +61,7 @@ export function TaskDialog({ id, version, tracks, onClose, onChanged }: {
   }, [id, version]); // version: изменения из CLI подтягиваются в открытый диалог
 
   if (id === null || !detail) return null;
-  const { task, criteria, comments, events, links } = detail;
+  const { task, criteria, comments, events, links, agent_events_total } = detail;
   const after = () => { onChanged(); return reload(); };
 
   const submitComment = () => {
@@ -116,7 +116,7 @@ export function TaskDialog({ id, version, tracks, onClose, onChanged }: {
               <TabsList variant="line">
                 <TabsTrigger value="comments">Comments <span className="text-muted-foreground">{comments.length}</span></TabsTrigger>
                 <TabsTrigger value="history">History <span className="text-muted-foreground">{events.length}</span></TabsTrigger>
-                <TabsTrigger value="activity">Activity</TabsTrigger>
+                <TabsTrigger value="activity">Activity <span className="text-muted-foreground">{agent_events_total}</span></TabsTrigger>
               </TabsList>
 
               <TabsContent value="comments" className="flex flex-col gap-2 pt-2">
