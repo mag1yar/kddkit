@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Timer } from 'lucide-react';
 import type { AutoTickState } from '../api';
 import { Button } from './ui/button';
@@ -23,6 +23,15 @@ function human(deltaSec: number): string {
   return `${Math.round(d / 3600)} h`;
 }
 
+// Обратный отсчёт печатаем посекундно, а не через human(): та округляет до минут, и на
+// 15-минутном интервале строка стояла бы неподвижно по полминуты подряд — отсчёт, который
+// не отсчитывает, читается как зависший планировщик.
+function countdown(deltaSec: number): string {
+  const d = Math.max(0, Math.round(deltaSec));
+  if (d < 60) return `${d} s`;
+  return `${Math.floor(d / 60)}:${String(d % 60).padStart(2, '0')}`;
+}
+
 function lastLine(s: AutoTickState): string {
   if (!s.last) return 'last: never';
   const ago = `${human(Date.now() / 1000 - s.last.at)} ago`;
@@ -32,9 +41,10 @@ function lastLine(s: AutoTickState): string {
 }
 
 export function AutoTickPopover(
-  { state, patch, error, clearError }: {
+  { state, patch, refresh, error, clearError }: {
     state: AutoTickState | null;
     patch: (b: Partial<Pick<AutoTickState, 'enabled' | 'intervalSec' | 'maxWorkers'>>) => void;
+    refresh: () => void;
     error: string | null;
     clearError: () => void;
   },
@@ -54,6 +64,31 @@ export function AutoTickPopover(
   // «в фокусе» остаётся поднятым навсегда, буфер перестаёт следовать за сервером, и поле
   // до перезагрузки страницы показывает число, которого на сервере нет.
   const [open, setOpen] = useState(false);
+
+  // Обе нижние строки — производные от Date.now(), а state приезжает раз в 5с (poll).
+  // Без собственного тикера отсчёт двигался бы рывками по 5 секунд, а на интервалах от
+  // минуты выглядел бы застывшим. Тикаем только пока поповер открыт: закрытый этих строк
+  // не показывает, а лишние перерисовки доски задаром никому не нужны.
+  const [, bump] = useState(0);
+  useEffect(() => {
+    if (!open) return;
+    const t = setInterval(() => bump((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [open]);
+
+  // Отсчёт дошёл до нуля — проход идёт прямо сейчас, но узнать об этом можно только с
+  // сервера. Ждать очередного полла (5с) значит держать «0 s» мёртвой строкой, а потом
+  // показать «next: in 25 s» на тридцатисекундном интервале: пять секунд утекли, пока никто
+  // не спрашивал. Спрашиваем сразу и ровно один раз на каждый nextAt — на следующий проход
+  // приедет новый, и запрос повторится уже для него.
+  const dueAt = state?.enabled && !state.running ? state.nextAt : null;
+  const refreshedFor = useRef<number | null>(null);
+  useEffect(() => {
+    if (dueAt === null || dueAt > Date.now() / 1000) return;
+    if (refreshedFor.current === dueAt) return;
+    refreshedFor.current = dueAt;
+    refresh();
+  });
 
   if (!state) return null;
 
@@ -129,7 +164,9 @@ export function AutoTickPopover(
             {state.running
               ? 'running now…'
               : state.enabled && state.nextAt !== null
-                ? `next: in ${human(state.nextAt - Date.now() / 1000)}`
+                ? state.nextAt - Date.now() / 1000 <= 0
+                  ? 'due now…' // проход стартовал; running приедет ответом на refresh выше
+                  : `next: in ${countdown(state.nextAt - Date.now() / 1000)}`
                 : 'next: —'}
           </p>
         </div>

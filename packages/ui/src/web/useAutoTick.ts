@@ -6,6 +6,7 @@ import { getAutoTick, patchAutoTick, type AutoTickState } from './api';
 export function useAutoTick(intervalMs = 5000): {
   state: AutoTickState | null;
   patch: (b: Partial<Pick<AutoTickState, 'enabled' | 'intervalSec' | 'maxWorkers'>>) => void;
+  refresh: () => void;
   error: string | null;
   clearError: () => void;
 } {
@@ -18,20 +19,20 @@ export function useAutoTick(intervalMs = 5000): {
   const patchSeq = useRef(0);
   const inFlight = useRef(0);
 
+  const poll = useCallback((): void => {
+    const seenAt = patchSeq.current;
+    getAutoTick()
+      .then((s) => {
+        if (patchSeq.current === seenAt && inFlight.current === 0) setState(s);
+      })
+      .catch(() => { /* сервер перезапускается — продолжаем поллить */ });
+  }, []);
+
   useEffect(() => {
-    let alive = true;
-    const poll = (): void => {
-      const seenAt = patchSeq.current;
-      getAutoTick()
-        .then((s) => {
-          if (alive && patchSeq.current === seenAt && inFlight.current === 0) setState(s);
-        })
-        .catch(() => { /* сервер перезапускается — продолжаем поллить */ });
-    };
     poll();
     const t = setInterval(poll, intervalMs);
-    return () => { alive = false; clearInterval(t); };
-  }, [intervalMs]);
+    return () => clearInterval(t);
+  }, [intervalMs, poll]);
 
   const patch = useCallback((b: Partial<Pick<AutoTickState, 'enabled' | 'intervalSec' | 'maxWorkers'>>) => {
     setError(null);
@@ -44,5 +45,5 @@ export function useAutoTick(intervalMs = 5000): {
 
   const clearError = useCallback(() => setError(null), []);
 
-  return { state, patch, error, clearError };
+  return { state, patch, refresh: poll, error, clearError };
 }

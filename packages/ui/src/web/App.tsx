@@ -169,7 +169,7 @@ export default function App() {
         </div>
         <div className="flex items-center gap-2">
           <AutoTickPopover
-            state={autoTick.state} patch={autoTick.patch}
+            state={autoTick.state} patch={autoTick.patch} refresh={autoTick.refresh}
             error={autoTick.error} clearError={autoTick.clearError}
           />
           {releases?.repoUrl && (
