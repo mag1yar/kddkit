@@ -77,14 +77,26 @@ Other machines keep the **published** plugin (release below) for real work.
 
 ## Release (promote to prod)
 
+Release in two steps: preview first, then publish.
+
 ```bash
 npm login                       # publish needs auth + OTP
 pnpm release                    # bumpp: pick version, build+test, bump all
-                                # package.json + plugin.json, commit + tag, no push
-git push && git push --tags     # release script does not push
+                                # package.json + plugin.json, commit + tag, preview notes
 ```
 
-`pnpm release` publishes `@kddkit/core|cli|ui` to npm (`@kddkit/mcp` is
-`private` — it ships via the git plugin, not npm). After pushing, update consumers:
+Read the printed release notes. If they look wrong, rollback with
+`git tag -d vX.Y.Z && git reset --hard HEAD~1`, fix the commit messages
+(see conventions in `CLAUDE.md`), and try again.
+
+Once the notes are approved:
+
+```bash
+pnpm release:publish            # publish to npm, push commit + tag
+```
+
+This publishes `@kddkit/core|cli|ui` to npm (`@kddkit/mcp` is `private` — it ships
+via the git plugin, not npm). The tag push triggers `.github/workflows/release.yml`,
+which creates the GitHub Release. After the release completes, update consumers:
 `/plugin` update + `/reload-plugins` on each machine (the skill + MCP are
 git-distributed, npm does not update them).
