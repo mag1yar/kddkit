@@ -1261,6 +1261,44 @@ function sweepWorktrees(db, repoRoot) {
   if (removed) gitTry(repoRoot, ["worktree", "prune"]);
   return removed;
 }
+
+// src/release.ts
+import { readFileSync as readFileSync3 } from "fs";
+import { join as join5 } from "path";
+var pkgCache = null;
+function pkg() {
+  if (pkgCache) return pkgCache;
+  try {
+    pkgCache = JSON.parse(
+      readFileSync3(join5(import.meta.dirname, "../package.json"), "utf8")
+    );
+  } catch {
+    pkgCache = {};
+  }
+  return pkgCache;
+}
+function kddVersion() {
+  return pkg().version ?? "0.0.0";
+}
+function repoSlug() {
+  const r = pkg().repository;
+  const url = typeof r === "string" ? r : r?.url ?? "";
+  const m = url.match(/github\.com[/:]([^/]+)\/([^/.]+)/i);
+  return m ? { owner: m[1], repo: m[2] } : null;
+}
+function parse(v) {
+  const [core, ...rest] = v.replace(/^v/, "").split("-");
+  const n = core.split(".").map((x) => Number.parseInt(x, 10) || 0);
+  return { core: [n[0] ?? 0, n[1] ?? 0, n[2] ?? 0], pre: rest.join("-") };
+}
+function compareVersions(a, b) {
+  const A = parse(a);
+  const B = parse(b);
+  for (let i = 0; i < 3; i++) if (A.core[i] !== B.core[i]) return A.core[i] - B.core[i];
+  if (!A.pre && B.pre) return 1;
+  if (A.pre && !B.pre) return -1;
+  return A.pre < B.pre ? -1 : A.pre > B.pre ? 1 : 0;
+}
 export {
   CAPS,
   DEFAULT_TTL,
@@ -1285,6 +1323,7 @@ export {
   claimNext,
   claimTask,
   commentTask,
+  compareVersions,
   contentHash,
   createTrack,
   deleteTrack,
@@ -1294,6 +1333,7 @@ export {
   exportBoard,
   headCommit,
   kddHome,
+  kddVersion,
   lastAgentEventKind,
   linkTasks,
   listAgentEvents,
@@ -1318,6 +1358,7 @@ export {
   renderDecisionBody,
   renderDecisionMd,
   renewClaim,
+  repoSlug,
   resolveDbPath,
   resolveDecisionsDir,
   resolveToplevel,
