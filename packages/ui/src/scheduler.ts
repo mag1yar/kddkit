@@ -69,8 +69,14 @@ export function createScheduler(
         db = openProject(hash);
         const p = projectPathOf(db);
         // null — определённый ответ: строки project_path нет, проект непригоден. Это не
-        // то же самое, что брошенное исключение (ниже трактуется как транзиентный сбой).
-        if (p === null) { clear(hash); return; }
+        // то же самое, что брошенное исключение (ниже трактуется как транзиентный сбой):
+        // ретраить нечего, path не появится сам, поэтому только clear() — но молча гасить
+        // таймер нельзя, иначе enabled=true в базе и next: — навечно необъяснимы.
+        if (p === null) {
+          console.error(`[scheduler] ${hash}: no project_path recorded, cannot tick — timer cleared`);
+          clear(hash);
+          return;
+        }
         projectPath = p;
       } catch (e) {
         retryAfterFailure(hash, e);
@@ -107,7 +113,15 @@ export function createScheduler(
   const sync = (hash: string): void => {
     if (stopped) return;
     let cfg;
-    try { cfg = getAutoTick(openProject(hash)); } catch { clear(hash); return; }
+    try { cfg = getAutoTick(openProject(hash)); } catch (e) {
+      // Сбой на старте (упавшая миграция, битый файл) молча гасил проект: enabled=true в базе,
+      // таймер так и не взводится, ни строки в логе — «сервер перезапустили, и проект больше
+      // никогда не тикает». Логируем, чтобы это было видно, control flow не меняем.
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[scheduler] ${hash}: failed to open project, cannot sync: ${msg}`);
+      clear(hash);
+      return;
+    }
     if (!cfg.enabled) { clear(hash); return; } // снять таймер — действует и во время висящего прохода
     // Проход уже бежит: его собственный хвост перечитает настройки и перевзведётся сам —
     // взвести здесь второй немедленный проход и есть баг с двойным раннером.
@@ -125,7 +139,13 @@ export function createScheduler(
     syncAll() {
       // hash проекта — имя каталога перед kdd.db, тот же вывод, что у hashOf в server.ts
       for (const p of listProjects()) {
-        try { sync(basename(dirname(p.dbPath))); } catch { /* битая база одного проекта не ломает старт */ }
+        const hash = basename(dirname(p.dbPath));
+        try { sync(hash); } catch (e) {
+          // битая база одного проекта не ломает старт остальных, но должна быть видна в логе —
+          // иначе тот же молчаливый "никогда больше не тикает" случай, что и в sync() выше.
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error(`[scheduler] ${hash}: sync failed at startup: ${msg}`);
+        }
       }
     },
 

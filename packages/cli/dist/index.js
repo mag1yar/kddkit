@@ -3,8 +3,8 @@
 // src/index.ts
 import { Command } from "commander";
 import { readFileSync } from "fs";
-import { basename, dirname, join } from "path";
-import { spawn as spawnProcess } from "child_process";
+import { basename, dirname as dirname2, join } from "path";
+import { spawn as spawnProcess2 } from "child_process";
 import { createInterface } from "readline";
 import { fileURLToPath } from "url";
 import lockfile from "proper-lockfile";
@@ -38,7 +38,6 @@ import {
   maxWorkers,
   moveTask,
   mustGetTask,
-  now as now2,
   openDb as openDb2,
   parseClaudeStreamLine,
   rebuild,
@@ -200,6 +199,11 @@ function renderStatus(d) {
   return lines.join("\n");
 }
 
+// src/tick-runner.ts
+import { spawn as spawnProcess } from "child_process";
+import { dirname } from "path";
+import { now as now2 } from "@kddkit/core";
+
 // src/tick-output.ts
 function parseTickOutput(out2, err, code, at) {
   const zero = { at, reclaimed: 0, spawned: 0, active: 0, reaped: 0 };
@@ -226,6 +230,55 @@ function parseTickOutput(out2, err, code, at) {
   };
 }
 
+// src/tick-runner.ts
+function createTickRunner(scriptPath, killTimeoutMs, spawnFn = spawnProcess) {
+  return ({ dbPath, projectPath }) => new Promise((resolve) => {
+    const child = spawnFn(
+      process.execPath,
+      [scriptPath, "tick", "--json"],
+      {
+        // cwd нужен tick'у, чтобы резолвить toplevel для воркеров; базу пиннит KDD_DB,
+        // projectPath — это git common-dir, его родитель и есть toplevel.
+        cwd: dirname(projectPath),
+        env: { ...process.env, KDD_DB: dbPath },
+        stdio: ["ignore", "pipe", "pipe"]
+      }
+    );
+    let out2 = "";
+    let err = "";
+    let timedOut = false;
+    child.stdout.on("data", (d) => {
+      out2 += d.toString();
+    });
+    child.stderr.on("data", (d) => {
+      err += d.toString();
+    });
+    const killer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, killTimeoutMs);
+    child.on("error", (e) => {
+      clearTimeout(killer);
+      resolve({ at: now2(), reclaimed: 0, spawned: 0, active: 0, reaped: 0, error: e.message });
+    });
+    child.on("close", (code) => {
+      clearTimeout(killer);
+      if (timedOut) {
+        resolve({
+          at: now2(),
+          reclaimed: 0,
+          spawned: 0,
+          active: 0,
+          reaped: 0,
+          error: `kdd tick killed after exceeding ${killTimeoutMs}ms timeout`
+        });
+        return;
+      }
+      resolve(parseTickOutput(out2, err, code, now2()));
+    });
+  });
+}
+
 // src/index.ts
 var program = new Command().name("kdd").description("kanban substrate for humans and Claude").version(kddVersion());
 function out(json, obj, text) {
@@ -240,10 +293,11 @@ var WORKER_PROMPT = process.env.KDD_WORKER_PROMPT ?? `You are a kdd agent worker
 var sq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 var DEFAULT_SPAWN_CMD = `${sq(process.execPath)} ${sq(fileURLToPath(import.meta.url))} worker "$KDD_TASK_ID"`;
 var TICK_LOCK_STALE = 10 * 60 * 1e3;
+var TICK_KILL_TIMEOUT = 5 * 60 * 1e3;
 function spawnWorker(taskId, workerId, projectDir) {
   const cmd = process.env.KDD_SPAWN_CMD ?? DEFAULT_SPAWN_CMD;
   const shell = process.env.SHELL || "/bin/sh";
-  const child = spawnProcess(shell, ["-lc", cmd], {
+  const child = spawnProcess2(shell, ["-lc", cmd], {
     cwd: projectDir,
     env: { ...process.env, KDD_TASK_ID: String(taskId), KDD_ACTOR: "ai", KDD_SESSION: workerId },
     detached: true,
@@ -255,29 +309,7 @@ function spawnWorker(taskId, workerId, projectDir) {
   });
   child.unref();
 }
-var tickRunner = ({ dbPath, projectPath }) => new Promise((resolve) => {
-  const child = spawnProcess(
-    process.execPath,
-    [fileURLToPath(import.meta.url), "tick", "--json"],
-    {
-      // cwd нужен tick'у, чтобы резолвить toplevel для воркеров; базу пиннит KDD_DB,
-      // projectPath — это git common-dir, его родитель и есть toplevel.
-      cwd: dirname(projectPath),
-      env: { ...process.env, KDD_DB: dbPath },
-      stdio: ["ignore", "pipe", "pipe"]
-    }
-  );
-  let out2 = "";
-  let err = "";
-  child.stdout.on("data", (d) => {
-    out2 += d.toString();
-  });
-  child.stderr.on("data", (d) => {
-    err += d.toString();
-  });
-  child.on("error", (e) => resolve({ at: now2(), reclaimed: 0, spawned: 0, active: 0, reaped: 0, error: e.message }));
-  child.on("close", (code) => resolve(parseTickOutput(out2, err, code, now2())));
-});
+var tickRunner = createTickRunner(fileURLToPath(import.meta.url), TICK_KILL_TIMEOUT);
 function run(json, fn) {
   try {
     fn();
@@ -374,7 +406,7 @@ program.command("tick").description("agent-mode: reclaim expired leases, claim r
     const { dbPath, projectPath } = resolveDbPath2();
     let release;
     try {
-      release = lockfile.lockSync(join(dirname(dbPath), "tick"), { stale: TICK_LOCK_STALE, realpath: false });
+      release = lockfile.lockSync(join(dirname2(dbPath), "tick"), { stale: TICK_LOCK_STALE, realpath: false });
     } catch (e) {
       if (e.code === "ELOCKED") return { skipped: true };
       throw e;
@@ -464,7 +496,7 @@ program.command("worker").argument("<id>").description("agent-mode supervisor: r
     const workdir = ensureWorktree(toplevel, dbPath, taskId, task.title);
     await new Promise((resolve) => {
       appendAgentEvent(db, taskId, workerId, "run_start", { detail: { head: headCommit(workdir) } });
-      const child = spawnProcess(bin, args, {
+      const child = spawnProcess2(bin, args, {
         cwd: workdir,
         stdio: ["ignore", "pipe", "inherit"],
         // KDD_ACTOR/KDD_SESSION НЕ хардкодим здесь — они текут из окружения самого воркера.
@@ -570,7 +602,7 @@ program.command("ui").option("--port <n>", "port", "4499").action((o) => run(fal
 }));
 async function uiStart(port) {
   const { dbPath, projectPath } = resolveDbPath2();
-  const hash = basename(dirname(dbPath));
+  const hash = basename(dirname2(dbPath));
   openDb2(dbPath, projectPath).close();
   const url = `http://localhost:${port}?project=${hash}`;
   try {

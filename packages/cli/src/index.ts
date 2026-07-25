@@ -10,7 +10,7 @@ import {
   KddError, addCriterion, addDecision, addTask, appendAgentEvent, archiveTask, blockTask,
   boardData, claimNext, claimTask, commentTask, createTrack, deleteTrack, DEFAULT_TTL, editTask,
   editTrack, ensureWorktree, exportBoard, headCommit, kddVersion, linkTasks, listAgentEvents, listCriteria, listProjects, taskBranchHead,
-  listTracks, maxWorkers, moveTask, mustGetTask, now, openDb, parseClaudeStreamLine, rebuild, recall, removeCriterion,
+  listTracks, maxWorkers, moveTask, mustGetTask, openDb, parseClaudeStreamLine, rebuild, recall, removeCriterion,
   renewClaim, resolveDbPath, resolveDecisionsDir, resolveToplevel, setCriterionChecked, statusDigest,
   sweepWorktrees, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, type Status,
 } from '@kddkit/core';
@@ -19,7 +19,7 @@ import { fail, getActor, parseId, withDb, withDbAt } from './context.js';
 import {
   renderBoard, renderClaim, renderCriteria, renderRecall, renderShow, renderStatus, renderTracks,
 } from './render.js';
-import { parseTickOutput } from './tick-output.js';
+import { createTickRunner } from './tick-runner.js';
 
 const program = new Command()
   .name('kdd')
@@ -56,7 +56,18 @@ const sq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 const DEFAULT_SPAWN_CMD =
   `${sq(process.execPath)} ${sq(fileURLToPath(import.meta.url))} worker "$KDD_TASK_ID"`;
 
-const TICK_LOCK_STALE = 10 * 60 * 1000; // ms; tick короткоживущий — 10 мин >> его длительности
+// tick короткоживущий — 10 мин >> его длительности. Это окно ЗАГРУЖЕНО смыслом (не просто
+// «щедрое число»): оно гарантирует целостность maxWorkers между процессами. Пока лок держится,
+// второй `tick`/`--watch` видит ELOCKED и не стартует параллельно — оба процесса иначе
+// независимо посчитали бы active < maxWorkers и вместе наспавнили бы вдвое больше воркеров
+// капа. Должно оставаться БОЛЬШЕ TICK_KILL_TIMEOUT ниже: если бы child мог пережить это окно,
+// лок протух бы под ещё живым держателем, и его собственный lockfile-апдейтер, застав лок
+// украденным, кинул бы исключение из таймера без onCompromised — и уронил бы этот child.
+const TICK_LOCK_STALE = 10 * 60 * 1000; // ms
+
+// Fix (review, wave final): жёсткий потолок на один проход tickRunner — см. tick-runner.ts.
+// Ниже TICK_LOCK_STALE: child обязан быть убит и лок освобождён раньше, чем лок сочтут stale.
+const TICK_KILL_TIMEOUT = 5 * 60 * 1000; // ms
 
 // Детач fire-and-forget через login-shell (-lc грузит PATH: детач-процесс иначе не найдёт claude/npx).
 function spawnWorker(taskId: number, workerId: string, projectDir: string): void {
@@ -78,29 +89,7 @@ function spawnWorker(taskId: number, workerId: string, projectDir: string): void
   child.unref(); // tick не ждёт воркера
 }
 
-// Проход гоняем ОТДЕЛЬНЫМ процессом, а не вызовом tick() внутри сервера: sweepWorktrees
-// внутри прохода дёргает git через execFileSync и подвешивал бы event loop Hono на каждом
-// тике. TICK_LOCK межпроцессный, поэтому наложение с `kdd tick --watch` из терминала
-// безопасно даром. node берём тот же (process.execPath) — см. #19 про ABI better-sqlite3.
-const tickRunner: TickRunner = ({ dbPath, projectPath }) => new Promise((resolve) => {
-  const child = spawnProcess(
-    process.execPath, [fileURLToPath(import.meta.url), 'tick', '--json'],
-    {
-      // cwd нужен tick'у, чтобы резолвить toplevel для воркеров; базу пиннит KDD_DB,
-      // projectPath — это git common-dir, его родитель и есть toplevel.
-      cwd: dirname(projectPath),
-      env: { ...process.env, KDD_DB: dbPath },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    },
-  );
-  let out = '';
-  let err = '';
-  child.stdout.on('data', (d: Buffer) => { out += d.toString(); });
-  child.stderr.on('data', (d: Buffer) => { err += d.toString(); });
-  child.on('error', (e) =>
-    resolve({ at: now(), reclaimed: 0, spawned: 0, active: 0, reaped: 0, error: e.message }));
-  child.on('close', (code) => resolve(parseTickOutput(out, err, code, now())));
-});
+const tickRunner: TickRunner = createTickRunner(fileURLToPath(import.meta.url), TICK_KILL_TIMEOUT);
 
 function run(json: boolean, fn: () => void): void {
   try { fn(); } catch (e) {
