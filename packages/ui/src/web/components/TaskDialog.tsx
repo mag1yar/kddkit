@@ -1,6 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Ban, Link2, Pencil, Send, X } from 'lucide-react';
-import Markdown from 'react-markdown';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -14,6 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
 import { AgentFeed } from './AgentFeed';
 import { MarkdownEditor } from './MarkdownEditor';
+import { Prose } from './Prose';
 import {
   PRIORITIES, STATUSES, addComment, addCriterion, blockTask, editTask, getTask, moveTask,
   removeCriterion, setCriterionChecked, unblockTask,
@@ -338,26 +338,6 @@ function BlockedField({ task, onChanged }: { task: Task; onChanged: () => void }
         <Button size="sm" variant="outline" onClick={() => setOpen(true)}><Ban /> Block</Button>
       )}
     </Field>
-  );
-}
-
-function Prose({ children }: { children: string }) {
-  // prose даёт светло-серый body по умолчанию — принудительно foreground + видимый inline-code
-  return (
-    <div
-      className={cn(
-        'prose prose-sm max-w-none text-foreground',
-        'prose-headings:text-foreground prose-strong:text-foreground prose-a:text-foreground',
-        'prose-p:my-1 prose-p:text-foreground prose-li:text-foreground prose-li:my-0.5',
-        'prose-blockquote:text-muted-foreground prose-pre:my-1',
-        'prose-code:rounded prose-code:bg-muted prose-code:px-1 prose-code:text-foreground',
-        'prose-code:before:content-[""] prose-code:after:content-[""]',
-        // code внутри pre — без inline-рамки (иначе бокс-в-боксе)
-        '[&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:text-inherit',
-      )}
-    >
-      <Markdown>{children}</Markdown>
-    </div>
   );
 }
 
