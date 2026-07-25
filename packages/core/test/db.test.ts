@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { MIGRATIONS, openDb, projectPathOf } from '../src/db.js';
+import {
+  MIGRATIONS, openDb, projectPathOf, projectToplevelOf, setProjectToplevel,
+} from '../src/db.js';
 
 describe('openDb', () => {
   it('creates schema at user_version 1 with all tables', () => {
@@ -72,6 +74,18 @@ describe('openDb', () => {
     expect(projectPathOf(db)).toBe('C:/proj');
     db.prepare(`DELETE FROM meta WHERE key = 'project_path'`).run();
     expect(projectPathOf(db)).toBeNull();
+  });
+
+  // Ключа нет у досок, созданных до его появления, — читатель обязан получить null и
+  // уметь откатиться на свою старую догадку, а не сломаться.
+  it('projectToplevelOf is null until written, then reads back the last write', () => {
+    const db = openDb(':memory:', '/super/.git/modules/sub');
+    expect(projectToplevelOf(db)).toBeNull();
+    setProjectToplevel(db, '/super/sub');
+    expect(projectToplevelOf(db)).toBe('/super/sub');
+    setProjectToplevel(db, '/elsewhere/sub'); // репо переехало — перезапись, не второй ряд
+    expect(projectToplevelOf(db)).toBe('/elsewhere/sub');
+    expect(projectPathOf(db)).toBe('/super/.git/modules/sub'); // project_path не тронут
   });
 
   it('rejects bad status via CHECK', () => {

@@ -178,7 +178,7 @@ describe('/api/autotick', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       enabled: false, intervalSec: 60, maxWorkers: 3,
-      maxWorkersEnvLocked: false, last: null, nextAt: null,
+      maxWorkersEnvLocked: false, last: null, nextAt: null, running: false,
     });
   });
 
@@ -219,6 +219,7 @@ describe('/api/autotick', () => {
       sync: (h: string) => { synced.push(h); },
       syncAll: () => {},
       nextAt: () => 1700000060,
+      isRunning: () => false,
       stopAll: () => {},
     });
     const res = await app.request('/api/autotick', {
@@ -227,6 +228,18 @@ describe('/api/autotick', () => {
     const s = (await res.json()) as { nextAt: number | null };
     expect(synced).toEqual(['proj']);
     expect(s.nextAt).toBe(1700000060);
+  });
+
+  // Пока проход идёт, nextAt смотрит в прошлое — UI обязан узнать про это из ответа,
+  // иначе показывает «next: in 0 s» все пять минут таймаута.
+  it('GET отдаёт running=true, пока проход в полёте', async () => {
+    const db = openDb(':memory:', 'x');
+    const app = createApp(() => db, 'proj', {
+      sync: () => {}, syncAll: () => {}, nextAt: () => 1700000000,
+      isRunning: () => true, stopAll: () => {},
+    });
+    const s = (await (await app.request('/api/autotick')).json()) as { running: boolean };
+    expect(s.running).toBe(true);
   });
 
   it('GET отдаёт последний проход', async () => {

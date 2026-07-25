@@ -1,10 +1,14 @@
+import { existsSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import type Database from 'better-sqlite3';
 import {
-  getAutoTick, kddHome, listProjects, now, projectPathOf, setLastRun, type TickRun,
+  getAutoTick, kddHome, listProjects, now, projectPathOf, projectToplevelOf, setLastRun,
+  type TickRun,
 } from '@kddkit/core';
 
-export type TickRunner = (p: { dbPath: string; projectPath: string }) => Promise<TickRun>;
+export type TickRunner = (
+  p: { dbPath: string; projectPath: string; toplevel: string | null },
+) => Promise<TickRun>;
 
 export interface Scheduler {
   /** Перечитать настройки проекта и взвести либо снять его таймер. */
@@ -13,12 +17,27 @@ export interface Scheduler {
   syncAll(): void;
   /** Время следующего срабатывания в секундах, либо null если таймер не взведён. */
   nextAt(hash: string): number | null;
+  /** Идёт ли прямо сейчас проход по проекту — обратный отсчёт в это время бессмыслен. */
+  isRunning(hash: string): boolean;
   stopAll(): void;
 }
 
 interface Slot { timer: ReturnType<typeof setTimeout>; nextAt: number; intervalSec: number }
 
 const dbPathOf = (hash: string): string => join(kddHome(), hash, 'kdd.db');
+
+// Разбег первых проходов при старте сервера: N включённых проектов не должны спаунить
+// N тиков (и до N*maxWorkers воркеров) в одну секунду. Пара секунд на проект — это всё ещё
+// «работа, накопившаяся за ночь, подхватывается сразу», а не отложенный на интервал старт.
+const BOOT_STAGGER_MS = 3_000;
+
+// Потолок паузы после подряд идущих сбоев. Read-only fs под ~/.kdd чинится руками и не за
+// секунду — долбиться в неё раз в 30 секунд до утра смысла нет.
+const FAILURE_BACKOFF_CAP_SEC = 15 * 60;
+
+// Сбой до того, как удалось прочитать настройки: интервала проекта мы не знаем, отступаем
+// от минуты.
+const FAILURE_BASE_SEC = 60;
 
 export function createScheduler(
   runner: TickRunner, openProject: (hash: string) => Database.Database,
@@ -27,13 +46,21 @@ export function createScheduler(
   // Хэши, у которых pass() сейчас реально бежит — от входа до перевзвода в хвосте. Без этого
   // sync(), вызванный, пока runner() ещё висит в await, может взвести второй немедленный проход.
   const inFlight = new Set<string>();
+  // Сколько сбоев подряд у проекта. Растёт только на сбоях, обнуляется первым же успешным
+  // проходом — см. retryAfterFailure.
+  const failures = new Map<string, number>();
   let stopped = false;
 
-  const clear = (hash: string): void => {
+  const disarm = (hash: string): void => {
     const s = slots.get(hash);
     if (!s) return;
     clearTimeout(s.timer);
     slots.delete(hash);
+  };
+
+  const clear = (hash: string): void => {
+    disarm(hash);
+    failures.delete(hash);
   };
 
   // Цепочка setTimeout, а не setInterval: следующий таймер взводится ПОСЛЕ прохода. Само по
@@ -41,30 +68,47 @@ export function createScheduler(
   // старый ещё в await) — от двойного запуска защищает inFlight, см. pass().
   const arm = (hash: string, delayMs: number, intervalSec: number): void => {
     if (stopped) return;
-    clear(hash);
+    disarm(hash);
     const timer = setTimeout(() => { void pass(hash); }, delayMs);
     timer.unref?.(); // таймер не должен держать процесс живым: его держит сокет сервера
     slots.set(hash, { timer, nextAt: now() + Math.round(delayMs / 1000), intervalSec });
   };
 
-  // Транзиентный сбой в обвязке прохода (SQLITE_BUSY, EMFILE, диск полон) — не приговор
+  // Хранилище проекта удалили (человек снёс ~/.kdd/<hash>, чтобы начать доску заново) —
+  // это определённый ответ, а не сбой: тикать нечего. Спаунить тик по удалённому пути нельзя,
+  // openDb на той стороне создал бы пустую базу заново, и снесённая доска воскресала бы
+  // пустой на каждом проходе.
+  const storeGone = (hash: string): boolean => {
+    if (existsSync(dbPathOf(hash))) return false;
+    console.error(`[scheduler] ${hash}: store is gone (${dbPathOf(hash)}) — timer cleared`);
+    clear(hash);
+    return true;
+  };
+
+  // Транзиентный сбой в обвязке прохода (SQLITE_BUSY, EMFILE, read-only диск) — не приговор
   // проекту: enabled остаётся true в базе, значит цикл обязан ретраить, а не гаснуть молча.
-  // Ретраим тем же последним известным интервалом; если слот тем временем сняли (sync()
-  // выключил проект во время прохода) — слота нет, и правильно ничего не взводится.
+  // Пауза растёт экспоненциально с числом сбоев подряд — это касается ТОЛЬКО ретраев после
+  // сбоя. К обычному интервалу backoff применять нельзя ни при каких обстоятельствах:
+  // интервал выбрал человек, и планировщик исполняет его буквально.
   const retryAfterFailure = (hash: string, e: unknown): void => {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error(`[scheduler] ${hash}: pass failed, retrying next cycle: ${msg}`);
-    const s = slots.get(hash);
-    if (s) arm(hash, s.intervalSec * 1000, s.intervalSec);
+    const n = (failures.get(hash) ?? 0) + 1;
+    const intervalSec = slots.get(hash)?.intervalSec ?? FAILURE_BASE_SEC;
+    const delaySec = Math.min(intervalSec * 2 ** (n - 1), FAILURE_BACKOFF_CAP_SEC);
+    console.error(`[scheduler] ${hash}: pass failed (${n} in a row), retry in ${delaySec}s: ${msg}`);
+    arm(hash, delaySec * 1000, intervalSec); // в слоте — нормальный интервал, не пауза ретрая
+    failures.set(hash, n); // после arm(): disarm внутри него чистит только таймер, не счётчик
   };
 
   const pass = async (hash: string): Promise<void> => {
     if (stopped) return;
     if (inFlight.has(hash)) return; // проход для этого хэша уже бежит — второй не стартуем
+    if (storeGone(hash)) return;
     inFlight.add(hash);
     try {
       let db: Database.Database;
       let projectPath: string;
+      let toplevel: string | null;
       try {
         db = openProject(hash);
         const p = projectPathOf(db);
@@ -78,6 +122,7 @@ export function createScheduler(
           return;
         }
         projectPath = p;
+        toplevel = projectToplevelOf(db);
       } catch (e) {
         retryAfterFailure(hash, e);
         return;
@@ -85,7 +130,7 @@ export function createScheduler(
 
       let run: TickRun;
       try {
-        run = await runner({ dbPath: dbPathOf(hash), projectPath });
+        run = await runner({ dbPath: dbPathOf(hash), projectPath, toplevel });
       } catch (e) {
         // Overnight-раннер не умирает от транзиентного глюка: ошибка едет в индикатор,
         // цикл продолжается тем же интервалом.
@@ -101,7 +146,8 @@ export function createScheduler(
         // Настройки могли смениться, пока шёл проход, — перечитываем, а не помним.
         const cfg = getAutoTick(db);
         if (cfg.enabled) arm(hash, cfg.intervalSec * 1000, cfg.intervalSec);
-        else clear(hash);
+        else disarm(hash);
+        failures.delete(hash); // проход дошёл до конца — цепочка сбоев прервана
       } catch (e) {
         retryAfterFailure(hash, e);
       }
@@ -110,16 +156,16 @@ export function createScheduler(
     }
   };
 
-  const sync = (hash: string): void => {
+  // firstDelayMs — задержка первого прохода для проекта, у которого таймера ещё нет.
+  // 0 для явного щелчка в UI (человек должен увидеть реакцию), разбег — для старта сервера.
+  const sync = (hash: string, firstDelayMs = 0): void => {
     if (stopped) return;
+    if (storeGone(hash)) return;
     let cfg;
     try { cfg = getAutoTick(openProject(hash)); } catch (e) {
-      // Сбой на старте (упавшая миграция, битый файл) молча гасил проект: enabled=true в базе,
-      // таймер так и не взводится, ни строки в логе — «сервер перезапустили, и проект больше
-      // никогда не тикает». Логируем, чтобы это было видно, control flow не меняем.
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error(`[scheduler] ${hash}: failed to open project, cannot sync: ${msg}`);
-      clear(hash);
+      // Сбой открытия (SQLITE_BUSY, EMFILE, упавшая миграция) раньше гасил проект навсегда:
+      // enabled=true в базе, таймера нет, ретраить некому. Ретраим, как и pass().
+      retryAfterFailure(hash, e);
       return;
     }
     if (!cfg.enabled) { clear(hash); return; } // снять таймер — действует и во время висящего прохода
@@ -128,28 +174,29 @@ export function createScheduler(
     if (inFlight.has(hash)) return;
     const s = slots.get(hash);
     // Выключено -> включено: первый проход немедленно, юзер щёлкнул и должен увидеть реакцию.
-    if (!s) { arm(hash, 0, cfg.intervalSec); return; }
+    if (!s) { arm(hash, firstDelayMs, cfg.intervalSec); return; }
     // Сменили интервал — перевзвести. Сменили только max workers — отсчёт не трогаем.
     if (s.intervalSec !== cfg.intervalSec) arm(hash, cfg.intervalSec * 1000, cfg.intervalSec);
   };
 
   return {
-    sync,
+    sync: (hash) => { sync(hash); },
 
     syncAll() {
+      let i = 0;
       // hash проекта — имя каталога перед kdd.db, тот же вывод, что у hashOf в server.ts
       for (const p of listProjects()) {
-        const hash = basename(dirname(p.dbPath));
-        try { sync(hash); } catch (e) {
-          // битая база одного проекта не ломает старт остальных, но должна быть видна в логе —
-          // иначе тот же молчаливый "никогда больше не тикает" случай, что и в sync() выше.
-          const msg = e instanceof Error ? e.message : String(e);
-          console.error(`[scheduler] ${hash}: sync failed at startup: ${msg}`);
-        }
+        // Выключенные проекты не открываем вовсе: openProject берёт handle на запись, а это
+        // миграции по чужим доскам (см. комментарий у listProjects).
+        if (!p.autoTickEnabled) continue;
+        sync(basename(dirname(p.dbPath)), i * BOOT_STAGGER_MS);
+        i += 1;
       }
     },
 
     nextAt(hash) { return slots.get(hash)?.nextAt ?? null; },
+
+    isRunning(hash) { return inFlight.has(hash); },
 
     stopAll() {
       stopped = true;

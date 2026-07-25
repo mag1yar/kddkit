@@ -63,7 +63,7 @@ export interface TickRun {
 }
 export interface AutoTickState {
   enabled: boolean; intervalSec: number; maxWorkers: number;
-  maxWorkersEnvLocked: boolean; last: TickRun | null; nextAt: number | null;
+  maxWorkersEnvLocked: boolean; last: TickRun | null; nextAt: number | null; running: boolean;
 }
 export const getProjects = () => req<Project[]>('/api/projects');
 export const getPing = () => req<{ kdd: boolean; default: string }>('/api/ping');

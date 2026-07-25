@@ -1,6 +1,6 @@
 import { spawn as spawnProcess } from 'node:child_process';
 import { dirname } from 'node:path';
-import { now } from '@kddkit/core';
+import { now, type TickRun } from '@kddkit/core';
 import type { TickRunner } from '@kddkit/ui';
 import { parseTickOutput } from './tick-output.js';
 
@@ -11,18 +11,22 @@ export function createTickRunner(
   scriptPath: string,
   killTimeoutMs: number,
   spawnFn: typeof spawnProcess = spawnProcess,
+  killGraceMs = 5_000,
 ): TickRunner {
   // Проход гоняем ОТДЕЛЬНЫМ процессом, а не вызовом tick() внутри сервера: sweepWorktrees
   // внутри прохода дёргает git через execFileSync и подвешивал бы event loop Hono на каждом
   // тике. TICK_LOCK межпроцессный, поэтому наложение с `kdd tick --watch` из терминала
   // безопасно даром. node берём тот же (process.execPath) — см. #19 про ABI better-sqlite3.
-  return ({ dbPath, projectPath }) => new Promise((resolve) => {
+  return ({ dbPath, projectPath, toplevel }) => new Promise((resolve) => {
     const child = spawnFn(
       process.execPath, [scriptPath, 'tick', '--json'],
       {
-        // cwd нужен tick'у, чтобы резолвить toplevel для воркеров; базу пиннит KDD_DB,
-        // projectPath — это git common-dir, его родитель и есть toplevel.
-        cwd: dirname(projectPath),
+        // cwd нужен tick'у, чтобы резолвить toplevel для воркеров; базу пиннит KDD_DB.
+        // Родитель projectPath (git common-dir) — верный toplevel только для обычного
+        // <repo>/.git: у submodule это <super>/.git/modules, и тик работал бы не в том
+        // репозитории. Fallback на него нужен для досок, созданных до появления
+        // project_toplevel в meta: их первый же `kdd tick` этот ключ и запишет.
+        cwd: toplevel ?? dirname(projectPath),
         env: { ...process.env, KDD_DB: dbPath },
         stdio: ['ignore', 'pipe', 'pipe'],
       },
@@ -33,7 +37,7 @@ export function createTickRunner(
     child.stdout.on('data', (d: Buffer) => { out += d.toString(); });
     child.stderr.on('data', (d: Buffer) => { err += d.toString(); });
 
-    // Fix (review, wave final): без этого child, зависший внутри прохода (напр. sweepWorktrees
+    // Без этого child, зависший внутри прохода (напр. sweepWorktrees
     // дёргает `git worktree remove --force` на упавшей сетевой fs-mount и git блокируется
     // навсегда), никогда не эмиттит close/error → промис никогда не settles → scheduler.inFlight
     // для проекта не очищается (снимается в finally, который не наступает) → хвост прохода не
@@ -44,25 +48,38 @@ export function createTickRunner(
     // МЕНЬШЕ TICK_LOCK_STALE: тик обязан быть убит и лок — освобождён раньше, чем лок сочтут
     // протухшим, иначе другой процесс украдёт лок у ещё живого (просто медленного) child и оба
     // насчитают active < maxWorkers независимо, наспавнив вдвое больше воркеров.
+    // SIGTERM, а не сразу SIGKILL: proper-lockfile снимает лок через signal-exit, а тот
+    // отрабатывает на SIGTERM и не может отработать на неперехватываемом SIGKILL. Убитый
+    // наглухо child оставлял бы ~/.kdd/<hash>/tick.lock со свежим mtime, и все проходы —
+    // как планировщика, так и `kdd tick` из терминала — получали бы ELOCKED, пока лок не
+    // сочтут протухшим (TICK_LOCK_STALE, десять минут). SIGKILL остаётся страховкой на
+    // случай child'а, застрявшего в непрерываемом системном вызове.
+    let escalation: ReturnType<typeof setTimeout> | undefined;
     const killer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGKILL');
+      child.kill('SIGTERM');
+      escalation = setTimeout(() => child.kill('SIGKILL'), killGraceMs);
+      escalation.unref?.();
     }, killTimeoutMs);
 
-    child.on('error', (e) => {
+    const settle = (run: TickRun): void => {
       clearTimeout(killer);
-      resolve({ at: now(), reclaimed: 0, spawned: 0, active: 0, reaped: 0, error: e.message });
+      if (escalation) clearTimeout(escalation);
+      resolve(run);
+    };
+
+    child.on('error', (e) => {
+      settle({ at: now(), reclaimed: 0, spawned: 0, active: 0, reaped: 0, error: e.message });
     });
     child.on('close', (code) => {
-      clearTimeout(killer);
       if (timedOut) {
-        resolve({
+        settle({
           at: now(), reclaimed: 0, spawned: 0, active: 0, reaped: 0,
           error: `kdd tick killed after exceeding ${killTimeoutMs}ms timeout`,
         });
         return;
       }
-      resolve(parseTickOutput(out, err, code, now()));
+      settle(parseTickOutput(out, err, code, now()));
     });
   });
 }

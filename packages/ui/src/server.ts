@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,10 +28,12 @@ export function projectPool(defaultHash: string): {
   const get = (hash: string): Database.Database => {
     const cached = pool.get(hash);
     if (cached) return cached;
-    if (!listProjects().some((p) => hashOf(p.dbPath) === hash)) {
-      throw new KddError(`unknown project '${hash}'`);
-    }
-    const db = openDb(join(kddHome(), hash, 'kdd.db'));
+    const dbPath = join(kddHome(), hash, 'kdd.db');
+    // Существование файла — та же гарантия для «hash из HTTP-запроса не выдуман», что и
+    // обход listProjects(), но без readonly-коннекта ко ВСЕМ остальным доскам на каждый
+    // промах пула. openDb ниже создал бы базу с нуля, поэтому проверка обязательна.
+    if (!existsSync(dbPath)) throw new KddError(`unknown project '${hash}'`);
+    const db = openDb(dbPath);
     pool.set(hash, db);
     return db;
   };
@@ -138,6 +141,10 @@ export function createApp(
       maxWorkersEnvLocked: maxWorkersEnvLocked(),
       last: getLastRun(db),
       nextAt: scheduler?.nextAt(projectHash(c)) ?? null,
+      // Пока проход идёт, nextAt смотрит в прошлое (перевзвод — в хвосте прохода): без этого
+      // флага UI показывал бы «next: in 0 s» всё время работы тика и не отличал бы висящий
+      // проход от простоя.
+      running: scheduler?.isRunning(projectHash(c)) ?? false,
     };
   };
 

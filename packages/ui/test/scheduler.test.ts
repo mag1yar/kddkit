@@ -1,20 +1,29 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type Database from 'better-sqlite3';
-import { getLastRun, openDb, setAutoTick, type TickRun } from '@kddkit/core';
+import { getLastRun, openDb, setAutoTick, setProjectToplevel, type TickRun } from '@kddkit/core';
 import { createScheduler, type TickRunner } from '../src/scheduler.js';
 
 // Настоящая база в настоящем KDD_HOME: планировщик резолвит проекты через
 // listProjects(), а он ходит по файловой системе. Моков в доме нет.
-function project(): { hash: string; db: Database.Database } {
+function makeHome(): string {
   const home = mkdtempSync(join(tmpdir(), 'kdd-sched-'));
   process.env.KDD_HOME = home;
-  const hash = 'abc123';
-  const db = openDb(join(home, hash, 'kdd.db'), '/repo/.git');
-  return { hash, db };
+  return home;
 }
+
+const projectIn = (home: string, hash: string): Database.Database =>
+  openDb(join(home, hash, 'kdd.db'), '/repo/.git');
+
+function project(): { hash: string; db: Database.Database; home: string } {
+  const home = makeHome();
+  const hash = 'abc123';
+  return { hash, db: projectIn(home, hash), home };
+}
+
+const quiet = () => vi.spyOn(console, 'error').mockImplementation(() => {});
 
 const ok = (over: Partial<TickRun> = {}): TickRun =>
   ({ at: 1700000000, reclaimed: 0, spawned: 0, active: 0, reaped: 0, ...over });
@@ -162,7 +171,7 @@ describe('createScheduler', () => {
     expect(s.nextAt(hash)).toBeNull();
   });
 
-  // Round 1 fix — finding 1: sync() во время висящего прохода не должен взводить второй.
+  // sync() во время висящего прохода не должен взводить второй.
   it('выкл→вкл во время висящего прохода не даёт второй конкурентный проход', async () => {
     vi.useFakeTimers();
     const { hash, db } = project();
@@ -223,7 +232,7 @@ describe('createScheduler', () => {
     s.stopAll();
   });
 
-  // Round 1 fix — finding 2: транзиентный сбой в обвязке прохода ретраит, а не гасит таймер.
+  // Транзиентный сбой в обвязке прохода ретраит, а не гасит таймер.
   it('исключение при открытии проекта не убивает таймер — ретрай тем же интервалом', async () => {
     vi.useFakeTimers();
     const { hash, db } = project();
@@ -250,7 +259,146 @@ describe('createScheduler', () => {
     s.stopAll();
   });
 
-  // Round 1 fix — finding 4: nextAt должен быть в секундах, а не в миллисекундах.
+  // Доску сбрасывают, снося ~/.kdd/<hash>. Таймер обязан замолчать: иначе каждый проход
+  // спаунит тик по удалённому пути, openDb на той стороне создаёт базу заново, и снесённая
+  // доска возвращается пустой.
+  it('удалённое хранилище снимает таймер и не воскрешает доску', async () => {
+    vi.useFakeTimers();
+    const { hash, db, home } = project();
+    setAutoTick(db, { enabled: true, intervalSec: 30 });
+    const runner = vi.fn<TickRunner>(async () => ok());
+    const s = createScheduler(runner, () => db);
+    s.sync(hash);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runner).toHaveBeenCalledTimes(1);
+
+    const errSpy = quiet();
+    rmSync(join(home, hash), { recursive: true, force: true });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(runner).toHaveBeenCalledTimes(1); // проход не состоялся
+    expect(s.nextAt(hash)).toBeNull(); // и больше не взведётся
+    expect(existsSync(join(home, hash, 'kdd.db'))).toBe(false); // база не пересоздана
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    errSpy.mockRestore();
+    s.stopAll();
+  });
+
+  it('сбой открытия на старте сервера ретраит, а не гасит проект навсегда', async () => {
+    vi.useFakeTimers();
+    const { hash, db } = project();
+    setAutoTick(db, { enabled: true, intervalSec: 30 });
+    const runner = vi.fn<TickRunner>(async () => ok());
+    let calls = 0;
+    const s = createScheduler(runner, () => {
+      calls += 1;
+      if (calls === 1) throw new Error('SQLITE_BUSY'); // первое же открытие на старте
+      return db;
+    });
+    const errSpy = quiet();
+    s.syncAll();
+    expect(s.nextAt(hash)).not.toBeNull(); // enabled=true в базе — цикл обязан ретраить
+    await vi.advanceTimersByTimeAsync(60_000); // интервал проекта ещё не прочитан: базовая пауза
+    expect(runner).toHaveBeenCalledTimes(1);
+    errSpy.mockRestore();
+    s.stopAll();
+  });
+
+  it('старт сервера разносит первые проходы, а не палит все разом', async () => {
+    vi.useFakeTimers();
+    const home = makeHome();
+    const dbs: Record<string, Database.Database> = {
+      aaa111: projectIn(home, 'aaa111'), bbb222: projectIn(home, 'bbb222'),
+    };
+    for (const db of Object.values(dbs)) setAutoTick(db, { enabled: true, intervalSec: 30 });
+    const runner = vi.fn<TickRunner>(async () => ok());
+    const s = createScheduler(runner, (h) => dbs[h]);
+    s.syncAll();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runner).toHaveBeenCalledTimes(1); // второй проект ждёт своей очереди
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(runner).toHaveBeenCalledTimes(2);
+    s.stopAll();
+  });
+
+  it('выключённый проект на старте не открывается вовсе', () => {
+    const { db } = project(); // enabled=false по умолчанию
+    const opened: string[] = [];
+    const s = createScheduler(async () => ok(), (h) => { opened.push(h); return db; });
+    s.syncAll();
+    expect(opened).toEqual([]); // открытие на запись = миграции чужой доски
+    s.stopAll();
+  });
+
+  it('пауза растёт на сбоях подряд и сбрасывается первым успехом', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_700_000_000_000);
+    const T = 1_700_000_000;
+    const { hash, db } = project();
+    setAutoTick(db, { enabled: true, intervalSec: 30 });
+    const runner = vi.fn<TickRunner>(async () => ok());
+    let broken = true;
+    let calls = 0;
+    const s = createScheduler(runner, () => {
+      calls += 1;
+      if (calls > 1 && broken) throw new Error('EROFS'); // 1-й вызов — sync(), он проходит
+      return db;
+    });
+    const errSpy = quiet();
+
+    s.sync(hash);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(s.nextAt(hash)).toBe(T + 30); // первый сбой — ретрай штатным интервалом
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(s.nextAt(hash)).toBe(T + 30 + 60); // второй подряд — вдвое дольше
+
+    broken = false;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(runner).toHaveBeenCalledTimes(1);
+    expect(s.nextAt(hash)).toBe(T + 90 + 30); // успех — обратно на выбранный человеком интервал
+
+    broken = true;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(s.nextAt(hash)).toBe(T + 120 + 30); // счётчик сбоев обнулён, пауза снова с нуля
+    errSpy.mockRestore();
+    s.stopAll();
+  });
+
+  it('isRunning поднят, пока проход висит', async () => {
+    vi.useFakeTimers();
+    const { hash, db } = project();
+    setAutoTick(db, { enabled: true, intervalSec: 30 });
+    let release: (() => void) | undefined;
+    const runner = vi.fn<TickRunner>(() => new Promise((res) => { release = () => res(ok()); }));
+    const s = createScheduler(runner, () => db);
+    expect(s.isRunning(hash)).toBe(false);
+    s.sync(hash);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(s.isRunning(hash)).toBe(true);
+    release?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(s.isRunning(hash)).toBe(false);
+    s.stopAll();
+  });
+
+  // Планировщик сам cwd для тика не резолвит: у сервера нет своего cwd в проекте.
+  it('раннер получает записанный toplevel, а не догадку по project_path', async () => {
+    vi.useFakeTimers();
+    const { hash, db } = project();
+    setAutoTick(db, { enabled: true, intervalSec: 30 });
+    const seen: (string | null)[] = [];
+    const runner = vi.fn<TickRunner>(async (p) => { seen.push(p.toplevel); return ok(); });
+    const s = createScheduler(runner, () => db);
+    s.sync(hash);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen).toEqual([null]); // ключа ещё нет — раннер откатится на dirname(project_path)
+    setProjectToplevel(db, '/super/sub');
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(seen[1]).toBe('/super/sub');
+    s.stopAll();
+  });
+
+  // nextAt должен быть в секундах, а не в миллисекундах.
   it('nextAt возвращает абсолютные секунды, не миллисекунды', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_700_000_000_000);

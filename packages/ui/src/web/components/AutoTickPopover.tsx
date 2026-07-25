@@ -49,10 +49,16 @@ export function AutoTickPopover(
     if (state && !workersFocused) setWorkersText(String(state.maxWorkers));
   }, [state?.maxWorkers, workersFocused]);
 
+  // Open держим сами не ради вида, а чтобы знать момент закрытия: Escape размонтирует
+  // содержимое, а onBlur для размонтированного узла React не шлёт — без этого флаг
+  // «в фокусе» остаётся поднятым навсегда, буфер перестаёт следовать за сервером, и поле
+  // до перезагрузки страницы показывает число, которого на сервере нет.
+  const [open, setOpen] = useState(false);
+
   if (!state) return null;
 
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={(o) => { setOpen(o); if (!o) setWorkersFocused(false); }}>
       <PopoverTrigger
         render={
           <Button
@@ -101,8 +107,13 @@ export function AutoTickPopover(
             onFocus={() => { setWorkersFocused(true); clearError(); }}
             onChange={(e) => setWorkersText(e.currentTarget.value)}
             onBlur={(e) => {
-              setWorkersFocused(false);
-              const n = Number(e.currentTarget.value);
+              setWorkersFocused(false); // снятие фокуса возвращает буфер к серверному значению
+              const raw = e.currentTarget.value.trim();
+              const n = Number(raw);
+              // Пустое поле (человек стёр число, чтобы набрать новое) даёт Number('') === 0 —
+              // это не правка, а её начало: молча откатываем к серверному значению вместо
+              // PATCH'а нулём и красной ошибки валидации, которой человек не заслужил.
+              if (raw === '' || !Number.isInteger(n)) return;
               if (n !== state.maxWorkers) patch({ maxWorkers: n });
             }}
           />
@@ -114,9 +125,12 @@ export function AutoTickPopover(
         <div className="border-t pt-2 text-xs text-muted-foreground">
           <p>{lastLine(state)}</p>
           <p>
-            {state.enabled && state.nextAt !== null
-              ? `next: in ${human(state.nextAt - Date.now() / 1000)}`
-              : 'next: —'}
+            {/* во время прохода nextAt смотрит в прошлое: показывать «in 0 s» — врать */}
+            {state.running
+              ? 'running now…'
+              : state.enabled && state.nextAt !== null
+                ? `next: in ${human(state.nextAt - Date.now() / 1000)}`
+                : 'next: —'}
           </p>
         </div>
         {error && <p className="text-xs text-destructive">{error}</p>}

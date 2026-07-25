@@ -11,7 +11,8 @@ import {
   boardData, claimNext, claimTask, commentTask, createTrack, deleteTrack, DEFAULT_TTL, editTask,
   editTrack, ensureWorktree, exportBoard, headCommit, kddVersion, linkTasks, listAgentEvents, listCriteria, listProjects, taskBranchHead,
   listTracks, maxWorkers, moveTask, mustGetTask, openDb, parseClaudeStreamLine, rebuild, recall, removeCriterion,
-  renewClaim, resolveDbPath, resolveDecisionsDir, resolveToplevel, setCriterionChecked, statusDigest,
+  renewClaim, resolveDbPath, resolveDecisionsDir, resolveToplevel, setCriterionChecked,
+  setProjectToplevel, statusDigest,
   sweepWorktrees, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, type Status,
 } from '@kddkit/core';
 import { createScheduler, projectPool, startUi, type TickRunner } from '@kddkit/ui';
@@ -65,7 +66,7 @@ const DEFAULT_SPAWN_CMD =
 // украденным, кинул бы исключение из таймера без onCompromised — и уронил бы этот child.
 const TICK_LOCK_STALE = 10 * 60 * 1000; // ms
 
-// Fix (review, wave final): жёсткий потолок на один проход tickRunner — см. tick-runner.ts.
+// Жёсткий потолок на один проход tickRunner — см. tick-runner.ts.
 // Ниже TICK_LOCK_STALE: child обязан быть убит и лок освобождён раньше, чем лок сочтут stale.
 const TICK_KILL_TIMEOUT = 5 * 60 * 1000; // ms
 
@@ -221,6 +222,10 @@ program.command('tick')
       try {
         const toplevel = resolveToplevel();
         return withDbAt(dbPath, projectPath, (db) => {
+          // Мы здесь единственные, кто знает toplevel достоверно (резолвили из своего cwd
+          // внутри репозитория). Планировщик web-сервера своего cwd в проекте не имеет —
+          // запоминаем ответ для него.
+          setProjectToplevel(db, toplevel);
           const t = tick(db, { maxWorkers: maxWorkers(db), ttl, projectDir: toplevel, spawn: spawnWorker });
           // sweep ПОСЛЕ claim-loop: re-claimed задача уже in_progress → её worktree не тронут;
           // истинно брошенная (reclaim без re-claim) → status 'new' → worktree снесён.
@@ -449,7 +454,13 @@ program.command('ui')
 async function uiStart(port: number): Promise<void> {
   const { dbPath, projectPath } = resolveDbPath();
   const hash = basename(dirname(dbPath));
-  openDb(dbPath, projectPath).close(); // создаём/мигрируем базу → проект виден в /api/projects
+  const db = openDb(dbPath, projectPath); // создаём/мигрируем базу → проект виден в /api/projects
+  try {
+    // `kdd ui` запущен изнутри проекта — второй (после `kdd tick`) путь, который знает
+    // toplevel достоверно. Планировщику он нужен как cwd для дочерних тиков.
+    setProjectToplevel(db, resolveToplevel());
+  } catch { /* не git-репо: путь возможен только с KDD_DB, toplevel останется неизвестным */ }
+  db.close();
   const url = `http://localhost:${port}?project=${hash}`;
   try {
     const res = await fetch(`http://localhost:${port}/api/ping`, { signal: AbortSignal.timeout(500) });

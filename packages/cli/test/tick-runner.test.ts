@@ -68,33 +68,84 @@ describe('parseTickOutput', () => {
 // Фейковый child_process: никогда сам не эмиттит close/error, пока его явно не kill()-нут —
 // имитирует зависший `git worktree remove --force` внутри sweepWorktrees на упавшей сетевой
 // mount. Не мок-библиотека, обычный EventEmitter, тот же приём, что spawn: SpawnFn в core/driver.
-function makeHungChild() {
+// dieOn — сигнал, на который этот child соглашается умереть; всё, что пришло раньше,
+// он игнорирует. Так проверяется, что эскалация настоящая, а не «шлём оба сразу».
+function makeHungChild(dieOn = 'SIGTERM') {
   const child = new EventEmitter() as EventEmitter & {
     stdout: EventEmitter; stderr: EventEmitter; kill: (signal: string) => void;
   };
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
-  let killed = false;
-  child.kill = () => {
-    killed = true;
-    // реальный SIGKILL асинхронно приводит к 'close' с code=null чуть позже — не синхронно
-    setTimeout(() => child.emit('close', null), 0);
+  const signals: string[] = [];
+  child.kill = (signal: string) => {
+    signals.push(signal);
+    // реальный сигнал асинхронно приводит к 'close' с code=null чуть позже — не синхронно
+    if (signal === dieOn) setTimeout(() => child.emit('close', null), 0);
   };
-  return { child, wasKilled: () => killed };
+  return { child, signals };
 }
 
 describe('createTickRunner', () => {
   it('kills a hung child after the timeout and resolves with an error TickRun', async () => {
-    const { child, wasKilled } = makeHungChild();
+    const { child, signals } = makeHungChild();
     const fakeSpawn = ((_cmd: string, _args: string[], _opts: unknown) => child) as
       unknown as typeof spawnProcess;
 
     const runner = createTickRunner('/fake/index.js', 20, fakeSpawn);
-    const result = await runner({ dbPath: '/x/kdd.db', projectPath: '/x/repo' });
+    const result = await runner({ dbPath: '/x/kdd.db', projectPath: '/x/repo', toplevel: null });
 
-    expect(wasKilled()).toBe(true);
+    expect(signals.length).toBeGreaterThan(0);
     expect(result.error).toMatch(/timeout/i);
     expect(result).toMatchObject({ reclaimed: 0, spawned: 0, active: 0, reaped: 0 });
+  });
+
+  // SIGKILL нельзя перехватить, а proper-lockfile снимает tick.lock через signal-exit.
+  // Убитый сразу наглухо child оставил бы лок со свежим mtime, и следующие десять минут
+  // и планировщик, и терминальный `kdd tick` получали бы ELOCKED.
+  it('asks with SIGTERM first and only then escalates to SIGKILL', async () => {
+    const { child, signals } = makeHungChild('SIGKILL'); // SIGTERM игнорирует
+    const fakeSpawn = ((_cmd: string, _args: string[], _opts: unknown) => child) as
+      unknown as typeof spawnProcess;
+
+    const runner = createTickRunner('/fake/index.js', 10, fakeSpawn, 20);
+    const result = await runner({ dbPath: '/x/kdd.db', projectPath: '/x/repo', toplevel: null });
+
+    expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
+    expect(result.error).toMatch(/timeout/i);
+  });
+
+  it('a child that exits on SIGTERM is never SIGKILLed', async () => {
+    const { child, signals } = makeHungChild('SIGTERM');
+    const fakeSpawn = ((_cmd: string, _args: string[], _opts: unknown) => child) as
+      unknown as typeof spawnProcess;
+
+    const runner = createTickRunner('/fake/index.js', 10, fakeSpawn, 30);
+    await runner({ dbPath: '/x/kdd.db', projectPath: '/x/repo', toplevel: null });
+    await new Promise((r) => setTimeout(r, 60)); // переживаем окно эскалации
+
+    expect(signals).toEqual(['SIGTERM']);
+  });
+
+  // project_path — это git common-dir: у submodule его родитель — <super>/.git/modules,
+  // и тик бежал бы не в том репозитории.
+  it('runs the child in the recorded toplevel, falling back to the common-dir parent', async () => {
+    const cwds: unknown[] = [];
+    const spawns: ReturnType<typeof makeHungChild>[] = [];
+    const fakeSpawn = ((_cmd: string, _args: string[], opts: { cwd: string }) => {
+      cwds.push(opts.cwd);
+      const made = makeHungChild();
+      spawns.push(made);
+      queueMicrotask(() => made.child.emit('close', 0));
+      return made.child;
+    }) as unknown as typeof spawnProcess;
+
+    const runner = createTickRunner('/fake/index.js', 5000, fakeSpawn);
+    await runner({
+      dbPath: '/x/kdd.db', projectPath: '/super/.git/modules/sub', toplevel: '/super/sub',
+    });
+    await runner({ dbPath: '/x/kdd.db', projectPath: '/repo/.git', toplevel: null });
+
+    expect(cwds).toEqual(['/super/sub', '/repo']);
   });
 
   it('a child that closes before the timeout is not killed', async () => {
@@ -109,7 +160,7 @@ describe('createTickRunner', () => {
       unknown as typeof spawnProcess;
 
     const runner = createTickRunner('/fake/index.js', 5000, fakeSpawn);
-    const resultPromise = runner({ dbPath: '/x/kdd.db', projectPath: '/x/repo' });
+    const resultPromise = runner({ dbPath: '/x/kdd.db', projectPath: '/x/repo', toplevel: null });
     child.stdout.emit('data', Buffer.from(JSON.stringify({ reclaimed: 1, spawned: 0, active: 1, reaped: 0 })));
     child.emit('close', 0);
     const result = await resultPromise;

@@ -48,6 +48,7 @@ import {
   resolveDecisionsDir,
   resolveToplevel,
   setCriterionChecked,
+  setProjectToplevel,
   statusDigest,
   sweepWorktrees,
   taskDetail,
@@ -231,15 +232,18 @@ function parseTickOutput(out2, err, code, at) {
 }
 
 // src/tick-runner.ts
-function createTickRunner(scriptPath, killTimeoutMs, spawnFn = spawnProcess) {
-  return ({ dbPath, projectPath }) => new Promise((resolve) => {
+function createTickRunner(scriptPath, killTimeoutMs, spawnFn = spawnProcess, killGraceMs = 5e3) {
+  return ({ dbPath, projectPath, toplevel }) => new Promise((resolve) => {
     const child = spawnFn(
       process.execPath,
       [scriptPath, "tick", "--json"],
       {
-        // cwd нужен tick'у, чтобы резолвить toplevel для воркеров; базу пиннит KDD_DB,
-        // projectPath — это git common-dir, его родитель и есть toplevel.
-        cwd: dirname(projectPath),
+        // cwd нужен tick'у, чтобы резолвить toplevel для воркеров; базу пиннит KDD_DB.
+        // Родитель projectPath (git common-dir) — верный toplevel только для обычного
+        // <repo>/.git: у submodule это <super>/.git/modules, и тик работал бы не в том
+        // репозитории. Fallback на него нужен для досок, созданных до появления
+        // project_toplevel в meta: их первый же `kdd tick` этот ключ и запишет.
+        cwd: toplevel ?? dirname(projectPath),
         env: { ...process.env, KDD_DB: dbPath },
         stdio: ["ignore", "pipe", "pipe"]
       }
@@ -253,18 +257,24 @@ function createTickRunner(scriptPath, killTimeoutMs, spawnFn = spawnProcess) {
     child.stderr.on("data", (d) => {
       err += d.toString();
     });
+    let escalation;
     const killer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      child.kill("SIGTERM");
+      escalation = setTimeout(() => child.kill("SIGKILL"), killGraceMs);
+      escalation.unref?.();
     }, killTimeoutMs);
-    child.on("error", (e) => {
+    const settle = (run2) => {
       clearTimeout(killer);
-      resolve({ at: now2(), reclaimed: 0, spawned: 0, active: 0, reaped: 0, error: e.message });
+      if (escalation) clearTimeout(escalation);
+      resolve(run2);
+    };
+    child.on("error", (e) => {
+      settle({ at: now2(), reclaimed: 0, spawned: 0, active: 0, reaped: 0, error: e.message });
     });
     child.on("close", (code) => {
-      clearTimeout(killer);
       if (timedOut) {
-        resolve({
+        settle({
           at: now2(),
           reclaimed: 0,
           spawned: 0,
@@ -274,7 +284,7 @@ function createTickRunner(scriptPath, killTimeoutMs, spawnFn = spawnProcess) {
         });
         return;
       }
-      resolve(parseTickOutput(out2, err, code, now2()));
+      settle(parseTickOutput(out2, err, code, now2()));
     });
   });
 }
@@ -414,6 +424,7 @@ program.command("tick").description("agent-mode: reclaim expired leases, claim r
     try {
       const toplevel = resolveToplevel();
       return withDbAt(dbPath, projectPath, (db) => {
+        setProjectToplevel(db, toplevel);
         const t = tick(db, { maxWorkers: maxWorkers(db), ttl, projectDir: toplevel, spawn: spawnWorker });
         return { ...t, reaped: sweepWorktrees(db, toplevel) };
       });
@@ -603,7 +614,12 @@ program.command("ui").option("--port <n>", "port", "4499").action((o) => run(fal
 async function uiStart(port) {
   const { dbPath, projectPath } = resolveDbPath2();
   const hash = basename(dirname2(dbPath));
-  openDb2(dbPath, projectPath).close();
+  const db = openDb2(dbPath, projectPath);
+  try {
+    setProjectToplevel(db, resolveToplevel());
+  } catch {
+  }
+  db.close();
   const url = `http://localhost:${port}?project=${hash}`;
   try {
     const res = await fetch(`http://localhost:${port}/api/ping`, { signal: AbortSignal.timeout(500) });

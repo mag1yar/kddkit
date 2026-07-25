@@ -196,6 +196,17 @@ function openDb(dbPath, projectPath) {
 function projectPathOf(db) {
   return db.prepare(`SELECT value FROM meta WHERE key = 'project_path'`).get()?.value ?? null;
 }
+function projectToplevelOf(db) {
+  return db.prepare(`SELECT value FROM meta WHERE key = 'project_toplevel'`).get()?.value ?? null;
+}
+function setProjectToplevel(db, toplevel) {
+  db.transaction(() => {
+    db.prepare(
+      `INSERT INTO meta (key, value) VALUES ('project_toplevel', ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    ).run(toplevel);
+  })();
+}
 
 // src/errors.ts
 var KddError = class extends Error {
@@ -263,9 +274,16 @@ function listProjects() {
     if (!existsSync(dbPath)) continue;
     try {
       const db = new Database2(dbPath, { readonly: true });
-      const row = db.prepare(`SELECT value FROM meta WHERE key='project_path'`).get();
+      const rows = db.prepare(
+        `SELECT key, value FROM meta WHERE key IN ('project_path','autotick_enabled')`
+      ).all();
       db.close();
-      out.push({ dbPath, projectPath: row?.value ?? "(unknown)" });
+      const meta = new Map(rows.map((r) => [r.key, r.value]));
+      out.push({
+        dbPath,
+        projectPath: meta.get("project_path") ?? "(unknown)",
+        autoTickEnabled: meta.get("autotick_enabled") === "1"
+      });
     } catch {
     }
   }
@@ -1507,6 +1525,7 @@ export {
   parseRepoUrl,
   placeTask,
   projectPathOf,
+  projectToplevelOf,
   rebuild,
   recall,
   reclaimExpired,
@@ -1526,6 +1545,7 @@ export {
   setAutoTick,
   setCriterionChecked,
   setLastRun,
+  setProjectToplevel,
   slugify,
   statusDigest,
   sweepWorktrees,
