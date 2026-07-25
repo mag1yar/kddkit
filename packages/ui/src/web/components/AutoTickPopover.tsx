@@ -1,19 +1,25 @@
 import { useEffect, useRef, useState } from 'react';
-import { Timer } from 'lucide-react';
+import { Minus, Plus, Timer } from 'lucide-react';
 import type { AutoTickState } from '../api';
 import { Button } from './ui/button';
-import { Checkbox } from './ui/checkbox';
-import { Input } from './ui/input';
-import { Label } from './ui/label';
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from './ui/field';
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from './ui/input-group';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { Separator } from './ui/separator';
+import { Spinner } from './ui/spinner';
+import { Switch } from './ui/switch';
+import { ToggleGroup, ToggleGroupItem } from './ui/toggle-group';
 
+// Подписи короткие намеренно: четыре сегмента должны уместиться в ширину поповера.
 const INTERVALS: { value: number; label: string }[] = [
-  { value: 30, label: '30 s' }, { value: 60, label: '1 min' },
-  { value: 300, label: '5 min' }, { value: 900, label: '15 min' },
+  { value: 30, label: '30s' }, { value: 60, label: '1m' },
+  { value: 300, label: '5m' }, { value: 900, label: '15m' },
 ];
 
-const label = (sec: number): string => INTERVALS.find((i) => i.value === sec)?.label ?? `${sec} s`;
+const MIN_WORKERS = 1;
+const MAX_WORKERS = 10;
+
+const label = (sec: number): string => INTERVALS.find((i) => i.value === sec)?.label ?? `${sec}s`;
 
 // Таймстемпы приходят в секундах, как везде в kdd.
 function human(deltaSec: number): string {
@@ -32,12 +38,33 @@ function countdown(deltaSec: number): string {
   return `${Math.floor(d / 60)}:${String(d % 60).padStart(2, '0')}`;
 }
 
-function lastLine(s: AutoTickState): string {
-  if (!s.last) return 'last: never';
+type Health = 'off' | 'running' | 'error' | 'armed';
+
+function healthOf(s: AutoTickState): Health {
+  if (s.running) return 'running';
+  if (!s.enabled) return 'off';
+  return s.last?.error ? 'error' : 'armed';
+}
+
+const DOT: Record<Health, string> = {
+  off: 'bg-muted-foreground/40',
+  running: 'bg-primary',
+  error: 'bg-destructive',
+  armed: 'bg-primary',
+};
+
+const HEADLINE: Record<Health, string> = {
+  off: 'Off', running: 'Running…', error: 'Last run failed', armed: 'Idle',
+};
+
+// Вторая строка статуса — что было в прошлый проход. Ошибка вытесняет цифры: если проход
+// упал, «spawned 0» — не новость, а причина падения новость.
+function detailOf(s: AutoTickState): string {
+  if (!s.last) return 'never run';
   const ago = `${human(Date.now() / 1000 - s.last.at)} ago`;
-  if (s.last.error) return `last: ${ago} — ${s.last.error}`;
-  if (s.last.skipped) return `last: ${ago} — skipped, another tick was running`;
-  return `last: ${ago} · spawned ${s.last.spawned}, active ${s.last.active}`;
+  if (s.last.error) return s.last.error;
+  if (s.last.skipped) return `${ago} · skipped, another tick was running`;
+  return `${ago} · spawned ${s.last.spawned}, active ${s.last.active}`;
 }
 
 export function AutoTickPopover(
@@ -65,10 +92,10 @@ export function AutoTickPopover(
   // до перезагрузки страницы показывает число, которого на сервере нет.
   const [open, setOpen] = useState(false);
 
-  // Обе нижние строки — производные от Date.now(), а state приезжает раз в 5с (poll).
-  // Без собственного тикера отсчёт двигался бы рывками по 5 секунд, а на интервалах от
-  // минуты выглядел бы застывшим. Тикаем только пока поповер открыт: закрытый этих строк
-  // не показывает, а лишние перерисовки доски задаром никому не нужны.
+  // Строки статуса производны от Date.now(), а state приезжает раз в 5с (poll). Без
+  // собственного тикера отсчёт двигался бы рывками по 5 секунд, а на интервалах от минуты
+  // выглядел бы застывшим. Тикаем только пока поповер открыт: закрытый этих строк не
+  // показывает, а лишние перерисовки доски задаром никому не нужны.
   const [, bump] = useState(0);
   useEffect(() => {
     if (!open) return;
@@ -78,7 +105,7 @@ export function AutoTickPopover(
 
   // Отсчёт дошёл до нуля — проход идёт прямо сейчас, но узнать об этом можно только с
   // сервера. Ждать очередного полла (5с) значит держать «0 s» мёртвой строкой, а потом
-  // показать «next: in 25 s» на тридцатисекундном интервале: пять секунд утекли, пока никто
+  // показать «next 25 s» на тридцатисекундном интервале: пять секунд утекли, пока никто
   // не спрашивал. Спрашиваем сразу и ровно один раз на каждый nextAt — на следующий проход
   // приедет новый, и запрос повторится уже для него.
   const dueAt = state?.enabled && !state.running ? state.nextAt : null;
@@ -92,6 +119,17 @@ export function AutoTickPopover(
 
   if (!state) return null;
 
+  const health = healthOf(state);
+  const due = state.nextAt !== null && state.nextAt - Date.now() / 1000 <= 0;
+
+  // Кламп вместо ошибки валидации: диапазон замкнутый, и «ввёл 25 — получил 10» честнее
+  // красной строки, после которой в поле остаётся значение, которого на сервере нет.
+  const commitWorkers = (n: number): void => {
+    const clamped = Math.min(MAX_WORKERS, Math.max(MIN_WORKERS, Math.round(n)));
+    setWorkersText(String(clamped));
+    if (clamped !== state.maxWorkers) patch({ maxWorkers: clamped });
+  };
+
   return (
     <Popover open={open} onOpenChange={(o) => { setOpen(o); if (!o) setWorkersFocused(false); }}>
       <PopoverTrigger
@@ -102,75 +140,124 @@ export function AutoTickPopover(
             className={state.enabled ? undefined : 'text-muted-foreground'}
             title="Auto-tick: run kdd tick on a schedule"
           >
-            <Timer className="size-3.5" />
+            <Timer data-icon="inline-start" />
             {state.enabled ? `Auto · ${label(state.intervalSec)}` : 'Auto'}
+            {/* Здоровье планировщика видно, не открывая поповер — ради ночного режима,
+                где смотрят на доску мельком и не кликают. */}
+            {state.enabled && (state.running
+              ? <Spinner data-icon="inline-end" className="size-3" />
+              : <span data-icon="inline-end" className={`size-1.5 rounded-full ${DOT[health]}`} />)}
           </Button>
         }
       />
-      <PopoverContent align="end" sideOffset={4} className="w-72 gap-3 p-3">
-        <Label className="cursor-pointer">
-          <Checkbox
-            checked={state.enabled}
-            onCheckedChange={(checked) => patch({ enabled: Boolean(checked) })}
-          />
-          Auto-tick
-        </Label>
-
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-sm text-muted-foreground">Every</span>
-          <Select
-            value={String(state.intervalSec)}
-            onValueChange={(v) => patch({ intervalSec: Number(v) })}
-          >
-            <SelectTrigger size="sm" className="w-28">
-              <SelectValue>{(v) => label(Number(v))}</SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {INTERVALS.map((i) => (
-                <SelectItem key={i.value} value={String(i.value)}>{i.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-sm text-muted-foreground">Max workers</span>
-          <Input
-            type="number" min={1} max={10} className="w-28"
-            disabled={state.maxWorkersEnvLocked}
-            value={workersText}
-            onFocus={() => { setWorkersFocused(true); clearError(); }}
-            onChange={(e) => setWorkersText(e.currentTarget.value)}
-            onBlur={(e) => {
-              setWorkersFocused(false); // снятие фокуса возвращает буфер к серверному значению
-              const raw = e.currentTarget.value.trim();
-              const n = Number(raw);
-              // Пустое поле (человек стёр число, чтобы набрать новое) даёт Number('') === 0 —
-              // это не правка, а её начало: молча откатываем к серверному значению вместо
-              // PATCH'а нулём и красной ошибки валидации, которой человек не заслужил.
-              if (raw === '' || !Number.isInteger(n)) return;
-              if (n !== state.maxWorkers) patch({ maxWorkers: n });
-            }}
-          />
-        </div>
-        {state.maxWorkersEnvLocked && (
-          <p className="text-xs text-muted-foreground">overridden by KDD_MAX_WORKERS</p>
-        )}
-
-        <div className="border-t pt-2 text-xs text-muted-foreground">
-          <p>{lastLine(state)}</p>
-          <p>
-            {/* во время прохода nextAt смотрит в прошлое: показывать «in 0 s» — врать */}
-            {state.running
-              ? 'running now…'
-              : state.enabled && state.nextAt !== null
-                ? state.nextAt - Date.now() / 1000 <= 0
-                  ? 'due now…' // проход стартовал; running приедет ответом на refresh выше
-                  : `next: in ${countdown(state.nextAt - Date.now() / 1000)}`
-                : 'next: —'}
+      <PopoverContent align="end" sideOffset={4} className="w-72 gap-0 p-0">
+        <div className="flex flex-col gap-1 p-3">
+          <div className="flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2 text-sm font-medium">
+              {state.running
+                ? <Spinner className="size-3.5 text-muted-foreground" />
+                : <span className={`size-2 rounded-full ${DOT[health]}`} />}
+              {HEADLINE[health]}
+            </span>
+            {state.enabled && !state.running && state.nextAt !== null && (
+              // tabular-nums: посекундный отсчёт иначе дёргает строку на каждой смене цифры.
+              <span className="font-mono text-xs tabular-nums text-muted-foreground">
+                {due ? 'due now' : `next ${countdown(state.nextAt - Date.now() / 1000)}`}
+              </span>
+            )}
+          </div>
+          <p className={`text-xs ${health === 'error' ? 'text-destructive' : 'text-muted-foreground'}`}>
+            {detailOf(state)}
           </p>
         </div>
-        {error && <p className="text-xs text-destructive">{error}</p>}
+
+        <Separator />
+
+        <FieldGroup className="gap-4 p-3">
+          <Field orientation="horizontal">
+            <FieldLabel htmlFor="autotick-enabled">Auto-tick</FieldLabel>
+            <Switch
+              id="autotick-enabled"
+              checked={state.enabled}
+              onCheckedChange={(checked) => patch({ enabled: checked })}
+            />
+          </Field>
+
+          {/* Интервал НЕ запираем за тумблером: это сохранённая настройка, а не орган
+              управления живым процессом. Иначе «поставить минуту» превращается в танец
+              включи → поменяй → выключи. Что планировщик стоит, сказано словом Off наверху. */}
+          <Field>
+            <FieldLabel>Every</FieldLabel>
+            <ToggleGroup
+              className="w-full"
+              value={[String(state.intervalSec)]}
+              // Base UI отдаёт массив и разрешает снять последний выбранный — пустой
+              // означает «ткнул в активный сегмент», а не «выбрал ничего».
+              onValueChange={(v) => { if (v.length) patch({ intervalSec: Number(v[0]) }); }}
+            >
+              {INTERVALS.map((i) => (
+                <ToggleGroupItem
+                  key={i.value} value={String(i.value)}
+                  variant="outline" size="sm" className="flex-1"
+                >
+                  {i.label}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+          </Field>
+
+          <Field orientation="horizontal">
+            <FieldLabel htmlFor="autotick-workers">Max workers</FieldLabel>
+            <InputGroup className="w-28">
+              <InputGroupAddon align="inline-start">
+                {/* На границе диапазона кнопку НЕ дизейблим: InputGroup красит серым весь
+                    контрол, стоит одному ребёнку стать disabled (has-disabled:opacity-50), и
+                    при max workers = 1 весь степпер выглядел бы выключенным. Клик по краю
+                    просто упирается в кламп. */}
+                <InputGroupButton
+                  aria-label="one fewer worker"
+                  disabled={state.maxWorkersEnvLocked}
+                  onClick={() => commitWorkers(state.maxWorkers - 1)}
+                >
+                  <Minus />
+                </InputGroupButton>
+              </InputGroupAddon>
+              <InputGroupInput
+                id="autotick-workers"
+                type="number" min={MIN_WORKERS} max={MAX_WORKERS}
+                // Родные стрелки браузера прячем: рядом уже стоят свои −/+, и на фокусе
+                // в поле оказывалось два комплекта органов управления сразу.
+                className="text-center [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                disabled={state.maxWorkersEnvLocked}
+                value={workersText}
+                onFocus={() => { setWorkersFocused(true); clearError(); }}
+                onChange={(e) => setWorkersText(e.currentTarget.value)}
+                onBlur={(e) => {
+                  setWorkersFocused(false); // снятие фокуса возвращает буфер к серверному значению
+                  const n = Number(e.currentTarget.value.trim());
+                  // Пустое поле (человек стёр число, чтобы набрать новое) даёт Number('') === 0 —
+                  // это не правка, а её начало: молча откатываем к серверному значению.
+                  if (!Number.isFinite(n) || n === 0) { setWorkersText(String(state.maxWorkers)); return; }
+                  commitWorkers(n);
+                }}
+                onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+              />
+              <InputGroupAddon align="inline-end">
+                <InputGroupButton
+                  aria-label="one more worker"
+                  disabled={state.maxWorkersEnvLocked}
+                  onClick={() => commitWorkers(state.maxWorkers + 1)}
+                >
+                  <Plus />
+                </InputGroupButton>
+              </InputGroupAddon>
+            </InputGroup>
+          </Field>
+          {state.maxWorkersEnvLocked
+            ? <FieldDescription>overridden by KDD_MAX_WORKERS</FieldDescription>
+            : <FieldDescription>also applies to kdd tick in the terminal</FieldDescription>}
+          {error && <FieldError>{error}</FieldError>}
+        </FieldGroup>
       </PopoverContent>
     </Popover>
   );
