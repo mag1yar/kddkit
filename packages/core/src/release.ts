@@ -102,19 +102,25 @@ export async function releaseInfo(
   opts: { fetch?: typeof globalThis.fetch } = {},
 ): Promise<ReleaseInfo> {
   const now = Date.now();
-  if (cache && now - cache.at < (cache.info.error ? ERR_TTL : OK_TTL)) return cache.info;
+  // cache.info — синглтон, общий на все вызовы. Отдаём клон и на хите, и при записи:
+  // UI кладёт releases прямо в React state и может .sort()/.reverse() их на месте —
+  // без клона такая мутация тихо портит кэш для всех последующих вызовов до истечения TTL.
+  if (cache && now - cache.at < (cache.info.error ? ERR_TTL : OK_TTL)) {
+    return structuredClone(cache.info);
+  }
 
   const current = kddVersion();
   const slug = repoSlug();
   const repoUrl = slug ? `https://github.com/${slug.owner}/${slug.repo}` : null;
 
-  const fail = (error: string): ReleaseInfo => {
-    const info: ReleaseInfo = {
-      current, latest: null, hasUpdate: false, releases: [], repoUrl, error,
-    };
+  const store = (info: ReleaseInfo): ReleaseInfo => {
     cache = { at: now, info };
-    return info;
+    return structuredClone(info);
   };
+
+  const fail = (error: string): ReleaseInfo => store({
+    current, latest: null, hasUpdate: false, releases: [], repoUrl, error,
+  });
 
   if (!slug) return fail('no repository url in package.json');
 
@@ -152,16 +158,14 @@ export async function releaseInfo(
       .reduce<string | null>(
         (m, r) => (m === null || compareVersions(r.version, m) > 0 ? r.version : m), null);
 
-    const info: ReleaseInfo = {
+    return store({
       current,
       latest,
       hasUpdate: latest !== null && compareVersions(latest, current) > 0,
       releases,
       repoUrl,
       error: null,
-    };
-    cache = { at: now, info };
-    return info;
+    });
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e));
   }

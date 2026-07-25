@@ -1307,22 +1307,24 @@ function _resetCache() {
 }
 async function releaseInfo(opts = {}) {
   const now2 = Date.now();
-  if (cache && now2 - cache.at < (cache.info.error ? ERR_TTL : OK_TTL)) return cache.info;
+  if (cache && now2 - cache.at < (cache.info.error ? ERR_TTL : OK_TTL)) {
+    return structuredClone(cache.info);
+  }
   const current = kddVersion();
   const slug = repoSlug();
   const repoUrl = slug ? `https://github.com/${slug.owner}/${slug.repo}` : null;
-  const fail = (error) => {
-    const info = {
-      current,
-      latest: null,
-      hasUpdate: false,
-      releases: [],
-      repoUrl,
-      error
-    };
+  const store = (info) => {
     cache = { at: now2, info };
-    return info;
+    return structuredClone(info);
   };
+  const fail = (error) => store({
+    current,
+    latest: null,
+    hasUpdate: false,
+    releases: [],
+    repoUrl,
+    error
+  });
   if (!slug) return fail("no repository url in package.json");
   try {
     const f = opts.fetch ?? globalThis.fetch;
@@ -1348,16 +1350,14 @@ async function releaseInfo(opts = {}) {
       (m, r) => m === null || compareVersions(r.version, m) > 0 ? r.version : m,
       null
     );
-    const info = {
+    return store({
       current,
       latest,
       hasUpdate: latest !== null && compareVersions(latest, current) > 0,
       releases,
       repoUrl,
       error: null
-    };
-    cache = { at: now2, info };
-    return info;
+    });
   } catch (e) {
     return fail(e instanceof Error ? e.message : String(e));
   }

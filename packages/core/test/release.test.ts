@@ -84,6 +84,18 @@ describe('releaseInfo', () => {
     expect(info.repoUrl).toBe('https://github.com/mag1yar/kddkit');
   });
 
+  it('passes html_url through as the release url', async () => {
+    const { fetchImpl } = ghStub([row({ html_url: 'https://github.com/mag1yar/kddkit/releases/tag/v0.9.0' })]);
+    const info = await releaseInfo({ fetch: fetchImpl });
+    expect(info.releases[0]?.url).toBe('https://github.com/mag1yar/kddkit/releases/tag/v0.9.0');
+  });
+
+  it('falls back to repoUrl/releases when html_url is absent', async () => {
+    const { fetchImpl } = ghStub([row({ html_url: undefined })]);
+    const info = await releaseInfo({ fetch: fetchImpl });
+    expect(info.releases[0]?.url).toBe('https://github.com/mag1yar/kddkit/releases');
+  });
+
   it('reports an update when the newest stable release is ahead', async () => {
     const { fetchImpl } = ghStub([row({ tag_name: 'v99.0.0' })]);
     const info = await releaseInfo({ fetch: fetchImpl });
@@ -131,6 +143,14 @@ describe('releaseInfo', () => {
     expect(info.error).toBe('GitHub API 403 rate limit exceeded');
     expect(info.current).toBe(kddVersion());
     expect(info.hasUpdate).toBe(false);
+  });
+
+  it('reports an unexpected response when GitHub returns a 200 non-array body', async () => {
+    const { fetchImpl } = ghStub({ message: 'not an array' });
+    const info = await releaseInfo({ fetch: fetchImpl });
+    expect(info.error).toBe('unexpected GitHub response');
+    expect(info.current).toBe(kddVersion());
+    expect(info.releases).toEqual([]);
   });
 
   it('swallows a thrown fetch into error', async () => {
