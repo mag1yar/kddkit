@@ -57,6 +57,14 @@ export interface ReleaseInfo {
   current: string; latest: string | null; hasUpdate: boolean;
   releases: Release[]; repoUrl: string | null; error: string | null;
 }
+export interface TickRun {
+  at: number; reclaimed: number; spawned: number; active: number; reaped: number;
+  skipped?: boolean; error?: string;
+}
+export interface AutoTickState {
+  enabled: boolean; intervalSec: number; maxWorkers: number;
+  maxWorkersEnvLocked: boolean; last: TickRun | null; nextAt: number | null;
+}
 export const getProjects = () => req<Project[]>('/api/projects');
 export const getPing = () => req<{ kdd: boolean; default: string }>('/api/ping');
 export const getTracks = () => req<Track[]>('/api/tracks');
@@ -70,6 +78,10 @@ export const getBoard = (trackId?: number) =>
   req<Board>(trackId ? `/api/board?track=${trackId}` : '/api/board');
 export const getVersion = () => req<{ version: number }>('/api/version');
 export const getReleases = () => req<ReleaseInfo>('/api/releases');
+export const getAutoTick = () => req<AutoTickState>('/api/autotick');
+export const patchAutoTick = (
+  b: Partial<Pick<AutoTickState, 'enabled' | 'intervalSec' | 'maxWorkers'>>,
+) => req<AutoTickState>('/api/autotick', { method: 'PATCH', body: JSON.stringify(b) });
 export const getTask = (id: number) => req<TaskDetail>(`/api/tasks/${id}`);
 export const createTask =
   (b: { title: string; body?: string; priority?: Priority; track_id?: number }) =>
