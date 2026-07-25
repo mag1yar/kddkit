@@ -38,6 +38,7 @@ import {
   maxWorkers,
   moveTask,
   mustGetTask,
+  now as now2,
   openDb as openDb2,
   parseClaudeStreamLine,
   rebuild,
@@ -56,7 +57,7 @@ import {
   unarchiveTask,
   unblockTask
 } from "@kddkit/core";
-import { projectPool, startUi } from "@kddkit/ui";
+import { createScheduler, projectPool, startUi } from "@kddkit/ui";
 
 // src/context.ts
 import { KddError, openDb, resolveDbPath } from "@kddkit/core";
@@ -228,6 +229,53 @@ function spawnWorker(taskId, workerId, projectDir) {
   });
   child.unref();
 }
+var tickRunner = ({ dbPath, projectPath }) => new Promise((resolve) => {
+  const fail2 = (error) => resolve({ at: now2(), reclaimed: 0, spawned: 0, active: 0, reaped: 0, error });
+  const child = spawnProcess(
+    process.execPath,
+    [fileURLToPath(import.meta.url), "tick", "--json"],
+    {
+      // cwd нужен tick'у, чтобы резолвить toplevel для воркеров; базу пиннит KDD_DB,
+      // projectPath — это git common-dir, его родитель и есть toplevel.
+      cwd: dirname(projectPath),
+      env: { ...process.env, KDD_DB: dbPath },
+      stdio: ["ignore", "pipe", "pipe"]
+    }
+  );
+  let out2 = "";
+  let err = "";
+  child.stdout.on("data", (d) => {
+    out2 += d.toString();
+  });
+  child.stderr.on("data", (d) => {
+    err += d.toString();
+  });
+  child.on("error", (e) => fail2(e.message));
+  child.on("close", (code) => {
+    if (code !== 0) {
+      fail2(err.trim() || `kdd tick exited with code ${code}`);
+      return;
+    }
+    let r;
+    try {
+      r = JSON.parse(out2);
+    } catch {
+      fail2(`unparsable tick output: ${out2.slice(0, 200)}`);
+      return;
+    }
+    if (r.skipped) {
+      resolve({ at: now2(), reclaimed: 0, spawned: 0, active: 0, reaped: 0, skipped: true });
+      return;
+    }
+    resolve({
+      at: now2(),
+      reclaimed: r.reclaimed ?? 0,
+      spawned: r.spawned ?? 0,
+      active: r.active ?? 0,
+      reaped: r.reaped ?? 0
+    });
+  });
+});
 function run(json, fn) {
   try {
     fn();
@@ -531,14 +579,17 @@ async function uiStart(port) {
     }
   } catch {
   }
-  const { getDb, closeAll } = projectPool(hash);
+  const { getDb, get, closeAll } = projectPool(hash);
+  const scheduler = createScheduler(tickRunner, get);
   try {
-    await startUi(getDb, port, hash);
+    await startUi(getDb, port, hash, scheduler);
   } catch (e) {
+    scheduler.stopAll();
     closeAll();
     fail(e instanceof Error ? e.message : String(e), false);
   }
   process.on("SIGINT", () => {
+    scheduler.stopAll();
     closeAll();
     process.exit(0);
   });

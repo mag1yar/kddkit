@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { addTask, openDb } from '@kddkit/core';
+import { describe, it, expect, afterEach } from 'vitest';
+import { addTask, getAutoTick, openDb, setLastRun } from '@kddkit/core';
 import { createApp } from '../src/server.js';
 
 const user = { type: 'user' } as const;
@@ -166,4 +166,65 @@ describe('GET /api/releases', () => {
     expect(Array.isArray(info.releases)).toBe(true);
     expect(info.repoUrl).toBe('https://github.com/mag1yar/kddkit');
   }, 20_000);
+});
+
+// KDD_MAX_WORKERS с машины разработчика перевернул бы maxWorkersEnvLocked
+afterEach(() => { delete process.env.KDD_MAX_WORKERS; });
+
+describe('/api/autotick', () => {
+  it('GET на пустой базе — дефолты, без таймера', async () => {
+    const { app } = mk();
+    const res = await app.request('/api/autotick');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      enabled: false, intervalSec: 60, maxWorkers: 3,
+      maxWorkersEnvLocked: false, last: null, nextAt: null,
+    });
+  });
+
+  it('PATCH пишет настройки и отдаёт новое состояние', async () => {
+    const { db, app } = mk();
+    const res = await app.request('/api/autotick', {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled: true, intervalSec: 300, maxWorkers: 4 }),
+    });
+    expect(res.status).toBe(200);
+    const s = (await res.json()) as { enabled: boolean; intervalSec: number; maxWorkers: number };
+    expect(s).toMatchObject({ enabled: true, intervalSec: 300, maxWorkers: 4 });
+    expect(getAutoTick(db)).toMatchObject({ enabled: true, intervalSec: 300, maxWorkers: 4 });
+  });
+
+  it('PATCH с мусорным интервалом — 400 и ничего не записано', async () => {
+    const { db, app } = mk();
+    const res = await app.request('/api/autotick', {
+      method: 'PATCH', body: JSON.stringify({ intervalSec: 7 }),
+    });
+    expect(res.status).toBe(400);
+    expect(getAutoTick(db).intervalSec).toBe(60);
+  });
+
+  it('PATCH дёргает scheduler.sync и отдаёт его nextAt', async () => {
+    const db = openDb(':memory:', 'x');
+    const synced: string[] = [];
+    const app = createApp(() => db, 'proj', {
+      sync: (h: string) => { synced.push(h); },
+      syncAll: () => {},
+      nextAt: () => 1700000060,
+      stopAll: () => {},
+    });
+    const res = await app.request('/api/autotick', {
+      method: 'PATCH', body: JSON.stringify({ enabled: true }),
+    });
+    const s = (await res.json()) as { nextAt: number | null };
+    expect(synced).toEqual(['proj']);
+    expect(s.nextAt).toBe(1700000060);
+  });
+
+  it('GET отдаёт последний проход', async () => {
+    const { db, app } = mk();
+    setLastRun(db, { at: 1700000000, reclaimed: 1, spawned: 2, active: 3, reaped: 0 });
+    const s = (await (await app.request('/api/autotick')).json()) as
+      { last: { spawned: number } | null };
+    expect(s.last?.spawned).toBe(2);
+  });
 });

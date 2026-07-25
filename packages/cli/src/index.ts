@@ -10,11 +10,11 @@ import {
   KddError, addCriterion, addDecision, addTask, appendAgentEvent, archiveTask, blockTask,
   boardData, claimNext, claimTask, commentTask, createTrack, deleteTrack, DEFAULT_TTL, editTask,
   editTrack, ensureWorktree, exportBoard, headCommit, kddVersion, linkTasks, listAgentEvents, listCriteria, listProjects, taskBranchHead,
-  listTracks, maxWorkers, moveTask, mustGetTask, openDb, parseClaudeStreamLine, rebuild, recall, removeCriterion,
+  listTracks, maxWorkers, moveTask, mustGetTask, now, openDb, parseClaudeStreamLine, rebuild, recall, removeCriterion,
   renewClaim, resolveDbPath, resolveDecisionsDir, resolveToplevel, setCriterionChecked, statusDigest,
   sweepWorktrees, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, type Status,
 } from '@kddkit/core';
-import { projectPool, startUi } from '@kddkit/ui';
+import { createScheduler, projectPool, startUi, type TickRunner } from '@kddkit/ui';
 import { fail, getActor, parseId, withDb, withDbAt } from './context.js';
 import {
   renderBoard, renderClaim, renderCriteria, renderRecall, renderShow, renderStatus, renderTracks,
@@ -76,6 +76,41 @@ function spawnWorker(taskId: number, workerId: string, projectDir: string): void
   });
   child.unref(); // tick не ждёт воркера
 }
+
+// Проход гоняем ОТДЕЛЬНЫМ процессом, а не вызовом tick() внутри сервера: sweepWorktrees
+// внутри прохода дёргает git через execFileSync и подвешивал бы event loop Hono на каждом
+// тике. TICK_LOCK межпроцессный, поэтому наложение с `kdd tick --watch` из терминала
+// безопасно даром. node берём тот же (process.execPath) — см. #19 про ABI better-sqlite3.
+const tickRunner: TickRunner = ({ dbPath, projectPath }) => new Promise((resolve) => {
+  const fail = (error: string): void =>
+    resolve({ at: now(), reclaimed: 0, spawned: 0, active: 0, reaped: 0, error });
+  const child = spawnProcess(
+    process.execPath, [fileURLToPath(import.meta.url), 'tick', '--json'],
+    {
+      // cwd нужен tick'у, чтобы резолвить toplevel для воркеров; базу пиннит KDD_DB,
+      // projectPath — это git common-dir, его родитель и есть toplevel.
+      cwd: dirname(projectPath),
+      env: { ...process.env, KDD_DB: dbPath },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
+  let out = '';
+  let err = '';
+  child.stdout.on('data', (d: Buffer) => { out += d.toString(); });
+  child.stderr.on('data', (d: Buffer) => { err += d.toString(); });
+  child.on('error', (e) => fail(e.message));
+  child.on('close', (code) => {
+    if (code !== 0) { fail(err.trim() || `kdd tick exited with code ${code}`); return; }
+    let r: { reclaimed?: number; spawned?: number; active?: number; reaped?: number; skipped?: boolean };
+    try { r = JSON.parse(out) as typeof r; } catch { fail(`unparsable tick output: ${out.slice(0, 200)}`); return; }
+    // skipped — не ошибка: лок держит другой tick (например `--watch` из терминала).
+    if (r.skipped) { resolve({ at: now(), reclaimed: 0, spawned: 0, active: 0, reaped: 0, skipped: true }); return; }
+    resolve({
+      at: now(), reclaimed: r.reclaimed ?? 0, spawned: r.spawned ?? 0,
+      active: r.active ?? 0, reaped: r.reaped ?? 0,
+    });
+  });
+});
 
 function run(json: boolean, fn: () => void): void {
   try { fn(); } catch (e) {
@@ -444,14 +479,16 @@ async function uiStart(port: number): Promise<void> {
       return;
     }
   } catch { /* сервера нет — поднимаем свой */ }
-  const { getDb, closeAll } = projectPool(hash);
+  const { getDb, get, closeAll } = projectPool(hash);
+  const scheduler = createScheduler(tickRunner, get);
   try {
-    await startUi(getDb, port, hash);
+    await startUi(getDb, port, hash, scheduler);
   } catch (e) {
+    scheduler.stopAll();
     closeAll();
     fail(e instanceof Error ? e.message : String(e), false);
   }
-  process.on('SIGINT', () => { closeAll(); process.exit(0); });
+  process.on('SIGINT', () => { scheduler.stopAll(); closeAll(); process.exit(0); });
   console.log(`kdd ui: ${url}`);
 }
 
