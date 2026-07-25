@@ -67,6 +67,9 @@ Adding a task-related feature usually touches core (`ops.ts`/`queries.ts`) **plu
 - Multi-case returns use discriminated unions (`{ok:true} | {ok:false; error}`), e.g. `checkMove`.
 - No mocks in tests — vitest with real `openDb(':memory:')`, real CLI via `execFileSync`, real temp dirs via `mkdtempSync`. Tests co-located in `packages/*/test/*.test.ts`. CLI test helpers in `packages/cli/test/run.ts`.
 - Comments are mixed Russian (domain/business rules) and English (mechanics); comment *why*, not *what*.
+- Сообщения коммитов конвенциональные (`feat(scope): …`, `fix(core): …`) — из них генерируется тело GitHub Release. Неконвенциональный коммит не ломает сборку, он **молча выпадает** из changelog.
+- Не ссылаться на id задач доски kdd из сообщений коммитов: GitHub превратит `#N` в ссылку на свой issue с тем же номером. Правило касается и агентских коммитов — воркер коммитит в свою ветку сам.
+- Релиз в два шага: `pnpm release` бампает и печатает будущие заметки, `pnpm release:publish` публикует и пушит тег. Если заметки после первого шага не устроили, откат — `git tag -d vX.Y.Z && git reset --hard HEAD~1`.
 
 ## Env vars
 
