@@ -161,3 +161,10 @@ export function openDb(dbPath: string, projectPath?: string): Database.Database 
   }
   return db;
 }
+
+// Читает project_path напрямую из уже открытой базы — без обхода ~/.kdd через listProjects(),
+// который каждому проекту стоит отдельного readonly-подключения ко всем остальным.
+export function projectPathOf(db: Database.Database): string | null {
+  return (db.prepare(`SELECT value FROM meta WHERE key = 'project_path'`).get() as
+    { value: string } | undefined)?.value ?? null;
+}

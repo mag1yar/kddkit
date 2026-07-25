@@ -193,6 +193,9 @@ function openDb(dbPath, projectPath) {
   }
   return db;
 }
+function projectPathOf(db) {
+  return db.prepare(`SELECT value FROM meta WHERE key = 'project_path'`).get()?.value ?? null;
+}
 
 // src/errors.ts
 var KddError = class extends Error {
@@ -1503,6 +1506,7 @@ export {
   parseDecisionMd,
   parseRepoUrl,
   placeTask,
+  projectPathOf,
   rebuild,
   recall,
   reclaimExpired,

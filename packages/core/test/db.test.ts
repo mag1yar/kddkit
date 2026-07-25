@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { MIGRATIONS, openDb } from '../src/db.js';
+import { MIGRATIONS, openDb, projectPathOf } from '../src/db.js';
 
 describe('openDb', () => {
   it('creates schema at user_version 1 with all tables', () => {
@@ -65,6 +65,13 @@ describe('openDb', () => {
     expect(() => db.prepare(`SELECT COUNT(*) FROM decisions`).get()).not.toThrow();
     expect(() => db.prepare(`SELECT COUNT(*) FROM tracks`).get()).not.toThrow();
     db.close();
+  });
+
+  it('projectPathOf reads back what openDb wrote, and null when the row is missing', () => {
+    const db = openDb(':memory:', 'C:/proj');
+    expect(projectPathOf(db)).toBe('C:/proj');
+    db.prepare(`DELETE FROM meta WHERE key = 'project_path'`).run();
+    expect(projectPathOf(db)).toBeNull();
   });
 
   it('rejects bad status via CHECK', () => {

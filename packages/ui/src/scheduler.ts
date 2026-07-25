@@ -1,6 +1,8 @@
 import { basename, dirname, join } from 'node:path';
 import type Database from 'better-sqlite3';
-import { getAutoTick, kddHome, listProjects, now, setLastRun, type TickRun } from '@kddkit/core';
+import {
+  getAutoTick, kddHome, listProjects, now, projectPathOf, setLastRun, type TickRun,
+} from '@kddkit/core';
 
 export type TickRunner = (p: { dbPath: string; projectPath: string }) => Promise<TickRun>;
 
@@ -22,6 +24,9 @@ export function createScheduler(
   runner: TickRunner, openProject: (hash: string) => Database.Database,
 ): Scheduler {
   const slots = new Map<string, Slot>();
+  // Хэши, у которых pass() сейчас реально бежит — от входа до перевзвода в хвосте. Без этого
+  // sync(), вызванный, пока runner() ещё висит в await, может взвести второй немедленный проход.
+  const inFlight = new Set<string>();
   let stopped = false;
 
   const clear = (hash: string): void => {
@@ -31,8 +36,9 @@ export function createScheduler(
     slots.delete(hash);
   };
 
-  // Цепочка setTimeout, а не setInterval: следующий таймер взводится ПОСЛЕ прохода,
-  // поэтому наложение проходов невозможно структурно, без флага «уже бегу».
+  // Цепочка setTimeout, а не setInterval: следующий таймер взводится ПОСЛЕ прохода. Само по
+  // себе это не исключает наложение (sync() способен взвести новый немедленный проход, пока
+  // старый ещё в await) — от двойного запуска защищает inFlight, см. pass().
   const arm = (hash: string, delayMs: number, intervalSec: number): void => {
     if (stopped) return;
     clear(hash);
@@ -41,42 +47,60 @@ export function createScheduler(
     slots.set(hash, { timer, nextAt: now() + Math.round(delayMs / 1000), intervalSec });
   };
 
+  // Транзиентный сбой в обвязке прохода (SQLITE_BUSY, EMFILE, диск полон) — не приговор
+  // проекту: enabled остаётся true в базе, значит цикл обязан ретраить, а не гаснуть молча.
+  // Ретраим тем же последним известным интервалом; если слот тем временем сняли (sync()
+  // выключил проект во время прохода) — слота нет, и правильно ничего не взводится.
+  const retryAfterFailure = (hash: string, e: unknown): void => {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[scheduler] ${hash}: pass failed, retrying next cycle: ${msg}`);
+    const s = slots.get(hash);
+    if (s) arm(hash, s.intervalSec * 1000, s.intervalSec);
+  };
+
   const pass = async (hash: string): Promise<void> => {
     if (stopped) return;
-    let db: Database.Database;
-    let projectPath: string;
+    if (inFlight.has(hash)) return; // проход для этого хэша уже бежит — второй не стартуем
+    inFlight.add(hash);
     try {
-      db = openProject(hash);
-      const dbPath = dbPathOf(hash);
-      const found = listProjects().find((p) => p.dbPath === dbPath);
-      if (!found) { clear(hash); return; } // проект исчез из ~/.kdd — тихо снимаем таймер
-      projectPath = found.projectPath;
-    } catch {
-      clear(hash);
-      return;
-    }
+      let db: Database.Database;
+      let projectPath: string;
+      try {
+        db = openProject(hash);
+        const p = projectPathOf(db);
+        // null — определённый ответ: строки project_path нет, проект непригоден. Это не
+        // то же самое, что брошенное исключение (ниже трактуется как транзиентный сбой).
+        if (p === null) { clear(hash); return; }
+        projectPath = p;
+      } catch (e) {
+        retryAfterFailure(hash, e);
+        return;
+      }
 
-    let run: TickRun;
-    try {
-      run = await runner({ dbPath: dbPathOf(hash), projectPath });
-    } catch (e) {
-      // Overnight-раннер не умирает от транзиентного глюка: ошибка едет в индикатор,
-      // цикл продолжается тем же интервалом.
-      run = {
-        at: now(), reclaimed: 0, spawned: 0, active: 0, reaped: 0,
-        error: e instanceof Error ? e.message : String(e),
-      };
-    }
-    if (stopped) return;
+      let run: TickRun;
+      try {
+        run = await runner({ dbPath: dbPathOf(hash), projectPath });
+      } catch (e) {
+        // Overnight-раннер не умирает от транзиентного глюка: ошибка едет в индикатор,
+        // цикл продолжается тем же интервалом.
+        run = {
+          at: now(), reclaimed: 0, spawned: 0, active: 0, reaped: 0,
+          error: e instanceof Error ? e.message : String(e),
+        };
+      }
+      if (stopped) return;
 
-    try {
-      setLastRun(db, run);
-      // Настройки могли смениться, пока шёл проход, — перечитываем, а не помним.
-      const cfg = getAutoTick(db);
-      if (cfg.enabled) arm(hash, cfg.intervalSec * 1000, cfg.intervalSec);
-      else clear(hash);
-    } catch {
-      clear(hash); // базу закрыли под нами (остановка сервера)
+      try {
+        setLastRun(db, run);
+        // Настройки могли смениться, пока шёл проход, — перечитываем, а не помним.
+        const cfg = getAutoTick(db);
+        if (cfg.enabled) arm(hash, cfg.intervalSec * 1000, cfg.intervalSec);
+        else clear(hash);
+      } catch (e) {
+        retryAfterFailure(hash, e);
+      }
+    } finally {
+      inFlight.delete(hash);
     }
   };
 
@@ -84,7 +108,10 @@ export function createScheduler(
     if (stopped) return;
     let cfg;
     try { cfg = getAutoTick(openProject(hash)); } catch { clear(hash); return; }
-    if (!cfg.enabled) { clear(hash); return; }
+    if (!cfg.enabled) { clear(hash); return; } // снять таймер — действует и во время висящего прохода
+    // Проход уже бежит: его собственный хвост перечитает настройки и перевзведётся сам —
+    // взвести здесь второй немедленный проход и есть баг с двойным раннером.
+    if (inFlight.has(hash)) return;
     const s = slots.get(hash);
     // Выключено -> включено: первый проход немедленно, юзер щёлкнул и должен увидеть реакцию.
     if (!s) { arm(hash, 0, cfg.intervalSec); return; }
