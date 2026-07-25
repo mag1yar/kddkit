@@ -27,12 +27,21 @@ export function kddVersion(): string {
   return pkg().version ?? '0.0.0';
 }
 
+/**
+ * Разбор `repository.url`. Суффикс `.git` снимаем отдельным шагом, а не запретом точек
+ * в имени: имя репозитория точки содержать может (`acme/kddkit.dev.git`), и запрет резал
+ * его до `kddkit` — форк уходил в вечный 404 ровно в том сценарии, ради которого слаг
+ * вообще выводится из package.json.
+ */
+export function parseRepoUrl(url: string): { owner: string; repo: string } | null {
+  const m = url.replace(/\.git\/?$/i, '').match(/github\.com[/:]([^/]+)\/([^/]+)/i);
+  return m ? { owner: m[1], repo: m[2] } : null;
+}
+
 /** Слаг выводим из package.json, а не хардкодим: форк не должен поллить апстрим. */
 export function repoSlug(): { owner: string; repo: string } | null {
   const r = pkg().repository;
-  const url = typeof r === 'string' ? r : r?.url ?? '';
-  const m = url.match(/github\.com[/:]([^/]+)\/([^/.]+)/i);
-  return m ? { owner: m[1], repo: m[2] } : null;
+  return parseRepoUrl(typeof r === 'string' ? r : r?.url ?? '');
 }
 
 function parse(v: string): { core: [number, number, number]; pre: string } {
@@ -80,21 +89,39 @@ interface GhRelease {
   prerelease?: boolean;
 }
 
-// changelogithub — единственный источник тела релиза — оборачивает short sha ровно
-// в <samp>...</samp> и больше никаких тегов не эмитит (проверено по его исходникам).
-// Вырезаем только этот тег, а не «что угодно похожее на тег»: более широкий паттерн
-// заодно съедает markdown-автоссылки (<https://...>, <me@example.com>), HTML внутри
-// code-фенсов и обычные '<'/'>' в прозе.
-const TAG_STRIP_RE = /<\/?samp>/gi;
+// Тело релиза — не только вывод changelogithub (<samp> вокруг short sha): заметку
+// правят руками на github.com, и оттуда приезжают <details>/<summary>/<br>/<img>.
+// Поэтому вместо одного тега режем белый список имён, а не «что угодно похожее на тег»:
+// открытый паттерн съедал бы markdown-автоссылки (<https://...>, <me@example.com>).
+// Однобуквенных имён (a, b, i, p, s, u) в списке нет намеренно: '<b and c>' в прозе
+// синтаксически неотличим от тега <b> с атрибутами, и отличить их регуляркой нельзя.
+const TAG_STRIP_RE =
+  /<\/?(?:details|summary|br|hr|img|picture|source|video|audio|div|span|table|thead|tbody|tfoot|tr|td|th|caption|ul|ol|li|dl|dt|dd|h[1-6]|blockquote|pre|code|kbd|samp|var|sub|sup|em|strong|small|del|ins|mark|abbr|center|font)\b[^>]*>/gi;
+
+// Внутри code-фенсов и inline-кода теги — это текст, который автор показывает читателю.
+// split с группой захвата кладёт разделители на нечётные индексы, их и пропускаем нетронутыми.
+function stripHtml(md: string): string {
+  return md
+    .split(/(```[\s\S]*?```|`[^`\n]*`)/)
+    .map((part, i) => (i % 2 === 1 ? part : part.replace(TAG_STRIP_RE, '')))
+    .join('');
+}
 
 const OK_TTL = 60 * 60 * 1000;
 const ERR_TTL = 5 * 60 * 1000;
 
-let cache: { at: number; info: ReleaseInfo } | null = null;
+let cache: { until: number; info: ReleaseInfo } | null = null;
+let inflight: Promise<ReleaseInfo> | null = null;
 
 /** Только для тестов: сбросить кэш между кейсами. */
 export function _resetCache(): void {
   cache = null;
+  inflight = null;
+}
+
+/** Только для тестов: момент истечения кэша — чтобы проверять, каким TTL накрыт кейс. */
+export function _cacheUntil(): number | null {
+  return cache?.until ?? null;
 }
 
 /**
@@ -108,28 +135,35 @@ export function _resetCache(): void {
 export async function releaseInfo(
   opts: { fetch?: typeof globalThis.fetch } = {},
 ): Promise<ReleaseInfo> {
-  const now = Date.now();
   // cache.info — синглтон, общий на все вызовы. Отдаём клон и на хите, и при записи:
   // сегодня единственный вызывающий — Hono-роут, который сразу JSON.stringify'ит
   // результат, так что мутировать общий объект in-process некому. Клон — дешёвая
   // страховка на будущего consumer (CLI), который может держать ссылку дольше
   // одного запроса, а не защита от существующего бага.
-  if (cache && now - cache.at < (cache.info.error ? ERR_TTL : OK_TTL)) {
-    return structuredClone(cache.info);
-  }
+  if (cache && Date.now() < cache.until) return structuredClone(cache.info);
 
+  // Держим сам промис, а не только осевший результат: кэш пишется после await, поэтому
+  // без этого N вкладок, открытых одновременно, промахивались бы мимо гарда и тратили
+  // N запросов из 60 в час. Обещание «один фетч на процесс» держится именно здесь.
+  inflight ??= load(opts).finally(() => { inflight = null; });
+  return structuredClone(await inflight);
+}
+
+async function load(opts: { fetch?: typeof globalThis.fetch }): Promise<ReleaseInfo> {
   const current = kddVersion();
   const slug = repoSlug();
   const repoUrl = slug ? `https://github.com/${slug.owner}/${slug.repo}` : null;
 
-  const store = (info: ReleaseInfo): ReleaseInfo => {
-    cache = { at: now, info };
-    return structuredClone(info);
+  // until отсчитываем от момента ответа, а не от входа в функцию: медленный ответ
+  // иначе ложился бы в кэш уже подстаревшим.
+  const store = (info: ReleaseInfo, ttl: number): ReleaseInfo => {
+    cache = { until: Date.now() + ttl, info };
+    return info;
   };
 
-  const fail = (error: string): ReleaseInfo => store({
+  const fail = (error: string, ttl = ERR_TTL): ReleaseInfo => store({
     current, latest: null, hasUpdate: false, releases: [], repoUrl, error,
-  });
+  }, ttl);
 
   if (!slug) return fail('no repository url in package.json');
 
@@ -149,19 +183,26 @@ export async function releaseInfo(
     const rows = (await res.json()) as GhRelease[];
     if (!Array.isArray(rows)) return fail('unexpected GitHub response');
 
-    const releases: Release[] = rows
-      .filter((r) => !r.draft && r.tag_name)
-      .map((r) => ({
-        version: (r.tag_name as string).replace(/^v/, ''),
-        // String(...) на трёх полях ниже — не косметика: GitHub отдаёт JSON без
-        // схемы, и если body/published_at/html_url когда-нибудь придут не строкой,
-        // .replace() в клиенте роняет весь UI (ErrorBoundary в packages/ui нет).
-        url: String(r.html_url ?? `${repoUrl}/releases`),
-        body: String(r.body ?? '').replace(TAG_STRIP_RE, ''),
-        publishedAt: String(r.published_at ?? ''),
-        prerelease: Boolean(r.prerelease),
-      }));
-    if (releases.length === 0) return fail('no published releases');
+    // Битую строку пропускаем, а не роняем на ней весь фид: GitHub отдаёт JSON без
+    // схемы, и один null или tag_name не-строкой стоил бы пользователю всего списка —
+    // да ещё и с кэшированием этой «ошибки» на пять минут.
+    // String(...) на трёх полях ниже по той же причине: не-строка в body/published_at/
+    // html_url уронила бы .replace() уже в клиенте (ErrorBoundary в packages/ui нет).
+    const releases: Release[] = rows.flatMap((r) => (
+      r && typeof r === 'object' && typeof r.tag_name === 'string' && !r.draft
+        ? [{
+          version: r.tag_name.replace(/^v/, ''),
+          url: String(r.html_url ?? `${repoUrl}/releases`),
+          body: stripHtml(String(r.body ?? '')),
+          publishedAt: String(r.published_at ?? ''),
+          prerelease: Boolean(r.prerelease),
+        }]
+        : []
+    ));
+    // Не поломка, а состояние свежесозданного репозитория — состояние стабильное,
+    // поэтому живёт под успешным TTL: под ошибочным форк без релизов ходил бы
+    // в GitHub двенадцать раз в час вечно.
+    if (releases.length === 0) return fail('no published releases', OK_TTL);
 
     // latest — старший стабильный. prerelease в баннер не идут: до переключателя канала
     // стабильному пользователю не должно прилетать «обновись на 0.6.0-next.3».
@@ -177,12 +218,15 @@ export async function releaseInfo(
       releases,
       repoUrl,
       error: null,
-    });
-  } catch {
-    // Не пробрасываем e.message наружу: это может быть внутренний TypeError
-    // (например, из-за неожиданной формы ответа), а не диагноз сетевого сбоя —
-    // пользователю в тултипе чипа он ничего не скажет и раскроет детали реализации.
-    // Держим тот же фиксированный словарь строк, что и у остальных fail() здесь.
-    return fail('failed to reach GitHub');
+    }, OK_TTL);
+  } catch (e) {
+    // Наружу — стабильная строка: e.message может оказаться внутренним TypeError,
+    // и в тултипе чипа он ничего не объясняет, зато раскрывает детали реализации.
+    // Причину пишем в stderr процесса: без неё TLS-прокси, DNS-блок, пятисекундный
+    // таймаут и неразобранное тело неотличимы друг от друга, а неверный диагноз
+    // ещё и кэшируется на пять минут. Формулировка нейтральная — «не дошли до GitHub»
+    // враньё для случая, когда GitHub ответил, но телом, которое не разобрать.
+    console.error('[kdd] release check failed:', e);
+    return fail('release check failed');
   }
 }

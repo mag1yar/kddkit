@@ -16,7 +16,18 @@ export function Prose({ children }: { children: string }) {
         '[&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:text-inherit',
       )}
     >
-      <Markdown>{children}</Markdown>
+      {/* react-markdown отдаёт голый <a href>. Доска — единственная вкладка с открытым
+          диалогом и ?project=<hash> в URL: переход по ссылке из тела релиза или комментария
+          терял бы это состояние и утекал бы хэш проекта в Referer. */}
+      <Markdown
+        components={{
+          a: ({ node: _node, ...props }) => (
+            <a {...props} target="_blank" rel="noreferrer" />
+          ),
+        }}
+      >
+        {children}
+      </Markdown>
     </div>
   );
 }

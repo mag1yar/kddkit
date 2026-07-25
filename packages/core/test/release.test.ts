@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  _resetCache, compareVersions, kddVersion, releaseInfo, repoSlug, type Release,
+  _cacheUntil, _resetCache, compareVersions, kddVersion, parseRepoUrl, releaseInfo, repoSlug,
+  type Release,
 } from '../src/release.js';
 
 describe('kddVersion', () => {
@@ -16,6 +17,22 @@ describe('kddVersion', () => {
 describe('repoSlug', () => {
   it('derives owner/repo from repository.url', () => {
     expect(repoSlug()).toEqual({ owner: 'mag1yar', repo: 'kddkit' });
+  });
+
+  // точка в имени репозитория легальна; форк на kddkit.dev резался до kddkit и уходил в 404
+  it.each([
+    ['https://github.com/acme/name.dev.git', 'name.dev'],
+    ['https://github.com/acme/name.git', 'name'],
+    ['https://github.com/acme/name', 'name'],
+    ['git+https://github.com/acme/name.dev.git', 'name.dev'],
+    ['git@github.com:acme/name.git', 'name'],
+  ])('parses %s', (url, repo) => {
+    expect(parseRepoUrl(url)).toEqual({ owner: 'acme', repo });
+  });
+
+  it('returns null when the url is not a GitHub one', () => {
+    expect(parseRepoUrl('https://gitlab.com/acme/name.git')).toBeNull();
+    expect(parseRepoUrl('')).toBeNull();
   });
 });
 
@@ -137,6 +154,47 @@ describe('releaseInfo', () => {
     expect(info.releases).toEqual([]);
   });
 
+  // репозиторий без релизов — стабильное состояние, а не сбой: под ошибочным TTL
+  // форк долбился бы в GitHub двенадцать раз в час вечно
+  it('caches an empty release list under the success TTL, not the error one', async () => {
+    const { fetchImpl } = ghStub([]);
+    await releaseInfo({ fetch: fetchImpl });
+    expect((_cacheUntil() ?? 0) - Date.now()).toBeGreaterThan(10 * 60 * 1000);
+  });
+
+  it('caches a genuine failure under the short TTL', async () => {
+    const { fetchImpl } = ghStub({}, { status: 403, statusText: 'rate limit exceeded' });
+    await releaseInfo({ fetch: fetchImpl });
+    expect((_cacheUntil() ?? 0) - Date.now()).toBeLessThan(10 * 60 * 1000);
+  });
+
+  it('skips a malformed row instead of losing the whole feed', async () => {
+    const good = Array.from({ length: 9 }, (_, i) => row({ tag_name: `v0.${i}.0` }));
+    const { fetchImpl } = ghStub([good[0], null, ...good.slice(1)]);
+    const info = await releaseInfo({ fetch: fetchImpl });
+    expect(info.releases).toHaveLength(9);
+    expect(info.error).toBeNull();
+  });
+
+  it('skips a row whose tag_name is not a string', async () => {
+    const { fetchImpl } = ghStub([row({ tag_name: 42 }), row()]);
+    const info = await releaseInfo({ fetch: fetchImpl });
+    expect(info.releases.map((r) => r.version)).toEqual(['0.9.0']);
+    expect(info.error).toBeNull();
+  });
+
+  // N вкладок, открытых разом, обязаны стоить один запрос из 60 в час
+  it('shares one fetch between concurrent callers', async () => {
+    const { fetchImpl, calls } = ghStub([row()]);
+    const [a, b] = await Promise.all([
+      releaseInfo({ fetch: fetchImpl }),
+      releaseInfo({ fetch: fetchImpl }),
+    ]);
+    expect(calls.n).toBe(1);
+    expect(a).toEqual(b);
+    expect(a).not.toBe(b); // каждый получает свой клон
+  });
+
   it('reports the HTTP status and still returns the local version', async () => {
     const { fetchImpl } = ghStub({}, { status: 403, statusText: 'rate limit exceeded' });
     const info = await releaseInfo({ fetch: fetchImpl });
@@ -154,30 +212,30 @@ describe('releaseInfo', () => {
   });
 
   it('swallows a thrown fetch into a fixed error, not the raw exception message', async () => {
-    // сообщение исключения (стектрейс, внутренние детали) не должно всплывать в
-    // UI как будто это диагноз сетевого сбоя — см. Finding 2
+    // сообщение исключения (стектрейс, внутренние детали) не должно всплывать в UI
+    // как будто это диагноз; сама причина уходит в stderr процесса
     const boom = (async () => { throw new Error('getaddrinfo ENOTFOUND'); }) as
       unknown as typeof globalThis.fetch;
     const info = await releaseInfo({ fetch: boom });
-    expect(info.error).toBe('failed to reach GitHub');
+    expect(info.error).toBe('release check failed');
   });
 
-  it('strips the <samp> wrapper changelogithub puts around short shas', async () => {
-    const { fetchImpl } = ghStub([
-      row({ body: 'Fixed a bug in <samp>(cc674)</samp> — see details.' }),
-    ]);
+  // Таблица вырезания HTML: слева — что приезжает из GitHub, справа — что видит попап.
+  it.each([
+    ['Fixed in <samp>(cc674)</samp>.', 'Fixed in (cc674).'],
+    ['[<samp>(cc674)</samp>](https://x.dev)', '[(cc674)](https://x.dev)'],
+    ['<details><summary>x</summary>body</details>', 'xbody'],
+    ['one<br>two', 'onetwo'],
+    ['<img src="https://x.dev/a.png" alt="a">shot', 'shot'],
+    ['<https://example.com>', '<https://example.com>'],
+    ['<me@example.com>', '<me@example.com>'],
+    ['a<b and c>d', 'a<b and c>d'],
+    ['```html\n<details>keep</details>\n```', '```html\n<details>keep</details>\n```'],
+    ['inline `<br>` stays', 'inline `<br>` stays'],
+  ])('strips %j', async (body, want) => {
+    const { fetchImpl } = ghStub([row({ body })]);
     const info = await releaseInfo({ fetch: fetchImpl });
-    expect(info.releases[0]?.body).toBe('Fixed a bug in (cc674) — see details.');
-  });
-
-  it('leaves markdown autolinks and prose angle brackets untouched', async () => {
-    const { fetchImpl } = ghStub([
-      row({ body: 'See <https://example.com> or <me@example.com>, and a<b and c>d.' }),
-    ]);
-    const info = await releaseInfo({ fetch: fetchImpl });
-    expect(info.releases[0]?.body).toBe(
-      'See <https://example.com> or <me@example.com>, and a<b and c>d.',
-    );
+    expect(info.releases[0]?.body).toBe(want);
   });
 
   it('coerces non-string GitHub fields instead of propagating them as objects', async () => {

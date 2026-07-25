@@ -39,8 +39,13 @@ export function ReleasesPopover({ info }: { info: ReleaseInfo | null }) {
             {info.error ?? 'No releases yet'}
           </p>
         ) : (
-          info.releases.map((r) => (
-            <div key={r.version} className="border-b pb-2 last:border-0 last:pb-0">
+          info.releases.map((r, i) => (
+            // ключ по индексу, а не по r.version: core срезает ведущую v, поэтому
+            // сосуществующие теги v1.0.0 и 1.0.0 дают один ключ, и React показывает
+            // тело одного релиза под заголовком другого. Список приходит одним ответом
+            // и целиком заменяется — не сортируется, не фильтруется, — так что индекс
+            // здесь стабилен и уникален по определению.
+            <div key={i} className="border-b pb-2 last:border-0 last:pb-0">
               <div className="flex items-baseline justify-between gap-2">
                 <a
                   href={r.url} target="_blank" rel="noreferrer"

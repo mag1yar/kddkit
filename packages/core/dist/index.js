@@ -1280,11 +1280,13 @@ function pkg() {
 function kddVersion() {
   return pkg().version ?? "0.0.0";
 }
+function parseRepoUrl(url) {
+  const m = url.replace(/\.git\/?$/i, "").match(/github\.com[/:]([^/]+)\/([^/]+)/i);
+  return m ? { owner: m[1], repo: m[2] } : null;
+}
 function repoSlug() {
   const r = pkg().repository;
-  const url = typeof r === "string" ? r : r?.url ?? "";
-  const m = url.match(/github\.com[/:]([^/]+)\/([^/.]+)/i);
-  return m ? { owner: m[1], repo: m[2] } : null;
+  return parseRepoUrl(typeof r === "string" ? r : r?.url ?? "");
 }
 function parse(v) {
   const [core, ...rest] = v.replace(/^v/, "").split("-");
@@ -1299,33 +1301,44 @@ function compareVersions(a, b) {
   if (A.pre && !B.pre) return -1;
   return A.pre < B.pre ? -1 : A.pre > B.pre ? 1 : 0;
 }
-var TAG_STRIP_RE = /<\/?samp>/gi;
+var TAG_STRIP_RE = /<\/?(?:details|summary|br|hr|img|picture|source|video|audio|div|span|table|thead|tbody|tfoot|tr|td|th|caption|ul|ol|li|dl|dt|dd|h[1-6]|blockquote|pre|code|kbd|samp|var|sub|sup|em|strong|small|del|ins|mark|abbr|center|font)\b[^>]*>/gi;
+function stripHtml(md) {
+  return md.split(/(```[\s\S]*?```|`[^`\n]*`)/).map((part, i) => i % 2 === 1 ? part : part.replace(TAG_STRIP_RE, "")).join("");
+}
 var OK_TTL = 60 * 60 * 1e3;
 var ERR_TTL = 5 * 60 * 1e3;
 var cache = null;
+var inflight = null;
 function _resetCache() {
   cache = null;
+  inflight = null;
+}
+function _cacheUntil() {
+  return cache?.until ?? null;
 }
 async function releaseInfo(opts = {}) {
-  const now2 = Date.now();
-  if (cache && now2 - cache.at < (cache.info.error ? ERR_TTL : OK_TTL)) {
-    return structuredClone(cache.info);
-  }
+  if (cache && Date.now() < cache.until) return structuredClone(cache.info);
+  inflight ??= load(opts).finally(() => {
+    inflight = null;
+  });
+  return structuredClone(await inflight);
+}
+async function load(opts) {
   const current = kddVersion();
   const slug = repoSlug();
   const repoUrl = slug ? `https://github.com/${slug.owner}/${slug.repo}` : null;
-  const store = (info) => {
-    cache = { at: now2, info };
-    return structuredClone(info);
+  const store = (info, ttl) => {
+    cache = { until: Date.now() + ttl, info };
+    return info;
   };
-  const fail = (error) => store({
+  const fail = (error, ttl = ERR_TTL) => store({
     current,
     latest: null,
     hasUpdate: false,
     releases: [],
     repoUrl,
     error
-  });
+  }, ttl);
   if (!slug) return fail("no repository url in package.json");
   try {
     const f = opts.fetch ?? globalThis.fetch;
@@ -1339,17 +1352,14 @@ async function releaseInfo(opts = {}) {
     if (!res.ok) return fail(`GitHub API ${res.status} ${res.statusText}`);
     const rows = await res.json();
     if (!Array.isArray(rows)) return fail("unexpected GitHub response");
-    const releases = rows.filter((r) => !r.draft && r.tag_name).map((r) => ({
+    const releases = rows.flatMap((r) => r && typeof r === "object" && typeof r.tag_name === "string" && !r.draft ? [{
       version: r.tag_name.replace(/^v/, ""),
-      // String(...) на трёх полях ниже — не косметика: GitHub отдаёт JSON без
-      // схемы, и если body/published_at/html_url когда-нибудь придут не строкой,
-      // .replace() в клиенте роняет весь UI (ErrorBoundary в packages/ui нет).
       url: String(r.html_url ?? `${repoUrl}/releases`),
-      body: String(r.body ?? "").replace(TAG_STRIP_RE, ""),
+      body: stripHtml(String(r.body ?? "")),
       publishedAt: String(r.published_at ?? ""),
       prerelease: Boolean(r.prerelease)
-    }));
-    if (releases.length === 0) return fail("no published releases");
+    }] : []);
+    if (releases.length === 0) return fail("no published releases", OK_TTL);
     const latest = releases.filter((r) => !r.prerelease).reduce(
       (m, r) => m === null || compareVersions(r.version, m) > 0 ? r.version : m,
       null
@@ -1361,9 +1371,10 @@ async function releaseInfo(opts = {}) {
       releases,
       repoUrl,
       error: null
-    });
-  } catch {
-    return fail("failed to reach GitHub");
+    }, OK_TTL);
+  } catch (e) {
+    console.error("[kdd] release check failed:", e);
+    return fail("release check failed");
   }
 }
 export {
@@ -1376,6 +1387,7 @@ export {
   PRIORITY_ORDER,
   STATUSES,
   TRANSITIONS,
+  _cacheUntil,
   _resetCache,
   addCriterion,
   addDecision,
@@ -1416,6 +1428,7 @@ export {
   openDb,
   parseClaudeStreamLine,
   parseDecisionMd,
+  parseRepoUrl,
   placeTask,
   rebuild,
   recall,
