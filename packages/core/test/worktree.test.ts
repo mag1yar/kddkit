@@ -130,3 +130,31 @@ describe('sweepWorktrees', () => {
     }
   });
 });
+
+describe('sweepWorktrees isBusy guard', () => {
+  it('keeps a worktree whose task is done but whose process is still alive', () => {
+    const db = openDb(dbPath, repo);
+    const t = addTask(db, { title: 'busy' }, { type: 'user' });
+    const wt = ensureWorktree(repo, dbPath, t.id, 'busy'); // задача в new → sweep обычно снёс бы
+    expect(sweepWorktrees(db, repo, () => true)).toBe(0);
+    expect(existsSync(wt)).toBe(true);
+    db.close();
+  });
+
+  it('removes it once the process is gone', () => {
+    const db = openDb(dbPath, repo);
+    const t = addTask(db, { title: 'idle' }, { type: 'user' });
+    const wt = ensureWorktree(repo, dbPath, t.id, 'idle');
+    expect(sweepWorktrees(db, repo, () => false)).toBe(1);
+    expect(existsSync(wt)).toBe(false);
+    db.close();
+  });
+
+  it('without a probe behaves exactly as before', () => {
+    const db = openDb(dbPath, repo);
+    const t = addTask(db, { title: 'plain' }, { type: 'user' });
+    ensureWorktree(repo, dbPath, t.id, 'plain');
+    expect(sweepWorktrees(db, repo)).toBe(1);
+    db.close();
+  });
+});

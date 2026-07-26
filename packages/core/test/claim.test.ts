@@ -81,11 +81,29 @@ describe('claim ops', () => {
     expect(renewClaim(db, id, ai2).ok).toBe(false);             // чужой lease
   });
 
+  // B1: механическое продление (heartbeat супервизора) — не действие доски. Окна событий
+  // капированы, и удар раз в ttl/3 вытеснил бы из них claim/move/block — всю настоящую историю.
+  it('renew with log:false extends the lease but writes no event', () => {
+    const id = withCriteria('t');
+    claimTask(db, id, ai);
+    const events = () => (db.prepare(
+      `SELECT COUNT(*) c FROM events WHERE task_id=? AND action='claim_renewed'`).get(id) as any).c;
+    const before = (db.prepare(`SELECT claim_expires e FROM tasks WHERE id=?`).get(id) as any).e;
+
+    expect(renewClaim(db, id, ai, 1800, { log: false }).ok).toBe(true);
+    expect((db.prepare(`SELECT claim_expires e FROM tasks WHERE id=?`).get(id) as any).e)
+      .toBeGreaterThan(before);
+    expect(events()).toBe(0);
+
+    renewClaim(db, id, ai, 1800); // человек через `kdd claim --renew` — это действие, логируем
+    expect(events()).toBe(1);
+  });
+
   it('reclaimExpired returns expired lease to new, clears claim, logs reclaimed', () => {
     const id = withCriteria('t');
     claimTask(db, id, ai, 900);
     db.prepare(`UPDATE tasks SET claim_expires = ? WHERE id = ?`).run(now() - 1, id); // форсим истечение
-    expect(reclaimExpired(db)).toEqual([id]);
+    expect(reclaimExpired(db).map((r) => r.id)).toEqual([id]);
     const t = db.prepare(`SELECT status, claimed_by FROM tasks WHERE id=?`).get(id);
     expect(t).toEqual({ status: 'new', claimed_by: null });
     // после reclaim задача снова берётся
@@ -103,6 +121,57 @@ describe('claim ops', () => {
     claimTask(db, id, ai); // hold a lease so renewClaim has something to validate against
     expect(() => renewClaim(db, id, ai, 0)).toThrow(KddError);
     expect(() => renewClaim(db, id, ai, NaN)).toThrow(KddError);
+  });
+});
+
+// A2: инвариант «реклеймить чужой lease можно только вместе с его процессом» обязан держаться
+// на ВСЕХ путях claim, а не только внутри tick — иначе человек забирает задачу у живого воркера.
+describe('taking over an expired ai:tick lease', () => {
+  const tickActor = { type: 'ai' as const, id: 'tick:1-0' };
+  const expiredTick = (title = 't') => {
+    const id = withCriteria(title);
+    claimTask(db, id, tickActor, 900);
+    db.prepare(`UPDATE tasks SET claim_expires = ? WHERE id = ?`).run(now() - 1, id);
+    return id;
+  };
+
+  it('claimNext without a killer refuses it — the worker may still be alive', () => {
+    expiredTick();
+    expect(claimNext(db, ai2)).toBeNull();
+    expect(db.prepare(`SELECT status, claimed_by FROM tasks WHERE id=1`).get())
+      .toEqual({ status: 'in_progress', claimed_by: 'ai:tick:1-0' });
+  });
+
+  it('claimTask without a killer refuses it', () => {
+    const id = expiredTick();
+    const r = claimTask(db, id, ai2);
+    expect(r.ok).toBe(false);
+    expect(db.prepare(`SELECT claimed_by FROM tasks WHERE id=?`).get(id))
+      .toEqual({ claimed_by: 'ai:tick:1-0' });
+  });
+
+  it('with a killer: kills first, then takes the task', () => {
+    const id = expiredTick();
+    const killed: number[] = [];
+    const t = claimNext(db, ai2, 900, { kill: (taskId) => { killed.push(taskId); return 'gone'; } });
+    expect(killed).toEqual([id]);
+    expect(t!.id).toBe(id);
+    expect(t!.claimed_by).toBe('ai:s2');
+  });
+
+  it('with a killer that reports stuck: lease untouched, claim refused', () => {
+    const id = expiredTick();
+    const r = claimTask(db, id, ai2, 900, { kill: () => 'stuck' });
+    expect(r.ok).toBe(false);
+    expect(db.prepare(`SELECT status, claimed_by FROM tasks WHERE id=?`).get(id))
+      .toEqual({ status: 'in_progress', claimed_by: 'ai:tick:1-0' });
+  });
+
+  it('an expired NON-tick lease still reclaims without a killer (no process behind it)', () => {
+    const id = withCriteria('t');
+    claimTask(db, id, { type: 'user' }, 900);
+    db.prepare(`UPDATE tasks SET claim_expires = ? WHERE id = ?`).run(now() - 1, id);
+    expect(claimNext(db, ai2)!.id).toBe(id);
   });
 });
 

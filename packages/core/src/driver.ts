@@ -1,8 +1,11 @@
 import type Database from 'better-sqlite3';
-import { claimNext, reclaimExpired, releaseClaim } from './claim.js';
+import { claimNext, reapExpired, releaseClaim, type KillFn } from './claim.js';
 import { now } from './db.js';
 
-export interface TickResult { reclaimed: number; spawned: number; active: number }
+// stuck — лизы, чей процесс пережил SIGKILL: слот НЕ отдан, задача осталась in_progress.
+export interface TickResult {
+  reclaimed: number; killed: number; stuck: number; spawned: number; active: number;
+}
 export type SpawnFn = (taskId: number, workerId: string, projectDir: string) => void;
 
 // Число живых воркеров = задачи в работе с непустым lease (инвариант claim).
@@ -12,19 +15,22 @@ function activeWorkers(db: Database.Database): number {
   ).get() as { c: number }).c;
 }
 
-// Тупой механический tick: reclaim -> cap-loop (claim+spawn). Ноль LLM.
-// spawn инъектится: тест передаёт recorder, прод — детач-спаун. Часы снаружи (cron).
+// Тупой механический tick: kill -> reclaim -> cap-loop (claim+spawn). Ноль LLM.
+// spawn/kill инъектятся: тест передаёт recorder, прод — детач-спаун и ps-скан. Часы снаружи (cron).
 export function tick(
   db: Database.Database,
-  opts: { maxWorkers: number; ttl: number; projectDir: string; spawn: SpawnFn },
+  opts: { maxWorkers: number; ttl: number; projectDir: string; spawn: SpawnFn; kill?: KillFn },
 ): TickResult {
-  const reclaimed = db.transaction(() => reclaimExpired(db))().length;
+  // Сначала убить, потом реклеймить — и только то, что умерло. Переживший SIGKILL лиз остаётся
+  // in_progress: его считает activeWorkers (кап соблюдён), а истёкшим он и остался — следующий
+  // проход повторит попытку убийства сам, без участия человека.
+  const { reclaimed, killed, stuck } = reapExpired(db, opts.kill);
   let active = activeWorkers(db);
   let spawned = 0;
   const nonce = now(); // уникальная база токена на этот tick
   while (active < opts.maxWorkers) {
     const workerId = `tick:${nonce}-${spawned}`; // run-token: уникален на спаун -> reclaim инвалидирует старый
-    // tick уже прогнал reclaimExpired выше — не сканировать истёкшие лизы дважды за тик.
+    // tick уже прогнал reap выше — не сканировать (и не убивать) истёкшие лизы дважды за тик.
     const t = claimNext(db, { type: 'ai', id: workerId }, opts.ttl, { reclaim: false });
     if (!t) break; // очередь суха — fast-forward, не догоняем
     try {
@@ -39,5 +45,5 @@ export function tick(
       break;
     }
   }
-  return { reclaimed, spawned, active };
+  return { reclaimed: reclaimed.length, killed, stuck, spawned, active };
 }

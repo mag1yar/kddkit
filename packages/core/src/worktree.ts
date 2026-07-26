@@ -91,14 +91,20 @@ export function ensureWorktree(
 
 // Рипер: снести kdd-worktree, чья задача НЕ in_progress. Ветку оставить (работа в коммитах). → число снесённых.
 // DB-driven: tasks.status и есть tombstone. Зовётся из `kdd tick` после reclaimExpired.
-export function sweepWorktrees(db: Database.Database, repoRoot: string): number {
+// isBusy — вторая, ОС-овая половина правды: kill best-effort, и процесс может пережить реклейм.
+// Снести каталог под живым процессом = отобрать у него рабочую копию посреди записи.
+export function sweepWorktrees(
+  db: Database.Database, repoRoot: string, isBusy?: (taskId: number) => boolean,
+): number {
   const stmt = db.prepare(`SELECT status FROM tasks WHERE id = ?`);
   let removed = 0;
   for (const e of listWorktrees(repoRoot)) {
     const m = e.branch?.match(BRANCH_RE);
     if (!m) continue; // чужой worktree или main — не наша забота
-    const row = stmt.get(Number(m[1])) as { status: string } | undefined;
+    const taskId = Number(m[1]);
+    const row = stmt.get(taskId) as { status: string } | undefined;
     if (row?.status === 'in_progress') continue; // активная задача — worktree жив
+    if (isBusy?.(taskId)) continue; // процесс ещё жив, что бы ни говорил статус
     gitTry(repoRoot, ['worktree', 'remove', '--force', e.path]);
     removed++;
   }
