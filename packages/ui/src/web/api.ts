@@ -8,6 +8,7 @@ export interface Task {
   id: number; title: string; body: string | null; status: Status;
   blocked: 0 | 1; block_reason: string | null; priority: Priority; area: string | null;
   track_id: number | null;
+  ready: 0 | 1; // takeable агентом прямо сейчас: new & не blocked & не archived (core: READY_SQL)
   criteria_checked: number; criteria_total: number;
   created_at: number; updated_at: number;
 }

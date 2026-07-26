@@ -1,5 +1,5 @@
 import { arrayMove } from '@dnd-kit/sortable';
-import { ListChecks } from 'lucide-react';
+import { ListChecks, ListX } from 'lucide-react';
 import {
   Kanban, KanbanBoard, KanbanColumn, KanbanColumnContent, KanbanItem,
   KanbanItemHandle, KanbanOverlay, type KanbanMoveEvent,
@@ -121,6 +121,23 @@ function TaskCard({ task, trackName, onOpen, asHandle }: {
             в primary: это состояние «можно в review», ради него счётчик и нужен. Оба
             состояния заданы явно — вариант outline и так несёт text-foreground, условный
             класс поверх него был бы no-op. */}
+        {/* claimNext берёт только задачи хотя бы с одним критерием (core/claim.ts): критерии —
+            единственное, чем агент не может объявить работу законченной по своему усмотрению.
+            Доска об этом молчала: карточка лежит в new, выглядит готовой, счётчик критериев
+            при нуле не рисуется вовсе, а тик рапортует spawned 0 без причины — наставил задач,
+            ушёл спать, утром ни строчки объяснения. Условие — ready (new & не blocked & не
+            archived): ровно то состояние, которое обманывает. У blocked своя пометка, вторая
+            рядом была бы шумом. */}
+        {task.ready === 1 && task.criteria_total === 0 && (
+          <Badge
+            variant="outline" title="agents only take tasks that have acceptance criteria"
+            className="h-5 gap-1 rounded-sm border-dashed px-1.5 text-xs text-muted-foreground"
+          >
+            <ListX className="size-3" />
+            no criteria
+            <span className="sr-only"> — agents will not take this task</span>
+          </Badge>
+        )}
         {task.criteria_total > 0 && (
           <Badge
             variant="outline" title="acceptance criteria"
