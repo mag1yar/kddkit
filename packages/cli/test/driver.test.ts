@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { readFileSync, writeFileSync, chmodSync, mkdirSync, utimesSync } from 'node:fs';
 import lockfile from 'proper-lockfile';
 import { openDb, projectToplevelOf } from '@kddkit/core';
-import { makeEnv, kdd, BIN } from './run.js';
+import { makeEnv, kdd, kddFail, BIN } from './run.js';
 
 const TICK_LOCK_STALE = 10 * 60 * 1000; // mirrors index.ts's tick lock staleness window
 
@@ -38,7 +38,7 @@ describe('kdd tick', () => {
     kdd(env, 'add', 't', '--criterion', 'c');
     kdd(env, 'criteria', 'check', '1', '1');
     const marker = join(dirname(env.KDD_DB!), 'cmd.txt');
-    // фейковый $SHELL: пишет свою -lc-строку ($2) вместо запуска — так виден DEFAULT_SPAWN_CMD
+    // фейковый $SHELL: пишет свою -lc-строку ($2) вместо запуска — так видна строка defaultSpawnCmd
     const fakeShell = join(dirname(env.KDD_DB!), 'shell.sh');
     writeFileSync(fakeShell, `#!/bin/sh\nprintf '%s' "$2" > ${marker}\n`);
     chmodSync(fakeShell, 0o755);
@@ -54,7 +54,10 @@ describe('kdd tick', () => {
       execFileSync('sleep', ['0.2']);
     }
     expect(cmd).toContain(process.execPath); // node процесса tick, не резолв из login-shell
-    expect(cmd).toMatch(/worker "\$KDD_TASK_ID"$/); // и по-прежнему зовёт воркера
+    // id литералом + метка: в `ps` воркер опознаётся ровно по ней (см. procs.workerTag),
+    // а нераскрытый "$KDD_TASK_ID" сделал бы воркеров неразличимыми.
+    expect(cmd).toMatch(/worker 1 --tag kdd-worker-1@[0-9a-f]{12}$/);
+    expect(cmd).not.toContain('$KDD_TASK_ID');
   });
 
   it('overlapping tick is a no-op (lock held)', () => {
@@ -131,5 +134,33 @@ describe('kdd tick', () => {
     expect((out.match(/tick: reclaimed/g) ?? []).length).toBeGreaterThanOrEqual(2);
     expect(out).toMatch(/^\[.+Z\] tick: /m); // watch-строки со штампом
     expect(code).toBe(0);
+  });
+});
+
+describe('kdd tick killed counter', () => {
+  it('reports killed and stuck in text and json output', () => {
+    const env = makeEnv();
+    kdd(env, 'add', 'x', '--criterion', 'c');
+    kdd(env, 'criteria', 'check', '1', '1');
+    env.KDD_SPAWN_CMD = 'true'; // вместо настоящего воркера — системный /usr/bin/true
+    expect(kdd(env, 'tick')).toMatch(/killed 0, stuck 0/);
+    const j = JSON.parse(kdd(env, 'tick', '--json'));
+    expect(j.killed).toBe(0);
+    expect(j.stuck).toBe(0);
+  });
+});
+
+// A4: невалидный KDD_WORKER_TTL раньше доезжал до claimNext — то есть ПОСЛЕ того, как проход
+// уже пожал и перебил чужие лизы, и до единого спауна. В --watch это крутилось вечно.
+describe('kdd tick validates KDD_WORKER_TTL', () => {
+  it('fails fast on a non-numeric ttl, before touching any lease', () => {
+    const env = makeEnv();
+    kdd(env, 'add', 'x', '--criterion', 'c');
+    kdd(env, 'criteria', 'check', '1', '1');
+    const r = kddFail({ ...env, KDD_WORKER_TTL: '30m' }, 'tick');
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/KDD_WORKER_TTL/);
+    // доска не тронута: задача не заклеймлена и не спаунена
+    expect(JSON.parse(kdd(env, 'show', '1', '--json')).task.status).toBe('new');
   });
 });

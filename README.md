@@ -118,17 +118,33 @@ task up to a cap. It runs no LLM itself; schedule it from cron.
 **Config (env):**
 
 - `KDD_MAX_WORKERS` — max parallel workers (default 3)
-- `KDD_WORKER_TTL` — lease TTL for spawned workers, seconds (default 1800)
-- `KDD_SPAWN_CMD` — shell command to spawn a worker (default: a `claude -p` bootstrap)
+- `KDD_WORKER_TTL` — lease TTL for spawned workers, seconds (default: core's `DEFAULT_TTL`, 900s —
+  the supervisor heartbeat renews it every `ttl/3`, so this bounds only how long a dead worker holds
+  its slot)
+- `KDD_WORKER_IDLE` — how long the agent may produce no output before the supervisor calls the run
+  wedged, seconds (default 1800). On timeout it stops renewing the lease, kills the agent's process
+  group and ends the run, so `kdd tick` reclaims the task and retries it through the normal
+  failed-attempt path. Generous on purpose: a long tool call or a long thinking turn must not trip it
+- `KDD_WORKER_PROMPT` — replaces the instructions the built-in supervisor gives the agent. The run
+  marker `kdd tick` looks for in `ps` is appended to it either way: a custom prompt customizes the
+  work, not the lifecycle
+- `KDD_SPAWN_CMD` — shell command to spawn a worker (default: a `claude -p` bootstrap). This one
+  really does opt out: kdd no longer builds the command line, so a custom spawn carries no run
+  marker and its workers are never killed on reclaim — your spawn, your lifecycle.
 
 **Worker contract.** A spawned worker gets only `KDD_TASK_ID` + actor env — never the task body
 (pull-context). It must:
 
 1. `kdd show $KDD_TASK_ID` — read the task, criteria, links itself.
 2. Do the work in the repo (cwd is the repo root).
-3. Renew its lease periodically: `kdd claim $KDD_TASK_ID --renew`. If renew errors, the lease was
-   lost (reclaimed) — **stop immediately**; another worker owns the task.
-4. When done: check acceptance criteria (`kdd criteria check`), then `kdd move $KDD_TASK_ID review`.
+3. When done: leave one summary comment (`kdd comment`), check acceptance criteria
+   (`kdd criteria check`), then `kdd move $KDD_TASK_ID review`.
+
+The lease is renewed by the supervisor, not by the agent: the built-in `kdd worker` renews every
+`ttl/3` for as long as its process lives, and stops the agent the moment a renewal is refused
+(lease reclaimed or taken away). A custom `KDD_SPAWN_CMD` has no such supervisor — it owns its own
+renewal: call `kdd claim $KDD_TASK_ID --renew` periodically, and **stop immediately** if renew
+errors, because another worker now owns the task.
 
 A task that fails to make progress (worker crashes, exits without moving to review, or spawn fails)
 is retried on the next tick; after 3 failed attempts it is auto-blocked for a human to inspect.

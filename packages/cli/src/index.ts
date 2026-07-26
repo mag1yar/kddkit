@@ -7,16 +7,18 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import lockfile from 'proper-lockfile';
 import {
-  KddError, addCriterion, addDecision, addTask, appendAgentEvent, archiveTask, blockTask,
+  KddError, addCriterion, addDecision, addTask, appendAgentEvent, archiveTask, authorOf, blockTask,
   boardData, claimNext, claimTask, commentTask, createTrack, deleteTrack, DEFAULT_TTL, editTask,
   editTrack, ensureWorktree, exportBoard, headCommit, kddVersion, linkTasks, listAgentEvents, listCriteria, listProjects, taskBranchHead,
   listTracks, maxWorkers, moveTask, mustGetTask, openDb, parseClaudeStreamLine, rebuild, recall, removeCriterion,
   renewClaim, resolveDbPath, resolveDecisionsDir, resolveToplevel, setCriterionChecked,
   setProjectToplevel, statusDigest,
-  sweepWorktrees, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, type Status,
+  sweepWorktrees, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask,
+  type KillFn, type Status,
 } from '@kddkit/core';
 import { createScheduler, projectPool, startUi, type TickRunner } from '@kddkit/ui';
 import { fail, getActor, parseId, withDb, withDbAt } from './context.js';
+import { killWorker, signalGroup, workerAlive, workerTag } from './procs.js';
 import {
   renderBoard, renderClaim, renderCriteria, renderRecall, renderShow, renderStatus, renderTracks,
 } from './render.js';
@@ -37,10 +39,17 @@ function readBody(opts: { body?: string; bodyFile?: string }): string | undefine
   return opts.body;
 }
 
-const WORKER_PROMPT = process.env.KDD_WORKER_PROMPT ??
+// Маркер рана — инфраструктура, а не текст задачи: он дописывается к ЛЮБОМУ промпту, включая
+// свой (KDD_WORKER_PROMPT). Метка обязана попасть в argv самого claude (см. workerTag) — другого
+// способа увидеть его в `ps` нет, а claude бежит detached, своей группой: без этой копии метки
+// осиротевший агент недостижим вообще ниоткуда. Формулировка «ignore» — чтобы модель не приняла
+// служебную строку за часть задания.
+const runMarker = (tag: string): string =>
+  ` Ignore this run marker, it is not part of your task: ${tag}`;
+
+const workerPrompt = (): string =>
   `You are a kdd agent worker. Read your task: run \`kdd show $KDD_TASK_ID\`. ` +
-  `Do the work in this repository. Renew your lease periodically with \`kdd claim $KDD_TASK_ID --renew\` — ` +
-  `if that errors you have LOST the lease, stop immediately. ` +
+  `Do the work in this repository. ` +
   // комментарий = durable-канал: он в taskDetail (get_task/kdd show), его читают люди и будущие
   // сессии. Activity-фид туда НЕ входит намеренно (не засоряет LLM-контекст). Потому итог — в коммент.
   `When done, leave ONE concise summary comment ` +
@@ -57,8 +66,12 @@ const WORKER_PROMPT = process.env.KDD_WORKER_PROMPT ??
 // нативный better-sqlite3 падает на NODE_MODULE_VERSION mismatch, воркер тихо мрёт. -lc сохраняем
 // (грузит PATH для discovery claude/npx), но node вызываем явно. sq — shell-quote на случай пробелов в путях.
 const sq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
-const DEFAULT_SPAWN_CMD =
-  `${sq(process.execPath)} ${sq(fileURLToPath(import.meta.url))} worker "$KDD_TASK_ID"`;
+// id подставляем ЛИТЕРАЛОМ, а не через "$KDD_TASK_ID": переменную раскрывает дочерний шелл,
+// поэтому в `ps` у процесса виден нераскрытый текст. --tag: у самого супервизора рантайм-эффекта
+// нет, он существует РОВНО чтобы метка была видна в `ps` — по ней procs.findWorker находит
+// группу, когда приходит время убивать. Не удалять как мёртвый аргумент.
+const defaultSpawnCmd = (taskId: number, tag: string): string =>
+  `${sq(process.execPath)} ${sq(fileURLToPath(import.meta.url))} worker ${taskId} --tag ${tag}`;
 
 // tick короткоживущий — 10 мин >> его длительности. Это окно ЗАГРУЖЕНО смыслом (не просто
 // «щедрое число»): оно гарантирует целостность maxWorkers между процессами. Пока лок держится,
@@ -74,10 +87,16 @@ const TICK_LOCK_STALE = 10 * 60 * 1000; // ms
 const TICK_KILL_TIMEOUT = 5 * 60 * 1000; // ms
 
 // Детач fire-and-forget через login-shell (-lc грузит PATH: детач-процесс иначе не найдёт claude/npx).
-function spawnWorker(taskId: number, workerId: string, projectDir: string): void {
-  const cmd = process.env.KDD_SPAWN_CMD ?? DEFAULT_SPAWN_CMD;
+function spawnWorker(taskId: number, workerId: string, projectDir: string, tag: string): void {
+  const cmd = process.env.KDD_SPAWN_CMD ?? defaultSpawnCmd(taskId, tag);
   const shell = process.env.SHELL || '/bin/sh';
-  const child = spawnProcess(shell, ['-lc', cmd], {
+  // Личность воркера дублируем ВНУТРЬ -lc строки, а не только в env спауна: -l сначала грузит
+  // профиль пользователя, и документированный `export KDD_ACTOR=...` в ~/.zprofile переписал бы
+  // то, что подставил tick. Тогда claimed_by !== authorOf(getActor()) — воркер молча не заводит
+  // heartbeat, lease истекает под живым агентом, и задача авто-блокируется за «3 failed attempts».
+  // export отдельным оператором (а не префиксом присваивания): KDD_SPAWN_CMD может быть цепочкой.
+  const ident = `export KDD_TASK_ID=${sq(String(taskId))} KDD_ACTOR=ai KDD_SESSION=${sq(workerId)}; `;
+  const child = spawnProcess(shell, ['-lc', ident + cmd], {
     cwd: projectDir,
     env: { ...process.env, KDD_TASK_ID: String(taskId), KDD_ACTOR: 'ai', KDD_SESSION: workerId },
     detached: true,
@@ -94,6 +113,23 @@ function spawnWorker(taskId: number, workerId: string, projectDir: string): void
 }
 
 const tickRunner: TickRunner = createTickRunner(fileURLToPath(import.meta.url), TICK_KILL_TIMEOUT);
+
+// Один killer на tick и claim: правило «чужой lease реклеймится только вместе со своим
+// процессом» одно на всех, а метка обязана совпадать с той, которой метился спаун — иначе
+// реклеймящий не найдёт процесс, который обязан убить.
+const killerFor = (dbPath: string): KillFn => (taskId) => killWorker(workerTag(taskId, dbPath));
+
+// Секундный env-параметр валидируем ДО необратимого (у tick это kill+reclaim, у worker'а —
+// спаун claude): мусор, доехавший до таймера, бросает уже из колбэка — uncaught, с сиротой.
+// null = валиден.
+const secondsError = (name: string, v: number): string | null =>
+  Number.isFinite(v) && v > 0 ? null : `invalid ${name} '${process.env[name]}' (seconds > 0)`;
+const ttlError = (ttl: number): string | null => secondsError('KDD_WORKER_TTL', ttl);
+
+// Потолок тишины агента. Щедрый намеренно: легальный длинный тул-колл или долгий ход
+// размышления не должен считаться зависанием — ловим настоящий клин (мёртвый тул, сетевой
+// стопор, бесконечный цикл), а не медленную работу.
+const DEFAULT_IDLE = 1800; // сек; override через KDD_WORKER_IDLE
 
 function run(json: boolean, fn: () => void): void {
   try { fn(); } catch (e) {
@@ -179,15 +215,20 @@ program.command('claim')
   .action((id, o) => run(o.json, () => {
     const ttl = Number(o.ttl); // NaN на невалидном вводе -> core (assertTtl) отклонит
     const actor = getActor();
+    // Тот же killer, что у tick: человек, забирающий задачу с истёкшим tick-лизом, обязан
+    // сначала остановить её воркера — иначе двое правят одну worktree и одну ветку.
+    const { dbPath, projectPath } = resolveDbPath();
+    const kill = killerFor(dbPath);
     if (o.next) { // --next: null = очередь пуста, не ошибка (exit 0 для driver-петли)
-      const t = withDb((db) => claimNext(db, actor, ttl));
+      const t = withDbAt(dbPath, projectPath, (db) => claimNext(db, actor, ttl, { kill }));
       if (!t) { out(o.json, { task: null }, () => 'no ready task'); return; }
       out(o.json, t, () => renderClaim(t, 'claimed'));
       return;
     }
     if (!id) throw new KddError('give a task id or use --next');
-    const res = withDb((db) =>
-      o.renew ? renewClaim(db, parseId(id), actor, ttl) : claimTask(db, parseId(id), actor, ttl));
+    const res = withDbAt(dbPath, projectPath, (db) =>
+      o.renew ? renewClaim(db, parseId(id), actor, ttl)
+        : claimTask(db, parseId(id), actor, ttl, { kill }));
     if (!res.ok) { fail(res.error, o.json); return; }
     out(o.json, res.task, () => renderClaim(res.task, o.renew ? 'renewed' : 'claimed'));
   }));
@@ -202,9 +243,14 @@ program.command('tick')
     if (o.watch && (!Number.isFinite(intervalMs) || intervalMs <= 0)) {
       fail(`--interval must be a positive number of seconds (got '${o.interval}')`, o.json);
     }
-    const ttl = Number(process.env.KDD_WORKER_TTL ?? 1800);
-    // env-override валидируем ДО цикла: между проходами он не меняется, незачем
-    // сыпать одной и той же ошибкой каждый интервал в --watch.
+    // Один TTL на весь kdd: с heartbeat'ом супервизора длина рана на lease больше не влияет,
+    // и TTL измеряет ровно одно — сколько мёртвый воркер держит слот занятым.
+    const ttl = Number(process.env.KDD_WORKER_TTL ?? DEFAULT_TTL);
+    // env-override валидируем ДО цикла (и ДО первого reclaim+kill): между проходами он не
+    // меняется, а NaN-ttl раньше пролезал сквозь пожинающую половину прохода и падал уже в
+    // claimNext — воркеров жали, новых не спаунили, и так каждый интервал в --watch.
+    const badTtl = ttlError(ttl);
+    if (badTtl) fail(badTtl, o.json);
     if (process.env.KDD_MAX_WORKERS !== undefined) {
       const n = Number(process.env.KDD_MAX_WORKERS);
       if (!Number.isInteger(n) || n < 1) {
@@ -232,10 +278,18 @@ program.command('tick')
           // с worktree), и если поверить в её же git-резолв, неверный toplevel запишется
           // в meta навсегда — доска перестанет чиниться сама.
           if (!process.env.KDD_TICK_SPAWNED) setProjectToplevel(db, toplevel);
-          const t = tick(db, { maxWorkers: maxWorkers(db), ttl, projectDir: toplevel, spawn: spawnWorker });
+          // Одна метка на спаун, kill и isBusy — иначе они разошлись бы, и tick искал бы
+          // не то, что запустил.
+          const tagOf = (taskId: number): string => workerTag(taskId, dbPath);
+          const t = tick(db, {
+            maxWorkers: maxWorkers(db), ttl, projectDir: toplevel,
+            spawn: (taskId, workerId, dir) => spawnWorker(taskId, workerId, dir, tagOf(taskId)),
+            kill: killerFor(dbPath),
+          });
           // sweep ПОСЛЕ claim-loop: re-claimed задача уже in_progress → её worktree не тронут;
           // истинно брошенная (reclaim без re-claim) → status 'new' → worktree снесён.
-          return { ...t, reaped: sweepWorktrees(db, toplevel) };
+          // isBusy — вторая проверка: kill best-effort, каталог под выжившим не сносим.
+          return { ...t, reaped: sweepWorktrees(db, toplevel, (taskId) => workerAlive(tagOf(taskId))) };
         });
       } finally {
         release();
@@ -248,7 +302,7 @@ program.command('tick')
         const stamp = o.watch ? `[${ts}] ` : '';
         return r.skipped
           ? `${stamp}tick: locked (another tick running)`
-          : `${stamp}tick: reclaimed ${r.reclaimed}, spawned ${r.spawned}, active ${r.active}, reaped ${r.reaped}`;
+          : `${stamp}tick: reclaimed ${r.reclaimed}, killed ${r.killed}, stuck ${r.stuck}, spawned ${r.spawned}, active ${r.active}, reaped ${r.reaped}`;
       });
     };
 
@@ -288,8 +342,11 @@ program.command('tick')
 
 program.command('worker')
   .argument('<id>')
+  // Рантайм-эффекта у опции нет: она нужна, чтобы метка была видна в `ps` (см. workerTag).
+  // Читаем её всё же не зря — тем же значением метится промпт claude.
+  .option('--tag <tag>', 'ps-visible run marker used to find this worker (set by kdd tick)')
   .description('agent-mode supervisor: run claude on a task, ingest its stream into agent_events')
-  .action(async (id) => {
+  .action(async (id, o) => {
     const workerId = process.env.KDD_SESSION ?? `manual:${process.pid}`;
     let db: ReturnType<typeof openDb> | undefined;
     try {
@@ -299,8 +356,6 @@ program.command('worker')
       const claudeCmd = process.env.KDD_CLAUDE_CMD ?? 'claude';
       const allowed = process.env.KDD_ALLOWED_TOOLS ?? 'Bash Read Edit Write Grep Glob';
       const [bin, ...pre] = claudeCmd.split(/\s+/);
-      const args = [...pre, '-p', WORKER_PROMPT,
-        '--output-format', 'stream-json', '--verbose', '--allowedTools', allowed];
 
       // long-lived: withDb/withDbAt закрыли бы db сразу после callback, а claude ещё бежит.
       // Один db-handle на всю команду: resolveDbPath (шеллится в git rev-parse) и openDb — по разу,
@@ -311,10 +366,52 @@ program.command('worker')
       // параллельные воркеры не затирают файлы друг друга. Idempotent: reuse если уже есть.
       const workdir = ensureWorktree(toplevel, dbPath, taskId, task.title);
 
+      const actor = getActor();
+      const ttl = Number(process.env.KDD_WORKER_TTL ?? DEFAULT_TTL);
+      // Валидируем ЗДЕСЬ, а не на первом ударе heartbeat: NaN дал бы интервал NaN (= 1 мс),
+      // и assertTtl бросил бы уже из таймера — то есть uncaught, с осиротевшим claude.
+      const bad = ttlError(ttl);
+      if (bad) throw new KddError(bad);
+      const idle = Number(process.env.KDD_WORKER_IDLE ?? DEFAULT_IDLE);
+      const badIdle = secondsError('KDD_WORKER_IDLE', idle);
+      if (badIdle) throw new KddError(badIdle);
+      // Heartbeat заводим ТОЛЬКО если lease реально наш. Ручной `kdd worker <id>` без claim —
+      // debug-путь: renewClaim там провалится на первом ударе и убил бы отладочный ран.
+      const holdsLease = task.claimed_by === authorOf(actor);
+      // ...но «задача занята кем-то другим» — не тихий случай: чаще всего это профиль логин-шелла,
+      // переписавший KDD_ACTOR/KDD_SESSION. Молчащий воркер продлевает lease НИКОГДА, tick
+      // прибивает здорового агента по TTL и после трёх кругов блокирует задачу без единой подсказки.
+      const leaseMismatch = !holdsLease && task.claimed_by !== null
+        ? `held by ${task.claimed_by}, we are ${authorOf(actor)} — heartbeat disarmed, `
+          + `the lease will expire under a live agent (check KDD_ACTOR/KDD_SESSION in your shell profile)`
+        : null;
+      if (leaseMismatch) process.stderr.write(`kdd worker: task #${taskId} ${leaseMismatch}\n`);
+
+      // Метку lease несёт только тот ран, который lease реально держит. `--tag` ставит tick —
+      // он только что заклеймил задачу, и группа воркера принадлежит ему. А ручной `kdd worker
+      // <id>` (человек воспроизводит упавший ран, CI-обёртка) раньше вычислял ровно ту же метку
+      // сам — и следующий tick, реклеймив истёкший lease, слал SIGTERM/SIGKILL ГРУППЕ этого
+      // рана: вне интерактивного job control это родительский скрипт со всеми его детьми.
+      // Своя метка оставляет рану личность в `ps`, но findWorker по метке задачи её не находит.
+      const marker = o.tag
+        ?? (holdsLease ? workerTag(taskId, dbPath) : `kdd-worker-manual-${taskId}-${process.pid}`);
+      // Свой промпт настраивает ИНСТРУКЦИИ, а не lifecycle: маркер дописывается к любому.
+      const prompt = (process.env.KDD_WORKER_PROMPT ?? workerPrompt()) + runMarker(marker);
+      const args = [...pre, '-p', prompt,
+        '--output-format', 'stream-json', '--verbose', '--allowedTools', allowed];
+
       await new Promise<void>((resolve) => {
         appendAgentEvent(db!, taskId, workerId, 'run_start', { detail: { head: headCommit(workdir) } });
+        if (leaseMismatch) {
+          appendAgentEvent(db!, taskId, workerId, 'error', { detail: { message: leaseMismatch } });
+        }
         const child = spawnProcess(bin, args, {
           cwd: workdir, stdio: ['ignore', 'pipe', 'inherit'],
+          // Своя процессная группа (B3): всё, что claude поднимет через Bash и что переживёт его
+          // самого, сигнала по одному pid не получит, а метки рана в argv не несёт — значит и
+          // findWorker его больше не увидит. Порты и CPU держались бы до перезагрузки.
+          // killWorker это не ломает: он ищет claude по метке в промпте и берёт ЕГО pgid.
+          detached: true,
           // KDD_ACTOR/KDD_SESSION НЕ хардкодим здесь — они текут из окружения самого воркера.
           // Tick-путь: tick уже выставил их (ai / tick:<nonce>-<i>) на процессе воркера, ...process.env
           // их пробрасывает — ai-gating на move-to-review сохраняется. Ручной `kdd worker <id>`
@@ -323,10 +420,68 @@ program.command('worker')
           // KDD_SESSION — воркер claim'ом сознательно не владеет, им владеет tick.
           env: { ...process.env, KDD_TASK_ID: String(taskId) },
         });
+        // Остановка агента — всегда по ГРУППЕ, никогда по одному pid: см. detached выше.
+        let stopping = false;
+        const stopAgent = (): void => {
+          if (stopping || !child.pid) return;
+          stopping = true;
+          signalGroup(child.pid, 'SIGTERM'); // detached ⇒ pid ребёнка И есть pgid его группы
+          setTimeout(() => signalGroup(child.pid!, 'SIGKILL'), 2000).unref();
+        };
+        // Своя группа означает и то, что Ctrl+C по терминалу до claude больше не долетает:
+        // фоновая группа не получает SIGINT переднего плана. Реапим сами.
+        const onSig = (): void => { stopAgent(); };
+        process.on('SIGINT', onSig);
+        process.on('SIGTERM', onSig);
+
+        // lease продлевает супервизор, а не агент: LLM забывает, процесс — нет. Пока этот
+        // таймер тикает, lease означает «процесс жив» — то, что и должен означать.
+        // log:false — механическое продление не пишется в историю доски (см. renewClaim).
+        // Провал CAS = lease отобрали (reclaim, ручное снятие) -> агента остановить немедленно.
+        const beat = holdsLease ? setInterval(() => {
+          try {
+            const r = renewClaim(db!, taskId, actor, ttl, { log: false });
+            if (r.ok) return;
+            // Чистый {ok:false} — lease отобрали: агента останавливаем. Убиваем ДО записи
+            // события: если запись упадёт, ребёнок всё равно уже получил сигнал.
+            clearInterval(beat!);
+            stopAgent();
+            appendAgentEvent(db!, taskId, workerId, 'error', { detail: { message: r.error } });
+          } catch (e) {
+            // Исключение в колбэке таймера = uncaught: супервизор умрёт, а claude останется
+            // сиротой — ровно та ситуация, которую чинит kill группы. Транзиентную беду
+            // (SQLITE_BUSY на занятой доске, снесённую строку) переживаем и бьём дальше:
+            // не продлимся совсем — tick реклеймит lease и снесёт группу, это уже безопасно.
+            process.stderr.write(
+              `kdd worker: heartbeat failed: ${e instanceof Error ? e.message : String(e)}\n`);
+          }
+        }, Math.max(1, Math.floor(ttl / 3)) * 1000) : undefined;
+        beat?.unref();
+
+        // Детектор клина. Раньше это делал сам агент: промпт просил звать `kdd claim --renew`, и
+        // зависший claude просто переставал продлевать. Теперь продлевает супервизор — и делал бы
+        // это вечно, пока жив ОН, а не агент. Ран без единой строки NDJSON дольше idle считаем
+        // залипшим: перестаём продлевать, глушим агента и даём рану закрыться — lease истечёт,
+        // tick реклеймит задачу, засчитает неудачу и повторит её (после K — авто-блок).
+        let lastLine = Date.now();
+        const watchdog = setInterval(() => {
+          if (Date.now() - lastLine < idle * 1000) return;
+          clearInterval(watchdog);
+          if (beat) clearInterval(beat); // ключевое: молчащий агент НЕ должен держать слот
+          appendAgentEvent(db!, taskId, workerId, 'error',
+            { detail: { message: `agent produced no output for ${idle}s — wedged, stopping the run` } });
+          stopAgent();
+        }, Math.max(1, Math.floor(idle / 3)) * 1000);
+        watchdog.unref();
+
         let ended = false; // ENOENT spawn failure fires BOTH 'error' и 'close' — run_end пишем один раз
         const end = (exitCode: number | null) => {
           if (ended) return;
           ended = true;
+          if (beat) clearInterval(beat); // завершённый ран не должен продлевать чужой lease
+          clearInterval(watchdog);
+          process.off('SIGINT', onSig);
+          process.off('SIGTERM', onSig);
           // after_head предпочитаем из ветки kdd/task-<id> (главный репо) — переживает снос worktree
           // гонкой с tick.sweepWorktrees. workdir HEAD как fallback; оба недоступны → head=undefined
           // (неполный ран, run_end без head).
@@ -341,6 +496,7 @@ program.command('worker')
         });
         const rl = createInterface({ input: child.stdout! });
         rl.on('line', (line) => {
+          lastLine = Date.now(); // поток агента И ЕСТЬ сигнал живости — другого у супервизора нет
           for (const ev of parseClaudeStreamLine(line)) appendAgentEvent(db!, taskId, workerId, ev.kind, ev);
         });
         child.on('close', (code) => { rl.close(); end(code); });
