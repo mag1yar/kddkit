@@ -1,4 +1,5 @@
 import { arrayMove } from '@dnd-kit/sortable';
+import { ListChecks } from 'lucide-react';
 import {
   Kanban, KanbanBoard, KanbanColumn, KanbanColumnContent, KanbanItem,
   KanbanItemHandle, KanbanOverlay, type KanbanMoveEvent,
@@ -112,8 +113,19 @@ function TaskCard({ task, trackName, onOpen, asHandle }: {
         {task.blocked === 1 && (
           <Badge variant="destructive" className="h-5 rounded-sm px-1.5 text-xs">blocked</Badge>
         )}
+        {/* Голая дробь на карточке ничего не называла: '2/2' одинаково читается как
+            критерии, комментарии и что угодно ещё. Иконка — та же, что у критериев в
+            диалоге; полный чеклист перестаёт быть приглушённым, это состояние «можно
+            в review». */}
         {task.criteria_total > 0 && (
-          <Badge variant="outline" className="h-5 rounded-sm px-1.5 text-xs">
+          <Badge
+            variant="outline" title="acceptance criteria"
+            className={cn(
+              'h-5 gap-1 rounded-sm px-1.5 text-xs',
+              task.criteria_checked === task.criteria_total && 'text-foreground',
+            )}
+          >
+            <ListChecks className="size-3" />
             {task.criteria_checked}/{task.criteria_total}
           </Badge>
         )}
