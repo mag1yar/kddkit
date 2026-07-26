@@ -135,7 +135,9 @@ task up to a cap. It runs no LLM itself; schedule it from cron.
 **Worker contract.** A spawned worker gets only `KDD_TASK_ID` + actor env — never the task body
 (pull-context). It must:
 
-1. `kdd show $KDD_TASK_ID` — read the task, criteria, links itself.
+1. `kdd show $KDD_TASK_ID` — read the task, criteria, links itself. Its `PATH` is led by the
+   directory of the node running `kdd worker`, so a bare `kdd` resolves to the install whose
+   native modules match — under nvm/fnm the shell's own first node usually does not.
 2. Do the work in the repo (cwd is the repo root).
 3. When done: leave one summary comment (`kdd comment`), check acceptance criteria
    (`kdd criteria check`), then `kdd move $KDD_TASK_ID review`.

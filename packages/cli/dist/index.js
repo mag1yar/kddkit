@@ -3,7 +3,7 @@
 // src/index.ts
 import { Command } from "commander";
 import { readFileSync } from "fs";
-import { basename, dirname as dirname2, join } from "path";
+import { basename, delimiter, dirname as dirname2, join } from "path";
 import { spawn as spawnProcess2 } from "child_process";
 import { createInterface } from "readline";
 import { fileURLToPath } from "url";
@@ -372,6 +372,7 @@ var runMarker = (tag) => ` Ignore this run marker, it is not part of your task: 
 var workerPrompt = () => `You are a kdd agent worker. Read your task: run \`kdd show $KDD_TASK_ID\`. Do the work in this repository. When done, leave ONE concise summary comment (\`kdd comment $KDD_TASK_ID "<what you changed and why; caveats or follow-ups>"\`) \u2014 this is the durable note humans and future sessions read, so keep it tight, not a log. Then check acceptance criteria (\`kdd criteria ls $KDD_TASK_ID\`, then \`kdd criteria check $KDD_TASK_ID <criterionId>\` for each one) and \`kdd move $KDD_TASK_ID review\`. If you get blocked or must stop early, comment the reason first.`;
 var sq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 var defaultSpawnCmd = (taskId, tag) => `${sq(process.execPath)} ${sq(fileURLToPath(import.meta.url))} worker ${taskId} --tag ${tag}`;
+var nodeFirstPath = () => [dirname2(process.execPath), process.env.PATH].filter(Boolean).join(delimiter);
 var TICK_LOCK_STALE = 10 * 60 * 1e3;
 var TICK_KILL_TIMEOUT = 5 * 60 * 1e3;
 function spawnWorker(taskId, workerId, projectDir, tag) {
@@ -623,7 +624,7 @@ program.command("worker").argument("<id>").option("--tag <tag>", "ps-visible run
         // (без claim) — debug-aid для feed: наследует user-актора из шелла, никого не гейтит.
         // Полное продвижение задачи вручную требует предварительного `kdd claim` под тем же
         // KDD_SESSION — воркер claim'ом сознательно не владеет, им владеет tick.
-        env: { ...process.env, KDD_TASK_ID: String(taskId) }
+        env: { ...process.env, KDD_TASK_ID: String(taskId), PATH: nodeFirstPath() }
       });
       let stopping = false;
       const stopAgent = () => {

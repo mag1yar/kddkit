@@ -1,6 +1,6 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { openDb, runProduced } from '@kddkit/core';
 import { kdd, kddFail, makeEnv, BIN } from './run.js';      // BIN — путь к собранному dist/index.js
@@ -36,6 +36,18 @@ function stubClaudeEnvEcho(dir: string): string {
   const p = join(dir, 'stub-claude-env-echo.mjs');
   writeFileSync(p, `#!/usr/bin/env node
 const text = process.env.KDD_TASK_ID ?? '';
+console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } }));
+process.exit(0);
+`);
+  chmodSync(p, 0o755);
+  return p;
+}
+
+// фикстура-claude: эхает СВОЙ рантайм-PATH — им агент резолвит `kdd` (шебанг `env node`).
+function stubClaudePathEcho(dir: string): string {
+  const p = join(dir, 'stub-claude-path-echo.mjs');
+  writeFileSync(p, `#!/usr/bin/env node
+const text = process.env.PATH ?? '';
 console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } }));
 process.exit(0);
 `);
@@ -119,6 +131,20 @@ describe('kdd worker', () => {
     const feed = JSON.parse(kdd(env, 'feed', '1', '--json'));
     const textEvent = feed.find((e: any) => e.kind === 'text');
     expect(JSON.parse(textEvent.detail).text).toBe('1');
+  });
+
+  it('agent inherits a PATH led by the running node, so bare `kdd` resolves to the matching ABI', () => {
+    const { env, dir } = repo();
+    kdd(env, 'add', 'do a thing'); // task #1
+    const stub = stubClaudePathEcho(dir);
+    // Наша нода в PATH есть, но НЕ первой — ровно случай fnm-юзера, у которого впереди стоит
+    // homebrew-нода чужого ABI. Совсем убрать её нельзя: сам харнесс зовёт `node` по имени.
+    kdd({ ...env, KDD_CLAUDE_CMD: `node ${stub}`, PATH: `/usr/bin:${dirname(process.execPath)}` },
+      'worker', '1');
+    const feed = JSON.parse(kdd(env, 'feed', '1', '--json'));
+    const seen = JSON.parse(feed.find((e: any) => e.kind === 'text').detail).text as string;
+    expect(seen.split(delimiter)[0]).toBe(dirname(process.execPath));
+    expect(seen.split(delimiter)).toContain('/usr/bin'); // prepend, не replace: claude нужен свой PATH
   });
 
   it('CR-2: bad id exits non-zero with a clean error: line, no stack', () => {

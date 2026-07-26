@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import { readFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, delimiter, dirname, join } from 'node:path';
 import { spawn as spawnProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -72,6 +72,14 @@ const sq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 // группу, когда приходит время убивать. Не удалять как мёртвый аргумент.
 const defaultSpawnCmd = (taskId: number, tag: string): string =>
   `${sq(process.execPath)} ${sq(fileURLToPath(import.meta.url))} worker ${taskId} --tag ${tag}`;
+
+// Вторая половина того же дефекта: #19 запинил САМ процесс воркера, но агенту промпт велит звать
+// голый `kdd` — а у него шебанг `env node`, то есть ПЕРВАЯ нода из PATH. У fnm/nvm-юзера первой
+// оказывается чужая (homebrew), и better-sqlite3 падает на ABI. Агент читает это как «kdd сломан».
+// Кладём каталог нашей ноды первым: и node, и kdd-шим резолвятся туда, под что собран нативный
+// модуль. Именно prepend, а не replace — claude нужен весь остальной PATH для своих инструментов.
+const nodeFirstPath = (): string =>
+  [dirname(process.execPath), process.env.PATH].filter(Boolean).join(delimiter);
 
 // tick короткоживущий — 10 мин >> его длительности. Это окно ЗАГРУЖЕНО смыслом (не просто
 // «щедрое число»): оно гарантирует целостность maxWorkers между процессами. Пока лок держится,
@@ -418,7 +426,7 @@ program.command('worker')
           // (без claim) — debug-aid для feed: наследует user-актора из шелла, никого не гейтит.
           // Полное продвижение задачи вручную требует предварительного `kdd claim` под тем же
           // KDD_SESSION — воркер claim'ом сознательно не владеет, им владеет tick.
-          env: { ...process.env, KDD_TASK_ID: String(taskId) },
+          env: { ...process.env, KDD_TASK_ID: String(taskId), PATH: nodeFirstPath() },
         });
         // Остановка агента — всегда по ГРУППЕ, никогда по одному pid: см. detached выше.
         let stopping = false;
