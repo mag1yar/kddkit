@@ -21098,7 +21098,7 @@ var StdioServerTransport = class {
 
 // ../core/dist/index.js
 import Database from "better-sqlite3";
-import { mkdirSync } from "fs";
+import { mkdirSync, renameSync, rmSync } from "fs";
 import { dirname } from "path";
 import { execFileSync } from "child_process";
 import { createHash } from "crypto";
@@ -21140,6 +21140,11 @@ function capText(s, n) {
   if (s.length <= n) return s;
   const cut = n - ((s.charCodeAt(n - 1) & 64512) === 55296 ? 1 : 0);
   return `${s.slice(0, cut)}\u2026 [+${s.length - cut} chars]`;
+}
+var KddError = class extends Error {
+};
+function logError(db, source, message) {
+  db.prepare(`INSERT INTO errors (source, message, created_at) VALUES (?, ?, ?)`).run(source, message, now());
 }
 var now = () => Math.floor(Date.now() / 1e3);
 var MIGRATIONS = [
@@ -21279,6 +21284,29 @@ var MIGRATIONS = [
   CREATE INDEX idx_agent_events_task ON agent_events(task_id, id);
   `
 ];
+function backupBeforeMigrate(db, dbPath, from) {
+  const backup = `${dbPath}.v${from}.bak`;
+  const tmp = `${backup}.${process.pid}.tmp`;
+  const q = (p) => p.replace(/'/g, "''");
+  try {
+    rmSync(tmp, { force: true });
+    db.exec(`VACUUM INTO '${q(tmp)}'`);
+    const copy = new Database(tmp, { readonly: true });
+    const copied = copy.pragma("user_version", { simple: true });
+    copy.close();
+    if (copied !== from) {
+      rmSync(tmp, { force: true });
+      return;
+    }
+    renameSync(tmp, backup);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    db.close();
+    throw new KddError(
+      `cannot back up the board before migrating it to v${MIGRATIONS.length}: ${e instanceof Error ? e.message : String(e)} (wanted ${backup})`
+    );
+  }
+}
 function openDb(dbPath, projectPath) {
   if (dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true });
   const db = new Database(dbPath);
@@ -21286,6 +21314,15 @@ function openDb(dbPath, projectPath) {
   db.pragma("busy_timeout = 5000");
   db.pragma("foreign_keys = ON");
   const from = db.pragma("user_version", { simple: true });
+  if (from > MIGRATIONS.length) {
+    db.close();
+    throw new KddError(
+      `board at ${dbPath} has schema v${from}, this kdd only knows v${MIGRATIONS.length} \u2014 update kdd (npm i -g @kddkit/cli), or run the version that created it`
+    );
+  }
+  if (from > 0 && from < MIGRATIONS.length && dbPath !== ":memory:") {
+    backupBeforeMigrate(db, dbPath, from);
+  }
   for (let i = from; i < MIGRATIONS.length; i++) {
     db.transaction(() => {
       db.exec(MIGRATIONS[i]);
@@ -21296,11 +21333,6 @@ function openDb(dbPath, projectPath) {
     db.prepare(`INSERT OR IGNORE INTO meta (key, value) VALUES ('project_path', ?)`).run(projectPath);
   }
   return db;
-}
-var KddError = class extends Error {
-};
-function logError(db, source, message) {
-  db.prepare(`INSERT INTO errors (source, message, created_at) VALUES (?, ?, ?)`).run(source, message, now());
 }
 var kddHome = () => process.env.KDD_HOME ?? join(homedir(), ".kdd");
 function resolveDbPath(cwd = process.cwd()) {

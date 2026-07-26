@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
+import Database from 'better-sqlite3';
+import { mkdtempSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import {
   MIGRATIONS, openDb, projectPathOf, projectToplevelOf, setProjectToplevel,
 } from '../src/db.js';
+import { KddError } from '../src/errors.js';
 
 describe('openDb', () => {
   it('creates schema at user_version 1 with all tables', () => {
@@ -93,5 +98,46 @@ describe('openDb', () => {
     expect(() => db.prepare(
       `INSERT INTO tasks (title, status, created_at, updated_at) VALUES ('t','bogus',0,0)`
     ).run()).toThrow(/CHECK/);
+  });
+});
+
+// #34: user_version > MIGRATIONS.length означает базу от более новой версии kdd. Раньше цикл
+// миграций просто не выполнялся, и код продолжал работать на схеме, которой не знает.
+describe('schema version guard', () => {
+  const fileDb = (): string => join(mkdtempSync(join(tmpdir(), 'kdd-mig-')), 'kdd.db');
+
+  it('refuses a board from a newer kdd, naming both versions', () => {
+    const p = fileDb();
+    openDb(p, 'x').close();
+    const raw = new Database(p);
+    raw.pragma(`user_version = ${MIGRATIONS.length + 3}`);
+    raw.close();
+
+    expect(() => openDb(p)).toThrow(KddError);
+    expect(() => openDb(p)).toThrow(
+      new RegExp(`v${MIGRATIONS.length + 3}.*v${MIGRATIONS.length}`));
+  });
+
+  it('backs the board up before migrating it, keeping the pre-migration copy readable', () => {
+    const p = fileDb();
+    const db = openDb(p, 'x');
+    db.prepare(`INSERT INTO tasks (title, created_at, updated_at) VALUES ('keep me', 1, 1)`).run();
+    // откатываем базу на версию назад вместе с артефактами последней миграции
+    db.exec('DROP TABLE agent_events');
+    db.pragma(`user_version = ${MIGRATIONS.length - 1}`);
+    db.close();
+
+    openDb(p).close(); // миграция накатывается заново
+    const backup = new Database(`${p}.v${MIGRATIONS.length - 1}.bak`);
+    expect(backup.pragma('user_version', { simple: true })).toBe(MIGRATIONS.length - 1);
+    expect(backup.prepare(`SELECT title FROM tasks`).get()).toEqual({ title: 'keep me' });
+    backup.close();
+  });
+
+  it('does not back up a board that needs no migration', () => {
+    const p = fileDb();
+    openDb(p, 'x').close();
+    openDb(p).close(); // второй раз: from === MIGRATIONS.length, копировать нечего
+    expect(readdirSync(dirname(p)).filter((f) => f.endsWith('.bak'))).toEqual([]);
   });
 });

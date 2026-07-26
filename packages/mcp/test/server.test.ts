@@ -5,7 +5,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createServer } from '../src/server.js';
+import { createServer, startServer } from '../src/server.js';
 
 const ai = { type: 'ai', id: 'smoke' } as const;
 
@@ -51,5 +51,25 @@ describe('mcp server over a real transport', () => {
     });
     expect(bad.isError).toBe(true);
     expect(rawText(bad)).toMatch(/invalid transition/);
+  });
+});
+
+// #34: MCP-сервер поднимается на той же общей базе. Доска, уже мигрированная более новым kdd,
+// обязана уронить старт с внятной ошибкой (main.ts печатает её строкой и выходит 1), а не
+// молча подняться на схеме, которой этот код не знает.
+describe('a board from a newer kdd', () => {
+  it('refuses to start, naming both schema versions', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'kdd-mcp-newer-')), 'kdd.db');
+    const db = openDb(dbPath, 'x');
+    db.pragma('user_version = 99');
+    db.close();
+
+    const prev = process.env.KDD_DB;
+    process.env.KDD_DB = dbPath;
+    try {
+      await expect(startServer()).rejects.toThrow(/schema v99, this kdd only knows v\d+/);
+    } finally {
+      if (prev === undefined) delete process.env.KDD_DB; else process.env.KDD_DB = prev;
+    }
   });
 });

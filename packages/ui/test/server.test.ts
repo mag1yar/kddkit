@@ -315,3 +315,25 @@ describe('projectPool', () => {
     pool.closeAll();
   });
 });
+
+// #34: сервер обслуживает ЛЮБОЙ проект из ~/.kdd по ?project=<hash> — в том числе доску,
+// которую уже мигрировал более новый kdd из другого worktree. Ошибка обязана доехать до
+// вкладки текстом, а не 500 «internal error».
+describe('a board from a newer kdd', () => {
+  afterEach(() => { delete process.env.KDD_HOME; });
+
+  it('surfaces the version mismatch as a 400 with the message', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'kdd-newer-'));
+    process.env.KDD_HOME = home;
+    const hash = 'a'.repeat(16);
+    const dbPath = join(home, hash, 'kdd.db');
+    const db = openDb(dbPath, 'x');
+    db.pragma('user_version = 99');
+    db.close();
+
+    const pool = projectPool(hash);
+    const res = await createApp(pool.getDb, hash).request('/api/board');
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/schema v99/);
+  });
+});

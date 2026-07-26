@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, renameSync, rmSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { KddError } from './errors.js';
 
 export const now = (): number => Math.floor(Date.now() / 1000);
 
@@ -142,6 +143,39 @@ export const MIGRATIONS: string[] = [
   `,
 ];
 
+// Копия базы перед миграцией. VACUUM INTO, а не copyFile: она пишет один консистентный файл,
+// вобравший незачекпойнченный WAL, — обычное копирование под чужой активной сессией дало бы
+// половину транзакции. Своё имя на каждую исходную версию: апгрейд через две версии оставит
+// два файла, и откатываться можно на любой. Провал НЕ глотаем: не сумели сохранить копию —
+// значит нечем откатиться, а мигрируем мы ровно на этот случай.
+function backupBeforeMigrate(db: Database.Database, dbPath: string, from: number): void {
+  const backup = `${dbPath}.v${from}.bak`;
+  // Пишем в СВОЙ временный файл и переименовываем: одну и ту же доску открывают несколько
+  // процессов (сервер UI, `kdd tick`, терминал), и все они после апгрейда мигрируют её
+  // наперегонки. С общим именем один сносил бы файл, который другой ещё пишет, — копия
+  // исчезала бы ровно тогда, когда она нужна. rename атомарен, tmp у каждого свой.
+  const tmp = `${backup}.${process.pid}.tmp`;
+  const q = (p: string): string => p.replace(/'/g, "''");
+  try {
+    rmSync(tmp, { force: true }); // хвост от процесса с тем же pid, умершего на этом месте
+    db.exec(`VACUUM INTO '${q(tmp)}'`);
+    // Сосед мог обогнать нас и домигрировать доску, пока шёл VACUUM: тогда в копии лежит уже
+    // НОВАЯ схема, и класть её под именем v${from} нельзя — человек, откатываясь, получил бы
+    // ровно ту версию, от которой убегал.
+    const copy = new Database(tmp, { readonly: true });
+    const copied = copy.pragma('user_version', { simple: true }) as number;
+    copy.close();
+    if (copied !== from) { rmSync(tmp, { force: true }); return; }
+    renameSync(tmp, backup);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    db.close();
+    throw new KddError(
+      `cannot back up the board before migrating it to v${MIGRATIONS.length}: ` +
+      `${e instanceof Error ? e.message : String(e)} (wanted ${backup})`);
+  }
+}
+
 export function openDb(dbPath: string, projectPath?: string): Database.Database {
   if (dbPath !== ':memory:') mkdirSync(dirname(dbPath), { recursive: true });
   const db = new Database(dbPath);
@@ -149,6 +183,21 @@ export function openDb(dbPath: string, projectPath?: string): Database.Database 
   db.pragma('busy_timeout = 5000');
   db.pragma('foreign_keys = ON');
   const from = db.pragma('user_version', { simple: true }) as number;
+  // База из будущего: цикл ниже просто не выполнился бы, и kdd молча работал бы на схеме,
+  // которой не знает — колонки, CHECK'и и инварианты мимо него. Одна база на все worktree
+  // проекта, а версий kdd в жизни человека сразу несколько (глобальная, npx-кэш, плагин,
+  // pnpm dev:cli, откат после неудачного релиза) — так что это не теория. Тихая порча данных
+  // дороже любого отказа: падаем.
+  if (from > MIGRATIONS.length) {
+    db.close();
+    throw new KddError(
+      `board at ${dbPath} has schema v${from}, this kdd only knows v${MIGRATIONS.length} — ` +
+      `update kdd (npm i -g @kddkit/cli), or run the version that created it`);
+  }
+  // from === 0 — пустой файл, терять нечего.
+  if (from > 0 && from < MIGRATIONS.length && dbPath !== ':memory:') {
+    backupBeforeMigrate(db, dbPath, from);
+  }
   for (let i = from; i < MIGRATIONS.length; i++) {
     db.transaction(() => {
       db.exec(MIGRATIONS[i]);

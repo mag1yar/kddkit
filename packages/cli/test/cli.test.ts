@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { openDb } from '@kddkit/core';
 import { makeEnv, kdd, kddFail } from './run.js';
 
 let env: NodeJS.ProcessEnv;
@@ -32,5 +33,22 @@ describe('kdd add / board / show', () => {
     kdd({ ...env, KDD_ACTOR: 'ai', KDD_SESSION: 's7' }, 'add', 'от ии');
     const out = JSON.parse(kdd(env, 'show', '1', '--json'));
     expect(out.events[0]).toMatchObject({ actor_type: 'ai', actor_id: 's7' });
+  });
+});
+
+// #34: доска из будущего (user_version больше, чем знает этот kdd). Раньше цикл миграций просто
+// не выполнялся и kdd молча работал на незнакомой схеме — тихая порча данных. Проверяем не сам
+// гвард (это тест ядра), а что человек в терминале видит внятную строку, а не голый стектрейс.
+describe('a board from a newer kdd', () => {
+  it('refuses to open, one readable line on stderr', () => {
+    kdd(env, 'add', 'x');
+    const db = openDb(env.KDD_DB as string);
+    db.pragma('user_version = 99');
+    db.close();
+
+    const r = kddFail(env, 'board');
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/^error: board at .* has schema v99, this kdd only knows v\d+/m);
+    expect(r.stderr).not.toMatch(/\n\s+at /); // строка, а не кадры стека
   });
 });
