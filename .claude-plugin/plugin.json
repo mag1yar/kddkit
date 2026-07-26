@@ -1,6 +1,6 @@
 {
   "name": "kddkit",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Kanban + memory substrate for humans and Claude: task board, decisions and project context that survive sessions, branches and worktrees.",
   "author": { "name": "kddkit", "url": "https://github.com/mag1yar" },
   "homepage": "https://github.com/mag1yar/kddkit",
