@@ -10,7 +10,8 @@
   "repository": { "type": "git", "url": "https://github.com/mag1yar/kddkit.git", "directory": "packages/core" },
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts --clean",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": { "better-sqlite3": "^12.11.1" },
   "devDependencies": {

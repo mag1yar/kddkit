@@ -18,7 +18,8 @@
   },
   "scripts": {
     "build": "tsup src/server.ts --format esm --dts --clean && vite build",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",

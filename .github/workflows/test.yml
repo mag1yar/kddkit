@@ -16,4 +16,4 @@ jobs:
           node-version: 22 # engines floor — test the minimum we claim to support
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm turbo build test
+      - run: pnpm turbo build test typecheck

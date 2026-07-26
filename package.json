@@ -24,9 +24,10 @@
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
     "dev:cli": "KDD_HOME=$HOME/.kdd-dev node packages/cli/dist/index.js",
     "dev:ui": "KDD_HOME=$HOME/.kdd-dev node packages/cli/dist/index.js ui --port 4488",
-    "release": "bumpp package.json packages/*/package.json .claude-plugin/plugin.json --all --no-push --execute \"turbo run build test\" && npx -y changelogithub@14 --dry",
+    "release": "bumpp package.json packages/*/package.json .claude-plugin/plugin.json --all --no-push --execute \"turbo run build test typecheck\" && npx -y changelogithub@14 --dry",
     "release:publish": "pnpm -r publish && git push --follow-tags"
   }
 }

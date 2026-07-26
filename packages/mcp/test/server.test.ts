@@ -20,6 +20,8 @@ async function connect(db: ReturnType<typeof openDb>) {
 }
 
 const textOf = (res: any) => JSON.parse(res.content[0].text);
+// сырой текст ответа: у ошибок в content лежит не JSON, а сообщение
+const rawText = (res: any): string => res.content[0].text;
 
 describe('mcp server over a real transport', () => {
   it('lists the four tools', async () => {
@@ -48,6 +50,6 @@ describe('mcp server over a real transport', () => {
       name: 'update_task', arguments: { id: t.id, move: { to: 'done' } },
     });
     expect(bad.isError).toBe(true);
-    expect(bad.content[0].text).toMatch(/invalid transition/);
+    expect(rawText(bad)).toMatch(/invalid transition/);
   });
 });
