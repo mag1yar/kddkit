@@ -103,7 +103,9 @@ function TaskCard({ task, trackName, onOpen, asHandle }: {
           {task.priority}
         </Badge>
       </div>
-      <div className="flex items-center gap-2 pt-2 text-xs text-muted-foreground">
+      {/* wrap + min-w-0: дети все shrink-0, и без переноса длинный трек вместе с бейджами
+          вылезал за карточку на соседнюю колонку — карточка не режет overflow */}
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 pt-2 text-xs text-muted-foreground">
         <span>#{task.id}</span>
         {track && (
           <Badge variant="outline" className="h-5 max-w-[9rem] truncate rounded-sm px-1.5 text-xs">
@@ -113,20 +115,25 @@ function TaskCard({ task, trackName, onOpen, asHandle }: {
         {task.blocked === 1 && (
           <Badge variant="destructive" className="h-5 rounded-sm px-1.5 text-xs">blocked</Badge>
         )}
-        {/* Голая дробь на карточке ничего не называла: '2/2' одинаково читается как
-            критерии, комментарии и что угодно ещё. Иконка — та же, что у критериев в
-            диалоге; полный чеклист перестаёт быть приглушённым, это состояние «можно
-            в review». */}
+        {/* Голая дробь ничего не называла: '2/2' одинаково читается как критерии,
+            комментарии и что угодно ещё. Иконка + sr-only подпись (title живёт только под
+            мышью и не доходит ни до скринридера, ни до тача). Закрытый чеклист красим
+            в primary: это состояние «можно в review», ради него счётчик и нужен. Оба
+            состояния заданы явно — вариант outline и так несёт text-foreground, условный
+            класс поверх него был бы no-op. */}
         {task.criteria_total > 0 && (
           <Badge
             variant="outline" title="acceptance criteria"
             className={cn(
               'h-5 gap-1 rounded-sm px-1.5 text-xs',
-              task.criteria_checked === task.criteria_total && 'text-foreground',
+              task.criteria_checked === task.criteria_total
+                ? 'border-primary/40 bg-primary/10 text-primary'
+                : 'text-muted-foreground',
             )}
           >
             <ListChecks className="size-3" />
             {task.criteria_checked}/{task.criteria_total}
+            <span className="sr-only"> acceptance criteria</span>
           </Badge>
         )}
       </div>
