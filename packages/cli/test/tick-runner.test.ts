@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { spawn as spawnProcess } from 'node:child_process';
 import { parseTickOutput } from '../src/tick-output.js';
-import { createTickRunner } from '../src/tick-runner.js';
+import { createStopRunner, createTickRunner } from '../src/tick-runner.js';
 
 describe('parseTickOutput', () => {
   it('normal result object', () => {
@@ -196,5 +196,40 @@ describe('createTickRunner', () => {
 
     expect(killed).toBe(false);
     expect(result).toMatchObject({ reclaimed: 1, spawned: 0, active: 1, reaped: 0 });
+  });
+});
+
+describe('createStopRunner', () => {
+  const fake = (code: number | null, stderr = '') => {
+    const calls: { args: string[]; opts: { cwd: string; env: Record<string, string> } }[] = [];
+    const spawn = ((_cmd: string, args: string[], opts: { cwd: string; env: Record<string, string> }) => {
+      calls.push({ args, opts });
+      const child = new EventEmitter() as EventEmitter & { stderr: EventEmitter };
+      child.stderr = new EventEmitter();
+      queueMicrotask(() => {
+        if (stderr) child.stderr.emit('data', Buffer.from(stderr));
+        child.emit('close', code);
+      });
+      return child;
+    }) as unknown as typeof spawnProcess;
+    return { spawn, calls };
+  };
+
+  it('runs `kdd stop` in the project, pinned to its db', async () => {
+    const { spawn, calls } = fake(0);
+    await createStopRunner('/fake/index.js', spawn)(
+      { dbPath: '/x/kdd.db', projectPath: '/repo/.git', toplevel: null });
+    expect(calls[0].args).toEqual(['/fake/index.js', 'stop']);
+    expect(calls[0].opts.cwd).toBe('/repo'); // тот же fallback, что у тика
+    expect(calls[0].opts.env.KDD_DB).toBe('/x/kdd.db');
+  });
+
+  // Провал стопа обязан доехать до планировщика: он его логирует. Молча зарезолвиться —
+  // значит показать человеку выключенную автономию, под которой всё ещё бегут агенты.
+  it('rejects on a nonzero exit, carrying stderr', async () => {
+    const { spawn } = fake(1, 'error: locked\n');
+    await expect(createStopRunner('/fake/index.js', spawn)(
+      { dbPath: '/x/kdd.db', projectPath: '/repo/.git', toplevel: null }))
+      .rejects.toThrow(/exited 1: error: locked/);
   });
 });

@@ -48,9 +48,11 @@ import {
   resolveDbPath as resolveDbPath2,
   resolveDecisionsDir,
   resolveToplevel,
+  setAutoTick,
   setCriterionChecked,
   setProjectToplevel,
   statusDigest,
+  stopWorkers,
   sweepWorktrees,
   taskDetail,
   taskDetailCapped,
@@ -58,7 +60,11 @@ import {
   unarchiveTask,
   unblockTask
 } from "@kddkit/core";
-import { createScheduler, projectPool, startUi } from "@kddkit/ui";
+import {
+  createScheduler,
+  projectPool,
+  startUi
+} from "@kddkit/ui";
 
 // src/context.ts
 import { KddError, openDb, resolveDbPath } from "@kddkit/core";
@@ -134,18 +140,36 @@ function signalGroup(pgid, sig, own) {
     if (e.code !== "ESRCH") throw e;
   }
 }
-function killWorker(tag, opts = {}) {
+function killWorkers(tags, opts = {}) {
   const { ps = psAll, termWaitMs = 2e3, killWaitMs = 500 } = opts;
-  const pgids = (procs) => [...new Set(procs.map((p) => p.pgid))];
-  const { hits: first, own } = scan(tag, ps);
-  if (!first.length) return "absent";
-  for (const pgid of pgids(first)) signalGroup(pgid, "SIGTERM", own);
+  const out2 = /* @__PURE__ */ new Map();
+  if (!tags.size) return out2;
+  const sweep = () => {
+    const rows = parsePs(ps());
+    const alive = /* @__PURE__ */ new Map();
+    for (const [id, tag] of tags) {
+      const hits = rows.filter((r) => r.args.includes(tag)).map((r) => ({ pid: r.pid, pgid: r.pgid }));
+      if (hits.length) alive.set(id, hits);
+    }
+    return { alive, own: rows.find((r) => r.pid === process.pid)?.pgid };
+  };
+  const signalAll = (alive, sig, own) => {
+    const pgids = new Set([...alive.values()].flat().map((p) => p.pgid));
+    for (const pgid of pgids) signalGroup(pgid, sig, own);
+  };
+  const first = sweep();
+  for (const id of tags.keys()) if (!first.alive.has(id)) out2.set(id, "absent");
+  if (!first.alive.size) return out2;
+  signalAll(first.alive, "SIGTERM", first.own);
   sleepSync(termWaitMs);
-  const left = findWorker(tag, ps);
-  if (!left.length) return "gone";
-  for (const pgid of pgids(left)) signalGroup(pgid, "SIGKILL", own);
+  const second = sweep();
+  for (const id of first.alive.keys()) if (!second.alive.has(id)) out2.set(id, "gone");
+  if (!second.alive.size) return out2;
+  signalAll(second.alive, "SIGKILL", second.own);
   sleepSync(killWaitMs);
-  return findWorker(tag, ps).length ? "stuck" : "gone";
+  const third = sweep();
+  for (const id of second.alive.keys()) out2.set(id, third.alive.has(id) ? "stuck" : "gone");
+  return out2;
 }
 
 // src/render.ts
@@ -295,6 +319,24 @@ function parseTickOutput(out2, err, code, at) {
 }
 
 // src/tick-runner.ts
+function createStopRunner(scriptPath, spawnFn = spawnProcess) {
+  return ({ dbPath, projectPath, toplevel }) => new Promise((resolve, reject) => {
+    const child = spawnFn(process.execPath, [scriptPath, "stop"], {
+      cwd: toplevel ?? dirname(projectPath),
+      env: { ...process.env, KDD_DB: dbPath },
+      stdio: ["ignore", "ignore", "pipe"]
+    });
+    let err = "";
+    child.stderr?.on("data", (d) => {
+      err += d.toString();
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`kdd stop exited ${code}: ${err.trim()}`));
+    });
+  });
+}
 function createTickRunner(scriptPath, killTimeoutMs, spawnFn = spawnProcess, killGraceMs = 5e3) {
   return ({ dbPath, projectPath, toplevel }) => new Promise((resolve) => {
     const child = spawnFn(
@@ -392,7 +434,8 @@ function spawnWorker(taskId, workerId, projectDir, tag) {
   child.unref();
 }
 var tickRunner = createTickRunner(fileURLToPath(import.meta.url), TICK_KILL_TIMEOUT);
-var killerFor = (dbPath) => (taskId) => killWorker(workerTag(taskId, dbPath));
+var stopRunner = createStopRunner(fileURLToPath(import.meta.url));
+var killerFor = (dbPath) => (taskIds) => killWorkers(new Map(taskIds.map((id) => [id, workerTag(id, dbPath)])));
 var secondsError = (name, v) => Number.isFinite(v) && v > 0 ? null : `invalid ${name} '${process.env[name]}' (seconds > 0)`;
 var ttlError = (ttl) => secondsError("KDD_WORKER_TTL", ttl);
 var DEFAULT_IDLE = 1800;
@@ -567,6 +610,27 @@ program.command("tick").description("agent-mode: reclaim expired leases, claim r
   } finally {
     process.off("SIGINT", onSig);
     process.off("SIGTERM", onSig);
+  }
+});
+program.command("stop").description("agent-mode: kill live workers, release the leases of those that died").option("--json").action(async (o) => {
+  try {
+    const { dbPath, projectPath } = resolveDbPath2();
+    const release = await lockfile.lock(join(dirname2(dbPath), "tick"), {
+      stale: TICK_LOCK_STALE,
+      realpath: false,
+      retries: { retries: 8, minTimeout: 250, maxTimeout: 4e3 }
+    });
+    try {
+      const r = withDbAt(dbPath, projectPath, (db) => {
+        setAutoTick(db, { enabled: false });
+        return stopWorkers(db, killerFor(dbPath));
+      });
+      out(o.json, r, () => `stop: killed ${r.killed}, released ${r.released}, stuck ${r.stuck}`);
+    } finally {
+      release();
+    }
+  } catch (e) {
+    fail(e instanceof KddError2 ? e.message : String(e), o.json);
   }
 });
 program.command("worker").argument("<id>").option("--tag <tag>", "ps-visible run marker used to find this worker (set by kdd tick)").description("agent-mode supervisor: run claude on a task, ingest its stream into agent_events").action(async (id, o) => {
@@ -785,7 +849,7 @@ async function uiStart(port) {
   } catch {
   }
   const { getDb, get, closeAll } = projectPool(hash);
-  const scheduler = createScheduler(tickRunner, get);
+  const scheduler = createScheduler(tickRunner, get, stopRunner);
   try {
     await startUi(getDb, port, hash, scheduler);
   } catch (e) {

@@ -619,3 +619,31 @@ describe('the run marker in claude own argv', () => {
     expect(prompt).toMatch(/kdd-worker-manual/); // личность у рана всё же есть
   }, 30_000);
 });
+
+// #112: тумблер авто-тика гасил только планировщик. `kdd stop` — точка, куда он теперь бьёт:
+// живой агент должен УМЕРЕТЬ, а его задача — вернуться в очередь, а не остаться in_progress
+// под claim'ом мертвеца (тогда её не возьмёт ни человек, ни следующий tick до конца TTL).
+describe('kdd stop', () => {
+  it('kills a live worker and returns its task to new', () => {
+    const { env, dir } = repo();
+    kdd(env, 'add', 'long one', '--criterion', 'done');
+    const stub = stubClaudeSleep(dir, 120); // пережил бы тест, если бы его не убили
+    const spawner = { ...env, KDD_CLAUDE_CMD: `node ${stub}`, KDD_MAX_WORKERS: '1', SHELL: '/bin/sh' };
+    expect(kdd(spawner, 'tick')).toMatch(/spawned 1/);
+
+    const tag = workerTag(1, env.KDD_DB as string);
+    for (let i = 0; i < 100 && !findWorker(tag).length; i++) execFileSync('sleep', ['0.1']);
+    expect(findWorker(tag).length).toBeGreaterThan(0); // агент реально поднялся
+
+    expect(kdd(env, 'stop')).toMatch(/killed 1, released 1, stuck 0/);
+    expect(findWorker(tag)).toEqual([]);
+    expect(JSON.parse(kdd(env, 'show', '1', '--json')).task).toMatchObject(
+      { status: 'new', claimed_by: null });
+  }, 60_000);
+
+  it('an idle board is a no-op', () => {
+    const { env } = repo();
+    kdd(env, 'add', 'nothing running', '--criterion', 'done');
+    expect(kdd(env, 'stop', '--json')).toContain('"released":0');
+  }, 30_000);
+});

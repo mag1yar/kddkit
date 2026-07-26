@@ -1,12 +1,35 @@
 import { spawn as spawnProcess } from 'node:child_process';
 import { dirname } from 'node:path';
 import { now, type TickRun } from '@kddkit/core';
-import type { TickRunner } from '@kddkit/ui';
+import type { TickRunner, WorkerStopper } from '@kddkit/ui';
 import { parseTickOutput } from './tick-output.js';
 
 // Отдельный модуль (не index.ts) ради теста: index.ts вызывает program.parse() на верхнем
 // уровне, так что импорт index.ts в тесте убивает процесс через process.exit — тот же приём,
 // что и у tick-output.ts.
+// Стоп гоняем отдельным процессом по той же причине, что и tick: killWorker ждёт смерти
+// синхронно (SIGTERM -> сон -> SIGKILL -> сон), и внутри сервера это подвесило бы event loop
+// Hono на секунды за воркера. Таймаут-килла тут нет намеренно: все ожидания внутри `kdd stop`
+// уже ограничены (лок с retries, паузы killWorker), а вешать сторож на сторожа незачем.
+export function createStopRunner(
+  scriptPath: string, spawnFn: typeof spawnProcess = spawnProcess,
+): WorkerStopper {
+  return ({ dbPath, projectPath, toplevel }) => new Promise((resolve, reject) => {
+    const child = spawnFn(process.execPath, [scriptPath, 'stop'], {
+      cwd: toplevel ?? dirname(projectPath),
+      env: { ...process.env, KDD_DB: dbPath },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let err = '';
+    child.stderr?.on('data', (d: Buffer) => { err += d.toString(); });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`kdd stop exited ${code}: ${err.trim()}`));
+    });
+  });
+}
+
 export function createTickRunner(
   scriptPath: string,
   killTimeoutMs: number,

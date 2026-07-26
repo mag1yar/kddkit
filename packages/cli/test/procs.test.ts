@@ -3,7 +3,9 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { findWorker, killWorker, workerAlive, workerTag, type PsFn } from '../src/procs.js';
+import {
+  findWorker, killWorker, killWorkers, workerAlive, workerTag, type PsFn,
+} from '../src/procs.js';
 
 const TAG = workerTag(85, '/store/a/kdd.db');
 const OTHER_BOARD = workerTag(85, '/store/b/kdd.db'); // та же задача, другая доска
@@ -132,4 +134,50 @@ setInterval(() => {}, 1000);
       if (kidPid) { try { process.kill(kidPid, 'SIGKILL'); } catch { /* уже мёртв */ } }
     }
   }, 20_000);
+});
+
+// Ревью: убийство шло по воркеру за раз — (2s + 0.5s) сна и три скана `ps` на каждого, и всё
+// это внутри тик-лока. Пауза после сигнала обязана быть одна на весь набор.
+describe('killWorkers (batch)', () => {
+  const TAG_A = workerTag(1, '/store/a/kdd.db');
+  const TAG_B = workerTag(2, '/store/a/kdd.db');
+  const TAG_C = workerTag(3, '/store/a/kdd.db');
+
+  it('scans ps three times total, not three times per worker', () => {
+    let scans = 0;
+    const ps: PsFn = () => {
+      scans += 1;
+      // все трое живы всегда — худший случай, доходит до последней фазы
+      return [`  501   501 node worker --tag ${TAG_A}`,
+        `  502   502 node worker --tag ${TAG_B}`,
+        `  503   503 node worker --tag ${TAG_C}`].join('\n');
+    };
+    const tags = new Map([[1, TAG_A], [2, TAG_B], [3, TAG_C]]);
+    // pgid'ы 501..503 не наши и не существуют → signalGroup ловит ESRCH и идёт дальше
+    const out = killWorkers(tags, { ps, termWaitMs: 1, killWaitMs: 1 });
+    expect(scans).toBe(3); // а не 9
+    expect([...out.values()]).toEqual(['stuck', 'stuck', 'stuck']);
+  });
+
+  it('reports each worker on its own: absent, gone and stuck side by side', () => {
+    let phase = 0;
+    const ps: PsFn = () => {
+      phase += 1;
+      // A нет с самого начала; B исчезает после SIGTERM; C переживает всё
+      const rows = [`  503   503 node worker --tag ${TAG_C}`];
+      if (phase === 1) rows.push(`  502   502 node worker --tag ${TAG_B}`);
+      return rows.join('\n');
+    };
+    const out = killWorkers(new Map([[1, TAG_A], [2, TAG_B], [3, TAG_C]]),
+      { ps, termWaitMs: 1, killWaitMs: 1 });
+    expect(out.get(1)).toBe('absent');
+    expect(out.get(2)).toBe('gone');
+    expect(out.get(3)).toBe('stuck');
+  });
+
+  it('an empty set does not touch ps at all', () => {
+    let scans = 0;
+    expect(killWorkers(new Map(), { ps: () => { scans += 1; return ''; } })).toEqual(new Map());
+    expect(scans).toBe(0);
+  });
 });

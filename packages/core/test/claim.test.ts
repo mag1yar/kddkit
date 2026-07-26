@@ -4,7 +4,8 @@ import { openDb } from '../src/db.js';
 import { addTask, moveTask, placeTask } from '../src/ops.js';
 import { addCriterion, setCriterionChecked } from '../src/criteria.js';
 import {
-  claimTask, claimNext, renewClaim, reclaimExpired, releaseClaim, MAX_FAILED_ATTEMPTS, DEFAULT_TTL,
+  claimTask, claimNext, renewClaim, reclaimExpired, releaseClaim, stopWorkers,
+  MAX_FAILED_ATTEMPTS, DEFAULT_TTL,
 } from '../src/claim.js';
 import { now } from '../src/db.js';
 import { KddError } from '../src/errors.js';
@@ -153,7 +154,7 @@ describe('taking over an expired ai:tick lease', () => {
   it('with a killer: kills first, then takes the task', () => {
     const id = expiredTick();
     const killed: number[] = [];
-    const t = claimNext(db, ai2, 900, { kill: (taskId) => { killed.push(taskId); return 'gone'; } });
+    const t = claimNext(db, ai2, 900, { kill: (ids) => { killed.push(...ids); return new Map(ids.map((i) => [i, 'gone' as const])); } });
     expect(killed).toEqual([id]);
     expect(t!.id).toBe(id);
     expect(t!.claimed_by).toBe('ai:s2');
@@ -161,7 +162,7 @@ describe('taking over an expired ai:tick lease', () => {
 
   it('with a killer that reports stuck: lease untouched, claim refused', () => {
     const id = expiredTick();
-    const r = claimTask(db, id, ai2, 900, { kill: () => 'stuck' });
+    const r = claimTask(db, id, ai2, 900, { kill: (ids) => new Map(ids.map((i) => [i, 'stuck' as const])) });
     expect(r.ok).toBe(false);
     expect(db.prepare(`SELECT status, claimed_by FROM tasks WHERE id=?`).get(id))
       .toEqual({ status: 'in_progress', claimed_by: 'ai:tick:1-0' });
@@ -414,5 +415,94 @@ describe('reclaimExpired closes orphaned agent-runs', () => {
     // задача всё равно реклейм: closeOrphanRun упал, но try/catch не дал ему откатить sweep
     expect(db.prepare(`SELECT status, claimed_by FROM tasks WHERE id=?`).get(id))
       .toEqual({ status: 'new', claimed_by: null });
+  });
+});
+
+// #112: тумблер авто-тика гасил только планировщик — уже спауненные агенты продолжали
+// править файлы и коммитить. Человек считал, что автономия выключена.
+describe('stopWorkers', () => {
+  const tickActor = (i: number) => ({ type: 'ai' as const, id: `tick:1-${i}` });
+  const claimed = (title: string, i = 0) => {
+    const id = withCriteria(title);
+    claimTask(db, id, tickActor(i), 900); // lease СВЕЖИЙ: стоп не ждёт TTL
+    return id;
+  };
+
+  it('kills live tick workers and returns their tasks to new', () => {
+    const a = claimed('a', 0);
+    const b = claimed('b', 1);
+    const killed: number[] = [];
+    const r = stopWorkers(db, (ids) => { killed.push(...ids); return new Map(ids.map((i) => [i, 'gone' as const])); });
+    expect(killed.sort()).toEqual([a, b]);
+    expect(r).toEqual({ killed: 2, released: 2, stuck: 0 });
+    expect(db.prepare(`SELECT COUNT(*) c FROM tasks WHERE status='in_progress'`).get())
+      .toEqual({ c: 0 });
+  });
+
+  it('a worker that survived SIGKILL keeps its lease — only the dead are released', () => {
+    const a = claimed('a', 0);
+    const b = claimed('b', 1);
+    const r = stopWorkers(db, (ids) =>
+      new Map(ids.map((i) => [i, i === a ? 'stuck' as const : 'gone' as const])));
+    expect(r).toEqual({ killed: 1, released: 1, stuck: 1 });
+    expect(db.prepare(`SELECT status, claimed_by FROM tasks WHERE id=?`).get(a))
+      .toEqual({ status: 'in_progress', claimed_by: 'ai:tick:1-0' });
+    expect(db.prepare(`SELECT status, claimed_by FROM tasks WHERE id=?`).get(b))
+      .toEqual({ status: 'new', claimed_by: null });
+  });
+
+  it('without a killer nothing is released: an unstoppable slot is a busy slot', () => {
+    const a = claimed('a');
+    expect(stopWorkers(db)).toEqual({ killed: 0, released: 0, stuck: 1 });
+    expect(db.prepare(`SELECT status FROM tasks WHERE id=?`).get(a))
+      .toEqual({ status: 'in_progress' });
+  });
+
+  // Человек нажал «стоп» — задача не виновата. Иначе три щелчка тумблером = авто-блок.
+  it('does not count a failed attempt', () => {
+    const a = claimed('a');
+    stopWorkers(db, (ids) => new Map(ids.map((i) => [i, 'gone' as const])));
+    expect(db.prepare(`SELECT failed_attempts, blocked FROM tasks WHERE id=?`).get(a))
+      .toEqual({ failed_attempts: 0, blocked: 0 });
+  });
+
+  // За ручным user-claim процесса нет: убивать нечего, и отбирать чужую задачу стоп не вправе.
+  it('leaves a manual user claim alone', () => {
+    const id = withCriteria('mine');
+    claimTask(db, id, user, 900);
+    expect(stopWorkers(db, (ids) => new Map(ids.map((i) => [i, 'gone' as const])))).toEqual({ killed: 0, released: 0, stuck: 0 });
+    expect(db.prepare(`SELECT status, claimed_by FROM tasks WHERE id=?`).get(id))
+      .toEqual({ status: 'in_progress', claimed_by: 'user' });
+  });
+
+  // Снимок берётся до убийства, а kill спит секундами: за это время воркер успевает честно
+  // дописать работу и уйти в review. Вернуть такую задачу в new — значит посадить на готовое
+  // второго агента следующим тиком.
+  it('leaves alone a task the worker finished during the kill window', () => {
+    const a = claimed('a', 0);
+    const b = claimed('b', 1);
+    const r = stopWorkers(db, (ids) => {
+      // имитируем окно: пока идёт убийство, воркер b доводит свою задачу до review сам
+      db.prepare(
+        `UPDATE tasks SET status='review', claimed_by=NULL, claim_expires=NULL WHERE id=?`).run(b);
+      return new Map(ids.map((i) => [i, 'gone' as const]));
+    });
+    expect(r).toEqual({ killed: 2, released: 1, stuck: 0 }); // убили обоих, освободили только a
+    expect(db.prepare(`SELECT status, claimed_by FROM tasks WHERE id=?`).get(b))
+      .toEqual({ status: 'review', claimed_by: null });
+    // и никакого 'released' в истории готовой задачи
+    expect(db.prepare(`SELECT COUNT(*) c FROM events WHERE task_id=? AND action='released'`).get(b))
+      .toEqual({ c: 0 });
+  });
+
+  it('closes the orphaned run so the feed does not show a dead worker as live', () => {
+    const id = claimed('a');
+    appendAgentEvent(db, id, 'tick:1-0', 'run_start', { detail: { head: 'aaa' } });
+    stopWorkers(db, (ids) => new Map(ids.map((i) => [i, 'gone' as const])));
+    const evs = db.prepare(
+      `SELECT kind, detail FROM agent_events WHERE task_id=? ORDER BY id`,
+    ).all(id) as { kind: string; detail: string }[];
+    expect(evs.map((e) => e.kind)).toEqual(['run_start', 'error', 'run_end']);
+    expect(JSON.parse(evs[1].detail).message).toMatch(/stopped by hand/);
   });
 });

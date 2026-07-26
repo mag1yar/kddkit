@@ -11,18 +11,20 @@ import {
   boardData, claimNext, claimTask, commentTask, createTrack, deleteTrack, DEFAULT_TTL, editTask,
   editTrack, ensureWorktree, exportBoard, headCommit, kddVersion, linkTasks, listAgentEvents, listCriteria, listProjects, taskBranchHead,
   listTracks, maxWorkers, moveTask, mustGetTask, openDb, parseClaudeStreamLine, rebuild, recall, removeCriterion,
-  renewClaim, resolveDbPath, resolveDecisionsDir, resolveToplevel, setCriterionChecked,
-  setProjectToplevel, statusDigest,
+  renewClaim, resolveDbPath, resolveDecisionsDir, resolveToplevel, setAutoTick, setCriterionChecked,
+  setProjectToplevel, statusDigest, stopWorkers,
   sweepWorktrees, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask,
   type KillFn, type Status,
 } from '@kddkit/core';
-import { createScheduler, projectPool, startUi, type TickRunner } from '@kddkit/ui';
+import {
+  createScheduler, projectPool, startUi, type TickRunner, type WorkerStopper,
+} from '@kddkit/ui';
 import { fail, getActor, parseId, withDb, withDbAt } from './context.js';
-import { killWorker, signalGroup, workerAlive, workerTag } from './procs.js';
+import { killWorkers, signalGroup, workerAlive, workerTag } from './procs.js';
 import {
   renderBoard, renderClaim, renderCriteria, renderRecall, renderShow, renderStatus, renderTracks,
 } from './render.js';
-import { createTickRunner } from './tick-runner.js';
+import { createStopRunner, createTickRunner } from './tick-runner.js';
 
 const program = new Command()
   .name('kdd')
@@ -121,11 +123,13 @@ function spawnWorker(taskId: number, workerId: string, projectDir: string, tag: 
 }
 
 const tickRunner: TickRunner = createTickRunner(fileURLToPath(import.meta.url), TICK_KILL_TIMEOUT);
+const stopRunner: WorkerStopper = createStopRunner(fileURLToPath(import.meta.url));
 
 // Один killer на tick и claim: правило «чужой lease реклеймится только вместе со своим
 // процессом» одно на всех, а метка обязана совпадать с той, которой метился спаун — иначе
 // реклеймящий не найдёт процесс, который обязан убить.
-const killerFor = (dbPath: string): KillFn => (taskId) => killWorker(workerTag(taskId, dbPath));
+const killerFor = (dbPath: string): KillFn => (taskIds) =>
+  killWorkers(new Map(taskIds.map((id) => [id, workerTag(id, dbPath)])));
 
 // Секундный env-параметр валидируем ДО необратимого (у tick это kill+reclaim, у worker'а —
 // спаун claude): мусор, доехавший до таймера, бросает уже из колбэка — uncaught, с сиротой.
@@ -345,6 +349,38 @@ program.command('tick')
     } finally {
       process.off('SIGINT', onSig);
       process.off('SIGTERM', onSig);
+    }
+  });
+
+program.command('stop')
+  .description('agent-mode: kill live workers, release the leases of those that died')
+  .option('--json')
+  .action(async (o) => {
+    try {
+      const { dbPath, projectPath } = resolveDbPath();
+      // Тот же лок, что у tick: без него проход, идущий прямо сейчас (планировщик UI, `kdd tick
+      // --watch` в терминале), успел бы наспавнить воркера уже ПОСЛЕ нашего скана — и автономия
+      // осталась бы включённой наполовину. Ждём лок, а не пропускаем проход: молчаливый no-op на
+      // «останови всё» — худший исход из возможных. Асинхронный lock(), потому что lockSync
+      // retries не поддерживает.
+      const release = await lockfile.lock(join(dirname(dbPath), 'tick'), {
+        stale: TICK_LOCK_STALE, realpath: false,
+        retries: { retries: 8, minTimeout: 250, maxTimeout: 4_000 },
+      });
+      try {
+        const r = withDbAt(dbPath, projectPath, (db) => {
+          // Сначала гасим сам режим, потом убиваем. Без этого `kdd stop` из терминала
+          // отменял бы сам себя: планировщик поднятого рядом `kdd ui` через интервал
+          // переклеймил бы те же задачи и наспавнил новых агентов на те же ветки.
+          setAutoTick(db, { enabled: false });
+          return stopWorkers(db, killerFor(dbPath));
+        });
+        out(o.json, r, () => `stop: killed ${r.killed}, released ${r.released}, stuck ${r.stuck}`);
+      } finally {
+        release();
+      }
+    } catch (e) {
+      fail(e instanceof KddError ? e.message : String(e), o.json);
     }
   });
 
@@ -640,7 +676,7 @@ async function uiStart(port: number): Promise<void> {
     }
   } catch { /* сервера нет — поднимаем свой */ }
   const { getDb, get, closeAll } = projectPool(hash);
-  const scheduler = createScheduler(tickRunner, get);
+  const scheduler = createScheduler(tickRunner, get, stopRunner);
   try {
     await startUi(getDb, port, hash, scheduler);
   } catch (e) {

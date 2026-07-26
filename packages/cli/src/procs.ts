@@ -80,26 +80,54 @@ export function signalGroup(pgid: number, sig: NodeJS.Signals, own?: number): vo
   catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e; }
 }
 
-// SIGTERM группе -> ждём -> жив? SIGKILL -> ждём -> проверка. 'absent' = убивать было некого
+// SIGTERM группам -> ждём -> кто жив? SIGKILL -> ждём -> проверка. 'absent' = убивать было некого
 // (воркер вышел сам, lease его пережил) — отделено от 'gone', чтобы tick не рапортовал убийства,
 // которых не было. Ждать ОБЯЗАТЕЛЬНО: вернуть слот до подтверждения смерти — значит
 // позволить тому же проходу переклеймить задачу и посадить второго воркера в ту же worktree.
-export function killWorker(
-  tag: string,
+// Весь набор разом: пауза после сигнала одна на всех, а не на каждого. Последовательная версия
+// стоила бы (2s + 0.5s) * N внутри тик-лока и трёх сканов `ps` на воркера вместо трёх на проход.
+export function killWorkers(
+  tags: Map<number, string>,
   opts: { ps?: PsFn; termWaitMs?: number; killWaitMs?: number } = {},
-): KillOutcome {
+): Map<number, KillOutcome> {
   const { ps = psAll, termWaitMs = 2000, killWaitMs = 500 } = opts;
-  const pgids = (procs: WorkerProc[]): number[] => [...new Set(procs.map((p) => p.pgid))];
+  const out = new Map<number, KillOutcome>();
+  if (!tags.size) return out;
 
-  const { hits: first, own } = scan(tag, ps);
-  if (!first.length) return 'absent';
-  for (const pgid of pgids(first)) signalGroup(pgid, 'SIGTERM', own);
+  // Один скан на фазу: rows фильтруем по каждой метке сами. Свой pgid берём оттуда же.
+  const sweep = (): { alive: Map<number, WorkerProc[]>; own?: number } => {
+    const rows = parsePs(ps());
+    const alive = new Map<number, WorkerProc[]>();
+    for (const [id, tag] of tags) {
+      const hits = rows.filter((r) => r.args.includes(tag)).map((r) => ({ pid: r.pid, pgid: r.pgid }));
+      if (hits.length) alive.set(id, hits);
+    }
+    return { alive, own: rows.find((r) => r.pid === process.pid)?.pgid };
+  };
+  const signalAll = (alive: Map<number, WorkerProc[]>, sig: NodeJS.Signals, own?: number): void => {
+    const pgids = new Set([...alive.values()].flat().map((p) => p.pgid));
+    for (const pgid of pgids) signalGroup(pgid, sig, own);
+  };
+
+  const first = sweep();
+  for (const id of tags.keys()) if (!first.alive.has(id)) out.set(id, 'absent');
+  if (!first.alive.size) return out;
+  signalAll(first.alive, 'SIGTERM', first.own);
   sleepSync(termWaitMs);
 
-  const left = findWorker(tag, ps);
-  if (!left.length) return 'gone';
-  for (const pgid of pgids(left)) signalGroup(pgid, 'SIGKILL', own);
+  const second = sweep();
+  for (const id of first.alive.keys()) if (!second.alive.has(id)) out.set(id, 'gone');
+  if (!second.alive.size) return out;
+  signalAll(second.alive, 'SIGKILL', second.own);
   sleepSync(killWaitMs);
 
-  return findWorker(tag, ps).length ? 'stuck' : 'gone';
+  const third = sweep();
+  for (const id of second.alive.keys()) out.set(id, third.alive.has(id) ? 'stuck' : 'gone');
+  return out;
 }
+
+// Один воркер — тот же путь, просто набор из одного. Оставлено ради вызовов, которым набор
+// не нужен (и ради теста, читающего исход одной метки).
+export const killWorker = (
+  tag: string, opts: { ps?: PsFn; termWaitMs?: number; killWaitMs?: number } = {},
+): KillOutcome => killWorkers(new Map([[0, tag]]), opts).get(0) ?? 'stuck';

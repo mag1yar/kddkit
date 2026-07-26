@@ -2,17 +2,21 @@ import { existsSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import type Database from 'better-sqlite3';
 import {
-  getAutoTick, kddHome, listProjects, now, projectPathOf, projectToplevelOf, setLastRun,
+  getAutoTick, getLastRun, kddHome, listProjects, now, projectPathOf, projectToplevelOf, setLastRun,
   type TickRun,
 } from '@kddkit/core';
 
-export type TickRunner = (
-  p: { dbPath: string; projectPath: string; toplevel: string | null },
-) => Promise<TickRun>;
+export interface ProjectRef { dbPath: string; projectPath: string; toplevel: string | null }
+
+export type TickRunner = (p: ProjectRef) => Promise<TickRun>;
+/** Остановить всех живых воркеров проекта (в проде — дочерний `kdd stop`). */
+export type WorkerStopper = (p: ProjectRef) => Promise<void>;
 
 export interface Scheduler {
   /** Перечитать настройки проекта и взвести либо снять его таймер. */
   sync(hash: string): void;
+  /** Добить уже спауненных воркеров: снятый таймер их не касается. */
+  killWorkers(hash: string): Promise<void>;
   /** Поднять таймеры всех включённых проектов — вызывается на старте сервера. */
   syncAll(): void;
   /** Время следующего срабатывания в секундах, либо null если таймер не взведён. */
@@ -40,7 +44,7 @@ const FAILURE_BACKOFF_CAP_SEC = 15 * 60;
 const FAILURE_BASE_SEC = 60;
 
 export function createScheduler(
-  runner: TickRunner, openProject: (hash: string) => Database.Database,
+  runner: TickRunner, openProject: (hash: string) => Database.Database, stopper?: WorkerStopper,
 ): Scheduler {
   const slots = new Map<string, Slot>();
   // Хэши, у которых pass() сейчас реально бежит — от входа до перевзвода в хвосте. Без этого
@@ -121,6 +125,10 @@ export function createScheduler(
           clear(hash);
           return;
         }
+        // Настройку могли выключить, пока таймер тикал — из вкладки или `kdd stop` из
+        // терминала. Проверяем ПЕРЕД проходом, а не только в его хвосте: иначе уже взведённый
+        // таймер спаунил новых агентов ровно после того, как человек выключил автономию.
+        if (!getAutoTick(db).enabled) { clear(hash); return; }
         projectPath = p;
         toplevel = projectToplevelOf(db);
       } catch (e) {
@@ -179,8 +187,41 @@ export function createScheduler(
     if (s.intervalSec !== cfg.intervalSec) arm(hash, cfg.intervalSec * 1000, cfg.intervalSec);
   };
 
+  // Выключение авто-тика гасит планировщик, но не уже спауненных агентов: они правят файлы,
+  // коммитят и оставляют комментарии — человек считает, что всё встало, а доска живёт сама.
+  // Резолвим проект своими тремя строками, а не через pass(): у того на null/исключении висят
+  // clear/retry-семантика таймера, которой стопу тут делать нечего.
+  const killWorkers = async (hash: string): Promise<void> => {
+    if (!stopper) return;
+    let db: Database.Database | undefined;
+    try {
+      db = openProject(hash);
+      const projectPath = projectPathOf(db);
+      if (projectPath === null) return; // непригодный проект — про это уже кричит pass()
+      await stopper({ dbPath: dbPathOf(hash), projectPath, toplevel: projectToplevelOf(db) });
+    } catch (e) {
+      // Ответ тумблера уже ушёл (kill ждёт смерти секундами, и держать ради этого HTTP нельзя),
+      // так что сам по себе провал остался бы строчкой в stderr сервера, который поднят детачем
+      // и чей вывод никто не читает. Кладём ошибку в индикатор последнего прохода — единственное
+      // место, куда человек смотрит: иначе доска утверждает, что автономия выключена, пока живые
+      // агенты продолжают коммитить.
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[scheduler] ${hash}: stopping workers failed: ${msg}`);
+      try {
+        if (db) {
+          setLastRun(db, {
+            ...(getLastRun(db) ?? { reclaimed: 0, killed: 0, stuck: 0, spawned: 0, active: 0, reaped: 0 }),
+            at: now(), error: `stopping workers failed: ${msg}`,
+          });
+        }
+      } catch { /* и индикатор не записался — остаётся только лог */ }
+    }
+  };
+
   return {
     sync: (hash) => { sync(hash); },
+
+    killWorkers,
 
     syncAll() {
       let i = 0;

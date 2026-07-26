@@ -164,3 +164,20 @@ describe('kdd tick validates KDD_WORKER_TTL', () => {
     expect(JSON.parse(kdd(env, 'show', '1', '--json')).task.status).toBe('new');
   });
 });
+
+// Ревью: `kdd stop` убивал воркеров, но не трогал настройку — планировщик поднятого рядом
+// `kdd ui` через интервал переклеймил бы те же задачи и наспавнил новых агентов.
+describe('kdd stop turns agent mode off', () => {
+  it('clears autotick_enabled so nothing respawns what it killed', () => {
+    const env = makeEnv();
+    const db = openDb(env.KDD_DB as string);
+    db.prepare(`INSERT INTO meta (key, value) VALUES ('autotick_enabled', '1')`).run();
+    db.close();
+
+    expect(kdd(env, 'stop')).toMatch(/^stop: killed 0/);
+    const after = openDb(env.KDD_DB as string);
+    expect(after.prepare(`SELECT value FROM meta WHERE key='autotick_enabled'`).get())
+      .toEqual({ value: '0' });
+    after.close();
+  });
+});

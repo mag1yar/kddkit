@@ -12,7 +12,9 @@ import {
   setAutoTick, setCriterionChecked, taskDetail, unblockTask, type Priority,
 } from '@kddkit/core';
 
-export { createScheduler, type Scheduler, type TickRunner } from './scheduler.js';
+export {
+  createScheduler, type ProjectRef, type Scheduler, type TickRunner, type WorkerStopper,
+} from './scheduler.js';
 import type { Scheduler } from './scheduler.js';
 
 const hashOf = (dbPath: string) => basename(dirname(dbPath));
@@ -171,6 +173,9 @@ export function createApp(
       maxWorkers: b.maxWorkers as number | undefined,
     });
     scheduler?.sync(projectHash(c));
+    // Off — это «останови автономию», а не «перестань спаунить новых»: живых воркеров добиваем.
+    // Результат не ждём — kill ждёт смерти процесса секундами, а тумблер обязан ответить сразу.
+    if (b.enabled === false) void scheduler?.killWorkers(projectHash(c));
     return c.json(autoTickState(c));
   });
 

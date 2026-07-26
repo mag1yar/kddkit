@@ -93,7 +93,7 @@ describe('tick kills reclaimed workers', () => {
     const id = deadTickLease(db, 'a');
     const killed: number[] = [];
     const r = tick(db, { maxWorkers: 1, ttl: 1800, projectDir: '/tmp',
-      spawn: () => {}, kill: (taskId) => { killed.push(taskId); return 'gone'; } });
+      spawn: () => {}, kill: (ids) => { killed.push(...ids); return new Map(ids.map((i) => [i, 'gone' as const])); } });
     expect(killed).toEqual([id]);
     expect(r.reclaimed).toBe(1);
     expect(r.killed).toBe(1);
@@ -105,7 +105,7 @@ describe('tick kills reclaimed workers', () => {
     const db = openDb(':memory:');
     const id = deadTickLease(db, 'a');
     const r = tick(db, { maxWorkers: 1, ttl: 1800, projectDir: '/tmp',
-      spawn: () => {}, kill: () => 'absent' });
+      spawn: () => {}, kill: (ids) => new Map(ids.map((i) => [i, 'absent' as const])) });
     expect(r.reclaimed).toBe(1);
     expect(r.killed).toBe(0);
     const t = db.prepare(`SELECT blocked FROM tasks WHERE id=?`).get(id) as any;
@@ -119,7 +119,7 @@ describe('tick kills reclaimed workers', () => {
     db.prepare(`UPDATE tasks SET claim_expires = ? WHERE id = ?`).run(now() - 1, id);
     const killed: number[] = [];
     const r = tick(db, { maxWorkers: 1, ttl: 1800, projectDir: '/tmp',
-      spawn: () => {}, kill: (taskId) => { killed.push(taskId); return 'gone'; } });
+      spawn: () => {}, kill: (ids) => { killed.push(...ids); return new Map(ids.map((i) => [i, 'gone' as const])); } });
     expect(killed).toEqual([]);
     expect(r.killed).toBe(0);
   });
@@ -132,7 +132,7 @@ describe('tick kills reclaimed workers', () => {
     const next = readyTask(db, 'b'); // единственный кандидат на «освободившийся» слот
     const spawns: number[] = [];
     const r = tick(db, { maxWorkers: 1, ttl: 1800, projectDir: '/tmp',
-      spawn: (taskId) => spawns.push(taskId), kill: () => 'stuck' });
+      spawn: (taskId) => spawns.push(taskId), kill: (ids) => new Map(ids.map((i) => [i, 'stuck' as const])) });
     expect(spawns).toEqual([]);
     expect(r.spawned).toBe(0);
     expect(r.stuck).toBe(1);
@@ -150,11 +150,11 @@ describe('tick kills reclaimed workers', () => {
   it('a stuck lease is retried on the next pass and frees the slot once it dies', () => {
     const db = openDb(':memory:');
     const id = deadTickLease(db, 'a');
-    tick(db, { maxWorkers: 1, ttl: 1800, projectDir: '/tmp', spawn: () => {}, kill: () => 'stuck' });
+    tick(db, { maxWorkers: 1, ttl: 1800, projectDir: '/tmp', spawn: () => {}, kill: (ids) => new Map(ids.map((i) => [i, 'stuck' as const])) });
     const killed: number[] = [];
     // lease так и остался истёкшим -> следующий проход сам повторяет попытку, без человека
     const r = tick(db, { maxWorkers: 1, ttl: 1800, projectDir: '/tmp',
-      spawn: () => {}, kill: (taskId) => { killed.push(taskId); return 'gone'; } });
+      spawn: () => {}, kill: (ids) => { killed.push(...ids); return new Map(ids.map((i) => [i, 'gone' as const])); } });
     expect(killed).toEqual([id]);
     expect(r.killed).toBe(1);
     expect(r.reclaimed).toBe(1);

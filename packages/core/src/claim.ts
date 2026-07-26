@@ -61,8 +61,20 @@ export interface ReclaimedLease { id: number; claimed_by: string | null }
 // 'absent' отделён от 'gone' ради честного счётчика killed: слот освобождается одинаково,
 // но «killed 2» там, где никого не убивали, — вранье в UI.
 export type KillOutcome = 'gone' | 'absent' | 'stuck';
-// Убийца процесса воркера. Инъекция, как SpawnFn: знание об ОС-процессах живёт в CLI, не в ядре.
-export type KillFn = (taskId: number) => KillOutcome;
+// Убийца воркеров. Инъекция, как SpawnFn: знание об ОС-процессах живёт в CLI, не в ядре.
+// Принимает ВЕСЬ набор сразу, а не по задаче: убийство — это «сигнал, подождать, проверить»,
+// и ждать один раз на всех дешевле ровно во столько раз, сколько воркеров. Задача, которой нет
+// в ответе, считается 'stuck' — молчание не повод отдавать слот.
+export type KillFn = (taskIds: number[]) => Map<number, KillOutcome>;
+
+// Общий для reapExpired и stopWorkers вызов killer'а: один заход на весь набор, любой отказ
+// (нет killer'а, исключение, пропуск в ответе) читается как 'stuck' — безопасная сторона:
+// слот остаётся занятым, следующий проход попробует снова.
+function killAll(ids: number[], kill?: KillFn): Map<number, KillOutcome> {
+  if (!ids.length) return new Map();
+  if (!kill) return new Map(ids.map((id) => [id, 'stuck']));
+  try { return kill(ids); } catch { return new Map(ids.map((id) => [id, 'stuck'])); }
+}
 
 // За tick-лизом стоит ОС-процесс; за ручным user-claim — нет. Отсюда всё разное обращение.
 const isTickLease = (claimedBy: string | null): claimedBy is string =>
@@ -98,7 +110,8 @@ export function reclaimExpired(
       // appendAgentEvent открывает вложенный savepoint — его падение откатывает ТОЛЬКО себя;
       // без catch оно бы пробилось наружу и откатило весь sweep (задачи застряли бы in_progress).
       // Реклейм задачи (clear + reclaimed event) уже закоммичен выше — он durable, feed-запись нет.
-      try { closeOrphanRun(db, e.id, e.claimed_by); } catch { /* run-close потерян, задача всё равно reclaimed */ }
+      try { closeOrphanRun(db, e.id, e.claimed_by, 'lease expired, reclaimed by driver'); }
+      catch { /* run-close потерян, задача всё равно reclaimed */ }
     }
   }
   return expired;
@@ -107,7 +120,11 @@ export function reclaimExpired(
 // observability: закрыть осиротевший agent-run reclaim'нутого воркера, чтобы feed не показывал
 // мёртвого воркера вечно-активным. worker_id = claimed_by без 'ai:' (spawnWorker ставит
 // KDD_SESSION=tick:<nonce>-<i>, а claimed_by = authorOf → ai:tick:...).
-function closeOrphanRun(db: Database.Database, taskId: number, claimedBy: string): void {
+// reason — почему ран оборвался: TTL-reclaim и ручной стоп это разные события для человека,
+// который через час читает фид и решает, чинить воркера или нет.
+function closeOrphanRun(
+  db: Database.Database, taskId: number, claimedBy: string, reason: string,
+): void {
   const wid = claimedBy.slice(3); // 'ai:'.length — ai:tick:.. → tick:..
   const last = lastAgentEventKind(db, taskId, wid);
   if (last === 'run_end') return; // воркер уже закрыл ран сам — не дублируем
@@ -117,13 +134,13 @@ function closeOrphanRun(db: Database.Database, taskId: number, claimedBy: string
     // а runProduced task-scoped спарил бы его с run_start ПРЕДЫДУЩего воркера и вернул null,
     // замаскировав результат того завершённого рана. Нет run_start → нет run_end.
     appendAgentEvent(db, taskId, wid, 'error',
-      { detail: { message: 'worker never started (spawn or worktree setup failed) — lease expired, reclaimed by driver' } });
+      { detail: { message: `worker never started (spawn or worktree setup failed) — ${reason}` } });
     return;
   }
   // висячий run_start (или text/tool_* мид-стрим): воркер стартовал и умер. Закрываем ран.
   // head в run_end НЕ пишем: commit-state убитого воркера неизвестен → runProduced=null (контракт #9).
   appendAgentEvent(db, taskId, wid, 'error',
-    { detail: { message: 'worker died (SIGKILL/OOM/reboot) — lease expired, reclaimed by driver' } });
+    { detail: { message: `worker died (SIGKILL/OOM/reboot) — ${reason}` } });
   appendAgentEvent(db, taskId, wid, 'run_end', { detail: { exitCode: null } });
 }
 
@@ -140,13 +157,13 @@ export function reapExpired(db: Database.Database, kill?: KillFn): ReapResult {
   const except = new Set<number>();
   let killed = 0;
   let stuck = 0;
-  // Вне транзакции: смерть процесса нельзя откатить вместе с ней.
+  // Вне транзакции: смерть процесса нельзя откатить вместе с ней. Одним заходом на весь набор:
+  // проход держит межпроцессный лок, и последовательные ожидания смерти складывались бы в него
+  // целиком — три протухших лиза стоили бы тику лишних секунд сна на каждом круге.
+  const outcomes = killAll(seen.filter((l) => isTickLease(l.claimed_by)).map((l) => l.id), kill);
   for (const l of seen) {
     if (!isTickLease(l.claimed_by)) continue;
-    if (!kill) { except.add(l.id); continue; }
-    let outcome: KillOutcome;
-    try { outcome = kill(l.id); }
-    catch { outcome = 'stuck'; } // скан/сигнал упали: считаем слот занятым — безопасная сторона
+    const outcome = outcomes.get(l.id) ?? 'stuck'; // не ответили про задачу — слот не отдаём
     if (outcome === 'gone') killed++;
     if (outcome === 'stuck') { except.add(l.id); stuck++; }
   }
@@ -159,6 +176,54 @@ export function reapExpired(db: Database.Database, kill?: KillFn): ReapResult {
     return reclaimExpired(db, { except });
   })();
   return { reclaimed, killed, stuck };
+}
+
+export interface StopResult { killed: number; released: number; stuck: number }
+
+// Ручная остановка автономии (тумблер auto-tick в off, `kdd stop`). Отличий от reapExpired два,
+// и оба принципиальные: бьём по ВСЕМ живым tick-лизам, а не только по истёкшим — человек
+// выключил автономию сейчас, а не через TTL; и неудачную попытку НЕ считаем — воркера остановил
+// он, задача не виновата, иначе три щелчка тумблером авто-блокируют её за «3 failed attempts».
+// Порядок тот же: сначала убить, вернуть в new только подтверждённо мёртвых. Переживший SIGKILL
+// держит слот дальше — его добьёт TTL-путь, повторять нечего.
+export function stopWorkers(db: Database.Database, kill?: KillFn): StopResult {
+  const live = db.prepare(
+    `SELECT id, claimed_by FROM tasks WHERE status='in_progress' AND claimed_by IS NOT NULL`,
+  ).all() as ReclaimedLease[];
+  const dead: { id: number; claimedBy: string }[] = [];
+  let killed = 0;
+  let stuck = 0;
+  // Вне транзакции: смерть процесса не откатывается вместе с ней. Весь набор одним заходом —
+  // человек ждёт ответа «остановлено», и складывать ожидания смерти по воркерам незачем.
+  const outcomes = killAll(live.filter((l) => isTickLease(l.claimed_by)).map((l) => l.id), kill);
+  for (const l of live) {
+    const claimedBy = l.claimed_by;
+    if (!isTickLease(claimedBy)) continue; // за ручным user-claim процесса нет — не наш
+    const outcome = outcomes.get(l.id) ?? 'stuck'; // без killer'а и без ответа — слот занят
+    if (outcome === 'stuck') { stuck++; continue; }
+    if (outcome === 'gone') killed++; // 'absent' — воркер вышел сам, убивать было некого
+    dead.push({ id: l.id, claimedBy });
+  }
+  const released = db.transaction(() => {
+    // Снимок брали ДО убийства, а kill спит секундами — за это время воркер мог успеть честно
+    // доделать работу и уйти в review, сняв claim. Без CAS мы вернули бы его готовую задачу в
+    // new и следующим тиком посадили бы на неё второго агента. Условие в WHERE — та же защита,
+    // что reclaimExpired получает даром, перечитывая expiredLeases внутри транзакции.
+    const clear = db.prepare(
+      `UPDATE tasks SET status='new', claimed_by=NULL, claim_expires=NULL, updated_at=?
+       WHERE id=? AND status='in_progress' AND claimed_by=?`);
+    let n = 0;
+    for (const d of dead) {
+      if (clear.run(now(), d.id, d.claimedBy).changes !== 1) continue; // ушла из-под нас — не трогаем
+      n++;
+      appendEvent(db, d.id, SYSTEM, 'released',
+        { reason: 'agent mode stopped', former: d.claimedBy }, { type: 'claim', level: 'warn' });
+      try { closeOrphanRun(db, d.id, d.claimedBy, 'stopped by hand (agent mode off)'); }
+      catch { /* фид — best effort, задача всё равно освобождена */ }
+    }
+    return n;
+  })();
+  return { killed, released, stuck };
 }
 
 export function claimTask(

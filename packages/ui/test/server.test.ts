@@ -223,6 +223,7 @@ describe('/api/autotick', () => {
       syncAll: () => {},
       nextAt: () => 1700000060,
       isRunning: () => false,
+      killWorkers: async () => {},
       stopAll: () => {},
     });
     const res = await app.request('/api/autotick', {
@@ -233,13 +234,28 @@ describe('/api/autotick', () => {
     expect(s.nextAt).toBe(1700000060);
   });
 
+  // #112: off — это «останови автономию», а не «перестань спаунить новых». Без этого человек
+  // выключил тумблер, а три claude дожёвывают свои задачи, коммитят и комментируют доску.
+  it('PATCH enabled:false добивает живых воркеров, enabled:true — нет', async () => {
+    const db = openDb(':memory:', 'x');
+    const killed: string[] = [];
+    const app = createApp(() => db, 'proj', {
+      sync: () => {}, syncAll: () => {}, nextAt: () => null, isRunning: () => false,
+      killWorkers: async (h: string) => { killed.push(h); }, stopAll: () => {},
+    });
+    await app.request('/api/autotick', { method: 'PATCH', body: JSON.stringify({ enabled: true }) });
+    expect(killed).toEqual([]);
+    await app.request('/api/autotick', { method: 'PATCH', body: JSON.stringify({ enabled: false }) });
+    expect(killed).toEqual(['proj']);
+  });
+
   // Пока проход идёт, nextAt смотрит в прошлое — UI обязан узнать про это из ответа,
   // иначе показывает «next: in 0 s» все пять минут таймаута.
   it('GET отдаёт running=true, пока проход в полёте', async () => {
     const db = openDb(':memory:', 'x');
     const app = createApp(() => db, 'proj', {
       sync: () => {}, syncAll: () => {}, nextAt: () => 1700000000,
-      isRunning: () => true, stopAll: () => {},
+      isRunning: () => true, killWorkers: async () => {}, stopAll: () => {},
     });
     const s = (await (await app.request('/api/autotick')).json()) as { running: boolean };
     expect(s.running).toBe(true);

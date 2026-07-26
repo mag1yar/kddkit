@@ -115,6 +115,13 @@ task up to a cap. It runs no LLM itself; schedule it from cron.
 */2 * * * * cd /path/to/repo && kdd tick >> /tmp/kdd-tick.log 2>&1
 ```
 
+Stopping agent mode stops the agents, not just the dispatcher: `kdd stop` turns auto-tick off,
+kills every live worker of this board, and returns to the queue only the tasks whose worker is
+confirmed dead (one that survives `SIGKILL` keeps its slot until the normal TTL path retries it;
+one that finished while being stopped keeps its `review`). Switching **Auto-tick** off in the web
+UI does the same — clearing the timer alone would leave the already-spawned agents editing files
+and committing.
+
 **Config (env):**
 
 - `KDD_MAX_WORKERS` — max parallel workers (default 3)

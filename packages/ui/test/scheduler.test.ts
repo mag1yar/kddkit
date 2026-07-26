@@ -412,3 +412,31 @@ describe('createScheduler', () => {
     s.stopAll();
   });
 });
+
+// #112: снятый таймер не касается уже спауненных агентов — их надо добивать отдельно.
+describe('killWorkers', () => {
+  it('зовёт stopper с dbPath проекта', async () => {
+    const { hash, db, home } = project();
+    const stopper = vi.fn(async () => {});
+    const s = createScheduler(vi.fn<TickRunner>(async () => ok()), () => db, stopper);
+    await s.killWorkers(hash);
+    expect(stopper).toHaveBeenCalledWith(
+      expect.objectContaining({ dbPath: join(home, hash, 'kdd.db'), projectPath: '/repo/.git' }));
+  });
+
+  it('без stopper — no-op, а не падение', async () => {
+    const { hash, db } = project();
+    const s = createScheduler(vi.fn<TickRunner>(async () => ok()), () => db);
+    await expect(s.killWorkers(hash)).resolves.toBeUndefined();
+  });
+
+  // Тумблер уже записан и таймер снят: провал стопа не должен пробиваться в ответ HTTP.
+  it('падение stopper логируется, но не бросается', async () => {
+    const { hash, db } = project();
+    const err = quiet();
+    const s = createScheduler(vi.fn<TickRunner>(async () => ok()), () => db,
+      async () => { throw new Error('kdd stop exited 1'); });
+    await expect(s.killWorkers(hash)).resolves.toBeUndefined();
+    expect(err).toHaveBeenCalledWith(expect.stringMatching(/stopping workers failed/));
+  });
+});

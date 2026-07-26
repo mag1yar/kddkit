@@ -1050,6 +1050,15 @@ function assertTtl(ttl) {
 var CLAIMABLE_SQL = `status = 'new' AND blocked = 0 AND archived_at IS NULL AND claimed_by IS NULL
    AND (SELECT COUNT(*) FROM criteria WHERE criteria.task_id = tasks.id) > 0`;
 var criteriaCount = (db, id) => db.prepare(`SELECT COUNT(*) c FROM criteria WHERE task_id = ?`).get(id).c;
+function killAll(ids, kill) {
+  if (!ids.length) return /* @__PURE__ */ new Map();
+  if (!kill) return new Map(ids.map((id) => [id, "stuck"]));
+  try {
+    return kill(ids);
+  } catch {
+    return new Map(ids.map((id) => [id, "stuck"]));
+  }
+}
 var isTickLease = (claimedBy) => !!claimedBy?.startsWith("ai:tick:");
 function expiredLeases(db) {
   return db.prepare(
@@ -1069,14 +1078,14 @@ function reclaimExpired(db, opts = {}) {
     if (isTickLease(e.claimed_by)) {
       recordFailedAttempt(db, e.id, SYSTEM, "lease expired without progress");
       try {
-        closeOrphanRun(db, e.id, e.claimed_by);
+        closeOrphanRun(db, e.id, e.claimed_by, "lease expired, reclaimed by driver");
       } catch {
       }
     }
   }
   return expired;
 }
-function closeOrphanRun(db, taskId, claimedBy) {
+function closeOrphanRun(db, taskId, claimedBy, reason) {
   const wid = claimedBy.slice(3);
   const last = lastAgentEventKind(db, taskId, wid);
   if (last === "run_end") return;
@@ -1086,7 +1095,7 @@ function closeOrphanRun(db, taskId, claimedBy) {
       taskId,
       wid,
       "error",
-      { detail: { message: "worker never started (spawn or worktree setup failed) \u2014 lease expired, reclaimed by driver" } }
+      { detail: { message: `worker never started (spawn or worktree setup failed) \u2014 ${reason}` } }
     );
     return;
   }
@@ -1095,7 +1104,7 @@ function closeOrphanRun(db, taskId, claimedBy) {
     taskId,
     wid,
     "error",
-    { detail: { message: "worker died (SIGKILL/OOM/reboot) \u2014 lease expired, reclaimed by driver" } }
+    { detail: { message: `worker died (SIGKILL/OOM/reboot) \u2014 ${reason}` } }
   );
   appendAgentEvent(db, taskId, wid, "run_end", { detail: { exitCode: null } });
 }
@@ -1104,18 +1113,10 @@ function reapExpired(db, kill) {
   const except = /* @__PURE__ */ new Set();
   let killed = 0;
   let stuck = 0;
+  const outcomes = killAll(seen.filter((l) => isTickLease(l.claimed_by)).map((l) => l.id), kill);
   for (const l of seen) {
     if (!isTickLease(l.claimed_by)) continue;
-    if (!kill) {
-      except.add(l.id);
-      continue;
-    }
-    let outcome;
-    try {
-      outcome = kill(l.id);
-    } catch {
-      outcome = "stuck";
-    }
+    const outcome = outcomes.get(l.id) ?? "stuck";
     if (outcome === "gone") killed++;
     if (outcome === "stuck") {
       except.add(l.id);
@@ -1129,6 +1130,51 @@ function reapExpired(db, kill) {
     return reclaimExpired(db, { except });
   })();
   return { reclaimed, killed, stuck };
+}
+function stopWorkers(db, kill) {
+  const live = db.prepare(
+    `SELECT id, claimed_by FROM tasks WHERE status='in_progress' AND claimed_by IS NOT NULL`
+  ).all();
+  const dead = [];
+  let killed = 0;
+  let stuck = 0;
+  const outcomes = killAll(live.filter((l) => isTickLease(l.claimed_by)).map((l) => l.id), kill);
+  for (const l of live) {
+    const claimedBy = l.claimed_by;
+    if (!isTickLease(claimedBy)) continue;
+    const outcome = outcomes.get(l.id) ?? "stuck";
+    if (outcome === "stuck") {
+      stuck++;
+      continue;
+    }
+    if (outcome === "gone") killed++;
+    dead.push({ id: l.id, claimedBy });
+  }
+  const released = db.transaction(() => {
+    const clear = db.prepare(
+      `UPDATE tasks SET status='new', claimed_by=NULL, claim_expires=NULL, updated_at=?
+       WHERE id=? AND status='in_progress' AND claimed_by=?`
+    );
+    let n = 0;
+    for (const d of dead) {
+      if (clear.run(now(), d.id, d.claimedBy).changes !== 1) continue;
+      n++;
+      appendEvent(
+        db,
+        d.id,
+        SYSTEM,
+        "released",
+        { reason: "agent mode stopped", former: d.claimedBy },
+        { type: "claim", level: "warn" }
+      );
+      try {
+        closeOrphanRun(db, d.id, d.claimedBy, "stopped by hand (agent mode off)");
+      } catch {
+      }
+    }
+    return n;
+  })();
+  return { killed, released, stuck };
 }
 function claimTask(db, id, actor, ttl = DEFAULT_TTL, opts = {}) {
   assertTtl(ttl);
@@ -1595,6 +1641,7 @@ export {
   setProjectToplevel,
   slugify,
   statusDigest,
+  stopWorkers,
   sweepWorktrees,
   syncIndex,
   taskBranchHead,
