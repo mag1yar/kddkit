@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import App from '../src/web/App';
-import { STATUSES, type Board } from '../src/web/api';
+import { STATUSES, projectHref, type Board } from '../src/web/api';
 
 // Единственный мок здесь — сетевая граница (fetch), ровно как в серверных тестах единственная
 // подмена — путь к базе. Всё остальное настоящее: настоящий App, настоящие хуки, настоящий DOM.
@@ -18,6 +18,7 @@ function stubFetch(): Map<string, number> {
       return { enabled: false, intervalSec: 60, maxWorkers: 3, maxWorkersEnvLocked: false,
         last: null, nextAt: null, running: false };
     }
+    if (path.startsWith('/api/ping')) return { kdd: true, default: 'abc123def4567890', needsToken: true };
     if (path.startsWith('/api/board')) return board;
     return []; // /api/projects, /api/tracks
   };
@@ -57,5 +58,23 @@ describe('App', () => {
 
     expect(calls.get('/api/releases')).toBe(1);
     expect(calls.get('/api/version')).toBeGreaterThan(5);
+  });
+});
+
+// Ревью: App переписывал location на голый `?project=<hash>`, теряя токен, — после чего
+// каждый запрос отвечал 401 и вкладка застревала на пустой доске с тостами ошибок. Проверяем
+// сам построитель ссылки: подменить location.replace в jsdom нельзя (свойство unforgeable),
+// а оба места в App теперь зовут именно его.
+describe('projectHref', () => {
+  it('keeps the token while switching project', () => {
+    window.history.replaceState({}, '', '/?project=old&token=s3cret');
+    const q = new URLSearchParams(projectHref('new'));
+    expect(q.get('project')).toBe('new');
+    expect(q.get('token')).toBe('s3cret');
+  });
+
+  it('adds nothing that was not in the URL', () => {
+    window.history.replaceState({}, '', '/');
+    expect(projectHref('abc')).toBe('?project=abc');
   });
 });

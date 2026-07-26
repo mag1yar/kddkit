@@ -337,3 +337,70 @@ describe('a board from a newer kdd', () => {
     expect(((await res.json()) as { error: string }).error).toMatch(/schema v99/);
   });
 });
+
+// #60: /api/projects — это инвентарь абсолютных путей ВСЕХ досок на машине, и отдаётся он
+// до всякого выбора проекта. За loopback это переключатель проектов для своего человека;
+// выставленный наружу сервер (token) отдаёт только ту доску, ради которой его выставили.
+describe('GET /api/projects', () => {
+  afterEach(() => { delete process.env.KDD_HOME; });
+
+  const twoProjects = (): string => {
+    const home = mkdtempSync(join(tmpdir(), 'kdd-proj-'));
+    process.env.KDD_HOME = home;
+    openDb(join(home, 'a'.repeat(16), 'kdd.db'), '/mine/.git').close();
+    openDb(join(home, 'b'.repeat(16), 'kdd.db'), '/some/other/repo/.git').close();
+    return home;
+  };
+
+  it('lists every local project on loopback', async () => {
+    twoProjects();
+    const res = await createApp(() => openDb(':memory:', 'x'), 'a'.repeat(16)).request('/api/projects');
+    expect((await res.json() as unknown[]).length).toBe(2);
+  });
+
+  it('exposed with a token, lists only the project it serves', async () => {
+    twoProjects();
+    const app = createApp(() => openDb(':memory:', 'x'), 'a'.repeat(16), undefined, { token: 's3cret' });
+    const res = await app.request('/api/projects?token=s3cret');
+    expect(await res.json()).toEqual([{ id: 'a'.repeat(16), path: '/mine/.git' }]);
+  });
+});
+
+// Ревью: фильтр списка проектов был косметикой — getDb всё равно резолвил любой ?project,
+// а hash это sha256 от пути репозитория, то есть держатель токена, знающий чужой путь на
+// этой машине, вычислял его сам и правил чужую доску.
+describe('exposed mode ignores ?project', () => {
+  afterEach(() => { delete process.env.KDD_HOME; });
+
+  it('serves the default board no matter what ?project asks for', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'kdd-lock-'));
+    process.env.KDD_HOME = home;
+    const mine = 'a'.repeat(16);
+    const other = 'b'.repeat(16);
+    addTask(openDb(join(home, mine, 'kdd.db'), '/mine/.git'), { title: 'mine' }, user);
+    addTask(openDb(join(home, other, 'kdd.db'), '/other/.git'), { title: 'secret' }, user);
+
+    const locked = projectPool(mine, { lockToDefault: true });
+    const app = createApp(locked.getDb, mine, undefined, { token: 's3cret' });
+    const b = (await (await app.request(`/api/board?project=${other}&token=s3cret`)).json()) as
+      Record<string, { title: string }[]>;
+    expect(b.new.map((t) => t.title)).toEqual(['mine']); // не 'secret'
+    locked.closeAll();
+  });
+
+  it('still switches projects on loopback', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'kdd-switch-'));
+    process.env.KDD_HOME = home;
+    const mine = 'a'.repeat(16);
+    const other = 'b'.repeat(16);
+    addTask(openDb(join(home, mine, 'kdd.db'), '/mine/.git'), { title: 'mine' }, user);
+    addTask(openDb(join(home, other, 'kdd.db'), '/other/.git'), { title: 'theirs' }, user);
+
+    const pool = projectPool(mine);
+    const app = createApp(pool.getDb, mine);
+    const b = (await (await app.request(`/api/board?project=${other}`)).json()) as
+      Record<string, { title: string }[]>;
+    expect(b.new.map((t) => t.title)).toEqual(['theirs']);
+    pool.closeAll();
+  });
+});

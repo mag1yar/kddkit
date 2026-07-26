@@ -3,6 +3,7 @@ import { Command } from 'commander';
 import { readFileSync } from 'node:fs';
 import { basename, delimiter, dirname, join } from 'node:path';
 import { spawn as spawnProcess } from 'node:child_process';
+import { networkInterfaces } from 'node:os';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import lockfile from 'proper-lockfile';
@@ -651,13 +652,35 @@ program.command('status')
     out(o.json, d, () => renderStatus(d));
   }));
 
+// Loopback-адреса: за ними граница доверия — сама машина, токен не нужен.
+// '' и '::' — это «все интерфейсы», то есть самый громкий выход наружу.
+const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+
+// Адрес, по которому выставленную доску видно с телефона. Первый не-internal IPv4: точнее
+// угадать нельзя (интерфейсов бывает несколько), но это на порядок полезнее, чем localhost.
+const lanAddress = (): string | undefined => Object.values(networkInterfaces()).flat()
+  .find((i) => i && i.family === 'IPv4' && !i.internal)?.address;
+
 program.command('ui')
   .option('--port <n>', 'port', '4499')
-  .action((o) => run(false, () => { void uiStart(Number(o.port)); }));
+  .option('--host <addr>', 'bind address; anything but loopback needs --token', '127.0.0.1')
+  .option('--token <t>', 'shared secret required on /api when bound outside loopback ($KDD_UI_TOKEN)')
+  .action((o) => run(false, () => {
+    const host = String(o.host);
+    const token = o.token ?? process.env.KDD_UI_TOKEN;
+    // Голая доска в общей сети — это чужие руки на кнопке «удалить», плюс список абсолютных
+    // путей всех проектов машины. Наружу — только сознательно и только с секретом.
+    if (!LOOPBACK.has(host) && !token) {
+      throw new KddError(
+        `--host ${host} exposes the board beyond this machine — pass --token <secret> ` +
+        `(or set KDD_UI_TOKEN) so it is not open to the whole network`);
+    }
+    void uiStart(Number(o.port), host, token);
+  }));
 
 // Один сервер на все проекты: если kdd-ui уже поднят на порту — переиспользуем,
 // печатаем URL с ?project=<этот-hash>. Иначе поднимаем сервер здесь.
-async function uiStart(port: number): Promise<void> {
+async function uiStart(port: number, host = '127.0.0.1', token?: string): Promise<void> {
   const { dbPath, projectPath } = resolveDbPath();
   const hash = basename(dirname(dbPath));
   const db = openDb(dbPath, projectPath); // создаём/мигрируем базу → проект виден в /api/projects
@@ -667,18 +690,38 @@ async function uiStart(port: number): Promise<void> {
     setProjectToplevel(db, resolveToplevel());
   } catch { /* не git-репо: путь возможен только с KDD_DB, toplevel останется неизвестным */ }
   db.close();
-  const url = `http://localhost:${port}?project=${hash}`;
-  try {
-    const res = await fetch(`http://localhost:${port}/api/ping`, { signal: AbortSignal.timeout(500) });
-    if (res.ok && ((await res.json()) as { kdd?: boolean }).kdd) {
-      console.log(`kdd ui: ${url} (reusing running server)`);
-      return;
+  // Токен — в ссылке: страница берёт его оттуда и подставляет во все свои запросы,
+  // так что перезагрузка вкладки его не теряет. Хост в ссылке — тот, по которому доска
+  // реально доступна: после `--host` печатать localhost бессмысленно, ради другого
+  // устройства всё и затевалось.
+  const url = `http://${LOOPBACK.has(host) ? 'localhost' : lanAddress() ?? host}:${port}`
+    + `?project=${hash}` + (token ? `&token=${encodeURIComponent(token)}` : '');
+  const probe = async (path: string): Promise<Response | null> => {
+    try { return await fetch(`http://localhost:${port}${path}`, { signal: AbortSignal.timeout(500) }); }
+    catch { return null; } // сервера нет — поднимаем свой
+  };
+  const ping = await probe('/api/ping');
+  const info = ping?.ok ? (await ping.json()) as { kdd?: boolean; needsToken?: boolean } : null;
+  if (info?.kdd) {
+    // Режим работающего сервера мог не совпасть с запрошенным. Молча напечатать ссылку —
+    // значит соврать: человек уверен, что доска выставлена наружу и под токеном, а она
+    // ни то ни другое (или наоборот — открыта, когда он думает, что нет).
+    if (!!token !== !!info.needsToken) {
+      fail(info.needsToken
+        ? `a kdd ui already runs on :${port} and requires a token — pass the same --token to reuse it`
+        : `a kdd ui already runs on :${port} without a token — stop it before exposing the board`,
+      false);
     }
-  } catch { /* сервера нет — поднимаем свой */ }
-  const { getDb, get, closeAll } = projectPool(hash);
+    if (token && (await probe(`/api/version?token=${encodeURIComponent(token)}`))?.status === 401) {
+      fail(`the kdd ui already running on :${port} was started with a different token`, false);
+    }
+    console.log(`kdd ui: ${url} (reusing running server)`);
+    return;
+  }
+  const { getDb, get, closeAll } = projectPool(hash, { lockToDefault: !!token });
   const scheduler = createScheduler(tickRunner, get, stopRunner);
   try {
-    await startUi(getDb, port, hash, scheduler);
+    await startUi(getDb, port, hash, scheduler, { host, token });
   } catch (e) {
     scheduler.stopAll();
     closeAll();

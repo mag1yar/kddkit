@@ -29,7 +29,10 @@ const HASH_RE = /^[0-9a-f]{16}$/;
 
 // Пул баз по hash проекта: один сервер обслуживает все локальные проекты.
 // getDb(c) резолвит базу из ?project=<hash>, иначе дефолт (проект, откуда запущен ui).
-export function projectPool(defaultHash: string): {
+// lockToDefault — сервер выставлен наружу (`kdd ui --host --token`): ?project не слушаем вовсе,
+// иначе держатель токена, знающий путь чужого репозитория на этой машине, вычислил бы его hash
+// (sha256 от пути) и правил бы доску, которую ему не показывали.
+export function projectPool(defaultHash: string, opts: { lockToDefault?: boolean } = {}): {
   getDb: (c: Context) => Database.Database;
   get: (hash: string) => Database.Database;
   closeAll: () => void;
@@ -49,7 +52,7 @@ export function projectPool(defaultHash: string): {
     return db;
   };
   return {
-    getDb: (c: Context) => get(c.req.query('project') || defaultHash),
+    getDb: (c: Context) => get(opts.lockToDefault ? defaultHash : c.req.query('project') || defaultHash),
     get,
     closeAll: () => { for (const d of pool.values()) d.close(); },
   };
@@ -74,10 +77,28 @@ async function jsonBody(c: Context): Promise<Record<string, unknown>> {
   }
 }
 
+// Loopback не спасает от браузера: сайт с TTL 0 перерезолвит свой домен в 127.0.0.1, для
+// браузера origin не менялся, и его скрипт читает /api/projects и правит доску. Единственное,
+// что при этом невозможно подделать, — заголовок Host: он остаётся доменом атакующего.
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+// Смотрим на c.req.url, а не на заголовок: @hono/node-server собирает этот URL ровно из Host
+// (или :authority у HTTP/2), то есть проверка та же, но работает и для in-process запросов,
+// у которых заголовка нет вовсе.
+const loopbackHost = (reqUrl: string, port: number | undefined): boolean => {
+  let u: URL;
+  try { u = new URL(reqUrl); } catch { return false; } // мусор — точно не наш
+  if (!LOOPBACK_HOSTS.has(u.hostname)) return false;
+  // Порт сверяем, только если знаем свой: соседний сервис на другом порту той же машины
+  // не должен уметь притворяться нами в чужой вкладке.
+  return port === undefined || u.port === String(port);
+};
+
 export function createApp(
   getDb: (c: Context) => Database.Database, defaultHash = '', scheduler?: Scheduler,
+  opts: { token?: string; port?: () => number | undefined } = {},
 ): Hono {
   const app = new Hono();
+  const token = opts.token;
 
   app.onError((e, c) => {
     if (e instanceof KddError) return c.json({ error: e.message }, 400);
@@ -85,10 +106,45 @@ export function createApp(
     return c.json({ error: 'internal error' }, 500);
   });
 
+  // Токен появляется РОВНО тогда, когда сервер сознательно выставлен за loopback
+  // (`kdd ui --host`). Пока слушаем 127.0.0.1, граница доверия — сама машина, и проверять
+  // нечего; наружу же доска без проверки — это чужие руки на кнопке «удалить критерий».
+  // Статика под токен не уходит: пустая оболочка SPA ничего не рассказывает, а человек
+  // открывает ссылку с ?token и сразу работает.
+  if (token) {
+    app.use('/api/*', async (c, next) => {
+      // ping — вне проверки: по нему `kdd ui` из соседнего проекта решает, переиспользовать ли
+      // этот сервер, а токена работающего сервера он знать не может. Секрета ping не выдаёт:
+      // только «я kdd» + hash доски + нужен ли токен.
+      if (c.req.path === '/api/ping') return next();
+      if ((c.req.header('x-kdd-token') ?? c.req.query('token')) !== token) {
+        return c.json({ error: 'unauthorized' }, 401);
+      }
+      await next();
+    });
+  } else {
+    // Проверка Host — пара к loopback-биндингу, и только для него: у выставленного наружу
+    // сервера Host законно чужой (LAN-адрес, имя машины), и там граница — токен выше.
+    app.use('/api/*', async (c, next) => {
+      if (!loopbackHost(c.req.url, opts.port?.())) {
+        return c.json({ error: 'forbidden host' }, 403);
+      }
+      await next();
+    });
+  }
+
   // Мультипроектность: ping (переиспользование сервера из cli) + список проектов для select.
-  app.get('/api/ping', (c) => c.json({ kdd: true, default: defaultHash }));
+  // needsToken говорит второму `kdd ui`, с каким сервером он имеет дело: без этого он либо
+  // молча печатал бы ссылку на сервер, поднятый совсем в другом режиме, либо (когда ping был
+  // под токеном) получал 401 и падал с EADDRINUSE вместо переиспользования.
+  app.get('/api/ping', (c) => c.json({ kdd: true, default: defaultHash, needsToken: !!token }));
+  // Список — это абсолютные пути ВСЕХ досок на машине, то есть инвентарь чужой работы.
+  // Переключатель проектов нужен своему человеку за loopback; выставленный наружу сервер
+  // отдаёт только ту доску, ради которой его выставили.
   app.get('/api/projects', (c) => c.json(
-    listProjects().map((p) => ({ id: hashOf(p.dbPath), path: p.projectPath })),
+    listProjects()
+      .filter((p) => !token || hashOf(p.dbPath) === defaultHash)
+      .map((p) => ({ id: hashOf(p.dbPath), path: p.projectPath })),
   ));
 
   app.get('/api/tracks', (c) => c.json(listTracks(getDb(c), { status: 'active' })));
@@ -131,7 +187,11 @@ export function createApp(
 
   // Тот же fallback, что и getDb в projectPool — единая точка правды на "чей это hash",
   // а не третья копия ?project || defaultHash рядом с планировщиком.
-  const projectHash = (c: Context): string => c.req.query('project') || defaultHash;
+  // В выставленном наружу режиме ?project вообще не слушаем: hash — это sha256 от пути
+  // репозитория, то есть держатель токена, знающий чужой путь на этой машине, вычислил бы
+  // его сам и правил бы чужую доску. Прятать её из списка при этом бессмысленно.
+  const projectHash = (c: Context): string =>
+    (token ? defaultHash : c.req.query('project') || defaultHash);
 
   // Авто-tick: настройки в meta проекта, таймер — в планировщике сервера.
   // scheduler необязателен: без него (сервер поднят не через `kdd ui`, тесты)
@@ -272,14 +332,23 @@ function mountStatic(app: Hono, publicDir: string): void {
   });
 }
 
+// hostname по умолчанию — loopback. Без него node биндит '::', то есть все интерфейсы: любой
+// в том же кафе читал и правил бы доску, а `/api/projects` отдавал бы ему абсолютные пути всех
+// проектов на машине ещё до всякого выбора. Выход наружу — осознанный опт-ин с токеном.
 export function startUi(
   getDb: (c: Context) => Database.Database, port: number, defaultHash = '',
-  scheduler?: Scheduler,
+  scheduler?: Scheduler, opts: { host?: string; token?: string } = {},
 ): Promise<{ url: string; close: () => void }> {
-  const app = createApp(getDb, defaultHash, scheduler);
+  // Порт узнаём только из колбэка listen (port 0 = эфемерный), а приложение собирается до —
+  // поэтому Host-проверка спрашивает его функцией, а не значением. Запросов между listen и
+  // присвоением быть не может: сокет до этого момента не принят.
+  let listening: number | undefined;
+  const app = createApp(getDb, defaultHash, scheduler,
+    { token: opts.token, port: () => listening });
   mountStatic(app, join(dirname(fileURLToPath(import.meta.url)), 'public'));
   return new Promise((res, rej) => {
-    const server = serve({ fetch: app.fetch, port }, (info) => {
+    const server = serve({ fetch: app.fetch, port, hostname: opts.host ?? '127.0.0.1' }, (info) => {
+      listening = info.port;
       scheduler?.syncAll(); // таймеры включённых проектов поднимаются сами после рестарта
       res({ url: `http://localhost:${info.port}`, close: () => { scheduler?.stopAll(); server.close(); } });
     });

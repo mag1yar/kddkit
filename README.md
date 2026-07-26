@@ -92,6 +92,11 @@ machine-readable output.
 
 Prefer not to link globally? Run it directly: `node /path/to/kddkit/packages/cli/dist/index.js ui`.
 
+The board listens on `127.0.0.1` only — it has no login, and `/api/projects` knows the absolute
+path of every board on the machine. To reach it from another device, opt in explicitly and bring a
+secret: `kdd ui --host 0.0.0.0 --token <secret>` (or `KDD_UI_TOKEN`). Exposed that way, every
+`/api` call needs the token, and the project list narrows to the one board you served.
+
 ## What Claude does with it
 
 The bundled skill teaches a **pull** protocol: at the start of a task Claude

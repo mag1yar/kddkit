@@ -52,3 +52,14 @@ describe('a board from a newer kdd', () => {
     expect(r.stderr).not.toMatch(/\n\s+at /); // строка, а не кадры стека
   });
 });
+
+// #60: раньше `kdd ui` слушал все интерфейсы молча. Теперь выход за loopback — осознанный
+// флаг, и без секрета он не проходит: голая доска в общей сети это чужие руки на кнопке
+// «удалить», плюс список абсолютных путей всех проектов машины.
+describe('kdd ui --host', () => {
+  it('refuses a non-loopback bind without a token', () => {
+    const r = kddFail({ ...env, KDD_UI_TOKEN: undefined }, 'ui', '--host', '0.0.0.0');
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/--host 0\.0\.0\.0 exposes the board .*--token/);
+  });
+});

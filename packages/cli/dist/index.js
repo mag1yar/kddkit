@@ -5,6 +5,7 @@ import { Command } from "commander";
 import { readFileSync } from "fs";
 import { basename, delimiter, dirname as dirname2, join } from "path";
 import { spawn as spawnProcess2 } from "child_process";
+import { networkInterfaces } from "os";
 import { createInterface } from "readline";
 import { fileURLToPath } from "url";
 import lockfile from "proper-lockfile";
@@ -827,10 +828,19 @@ program.command("status").option("--json").action((o) => run(o.json, () => {
   const d = withDb((db) => statusDigest(db));
   out(o.json, d, () => renderStatus(d));
 }));
-program.command("ui").option("--port <n>", "port", "4499").action((o) => run(false, () => {
-  void uiStart(Number(o.port));
+var LOOPBACK = /* @__PURE__ */ new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+var lanAddress = () => Object.values(networkInterfaces()).flat().find((i) => i && i.family === "IPv4" && !i.internal)?.address;
+program.command("ui").option("--port <n>", "port", "4499").option("--host <addr>", "bind address; anything but loopback needs --token", "127.0.0.1").option("--token <t>", "shared secret required on /api when bound outside loopback ($KDD_UI_TOKEN)").action((o) => run(false, () => {
+  const host = String(o.host);
+  const token = o.token ?? process.env.KDD_UI_TOKEN;
+  if (!LOOPBACK.has(host) && !token) {
+    throw new KddError2(
+      `--host ${host} exposes the board beyond this machine \u2014 pass --token <secret> (or set KDD_UI_TOKEN) so it is not open to the whole network`
+    );
+  }
+  void uiStart(Number(o.port), host, token);
 }));
-async function uiStart(port) {
+async function uiStart(port, host = "127.0.0.1", token) {
   const { dbPath, projectPath } = resolveDbPath2();
   const hash = basename(dirname2(dbPath));
   const db = openDb2(dbPath, projectPath);
@@ -839,19 +849,33 @@ async function uiStart(port) {
   } catch {
   }
   db.close();
-  const url = `http://localhost:${port}?project=${hash}`;
-  try {
-    const res = await fetch(`http://localhost:${port}/api/ping`, { signal: AbortSignal.timeout(500) });
-    if (res.ok && (await res.json()).kdd) {
-      console.log(`kdd ui: ${url} (reusing running server)`);
-      return;
+  const url = `http://${LOOPBACK.has(host) ? "localhost" : lanAddress() ?? host}:${port}?project=${hash}` + (token ? `&token=${encodeURIComponent(token)}` : "");
+  const probe = async (path) => {
+    try {
+      return await fetch(`http://localhost:${port}${path}`, { signal: AbortSignal.timeout(500) });
+    } catch {
+      return null;
     }
-  } catch {
+  };
+  const ping = await probe("/api/ping");
+  const info = ping?.ok ? await ping.json() : null;
+  if (info?.kdd) {
+    if (!!token !== !!info.needsToken) {
+      fail(
+        info.needsToken ? `a kdd ui already runs on :${port} and requires a token \u2014 pass the same --token to reuse it` : `a kdd ui already runs on :${port} without a token \u2014 stop it before exposing the board`,
+        false
+      );
+    }
+    if (token && (await probe(`/api/version?token=${encodeURIComponent(token)}`))?.status === 401) {
+      fail(`the kdd ui already running on :${port} was started with a different token`, false);
+    }
+    console.log(`kdd ui: ${url} (reusing running server)`);
+    return;
   }
-  const { getDb, get, closeAll } = projectPool(hash);
+  const { getDb, get, closeAll } = projectPool(hash, { lockToDefault: !!token });
   const scheduler = createScheduler(tickRunner, get, stopRunner);
   try {
-    await startUi(getDb, port, hash, scheduler);
+    await startUi(getDb, port, hash, scheduler, { host, token });
   } catch (e) {
     scheduler.stopAll();
     closeAll();

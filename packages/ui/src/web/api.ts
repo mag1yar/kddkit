@@ -40,10 +40,27 @@ export interface TaskDetail {
 }
 
 // ?project=<hash> из URL пробрасывается во все запросы — сервер отдаёт нужную базу.
+// ?token — тем же способом: он есть только когда сервер сознательно выставлен наружу
+// (`kdd ui --host`), и ссылку с ним печатает сам сервер. Перезагрузка страницы токен не теряет,
+// потому что он лежит в адресной строке, а не в памяти вкладки.
 function withProject(path: string): string {
-  const p = new URLSearchParams(location.search).get('project');
-  if (!p) return path;
-  return `${path}${path.includes('?') ? '&' : '?'}project=${encodeURIComponent(p)}`;
+  const from = new URLSearchParams(location.search);
+  const add = new URLSearchParams();
+  for (const key of ['project', 'token']) {
+    const v = from.get(key);
+    if (v) add.set(key, v);
+  }
+  if (![...add].length) return path;
+  return `${path}${path.includes('?') ? '&' : '?'}${add.toString()}`;
+}
+
+// Адрес доски для другого проекта. Собирается ИЗ текущего, а не с нуля: переписывание
+// location на голый `?project=<hash>` теряло токен, после чего каждый запрос отвечал 401,
+// а вкладка застревала на пустой доске с тостами ошибок.
+export function projectHref(hash: string): string {
+  const q = new URLSearchParams(location.search);
+  q.set('project', hash);
+  return `?${q.toString()}`;
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {

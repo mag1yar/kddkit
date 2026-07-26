@@ -7,7 +7,7 @@ import {
   Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import {
-  STATUSES, deleteTrack, getBoard, getPing, getProjects, getTracks, moveTask, setTrackDone,
+  STATUSES, deleteTrack, getBoard, getPing, getProjects, getTracks, moveTask, projectHref, setTrackDone,
   type Board as BoardData, type Project, type Status, type Track,
 } from './api';
 import { AutoTickPopover } from './components/AutoTickPopover';
@@ -45,7 +45,7 @@ export default function App() {
     void loadTracks();
     setTrack(null); // смена проекта → сброс фильтра track
     // нет ?project в URL → берём дефолт сервера и фиксируем в URL (select + доска синхронны)
-    if (!current) getPing().then((p) => { if (p.default) location.replace(`?project=${p.default}`); }).catch(() => {});
+    if (!current) getPing().then((p) => { if (p.default) location.replace(projectHref(p.default)); }).catch(() => {});
   }, [current, loadTracks]);
 
   const trackName = new Map(tracks.map((t) => [t.id, t.name]));
@@ -91,7 +91,7 @@ export default function App() {
         <div className="flex items-center gap-3">
           <h1 className="text-sm font-semibold">kdd</h1>
           <ReleasesPopover info={releases} />
-          <Select value={current} onValueChange={(id) => location.assign(`?project=${id}`)}>
+          <Select value={current} onValueChange={(id) => { if (id) location.assign(projectHref(id)); }}>
             <SelectTrigger size="sm" className="w-52">
               <SelectValue placeholder="Project">
                 {(v) => projectName(projects.find((p) => p.id === v)?.path ?? '')}
