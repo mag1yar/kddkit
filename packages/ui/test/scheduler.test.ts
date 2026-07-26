@@ -26,7 +26,7 @@ function project(): { hash: string; db: Database.Database; home: string } {
 const quiet = () => vi.spyOn(console, 'error').mockImplementation(() => {});
 
 const ok = (over: Partial<TickRun> = {}): TickRun =>
-  ({ at: 1700000000, reclaimed: 0, spawned: 0, active: 0, reaped: 0, ...over });
+  ({ at: 1700000000, reclaimed: 0, killed: 0, stuck: 0, spawned: 0, active: 0, reaped: 0, ...over });
 
 afterEach(() => { vi.useRealTimers(); delete process.env.KDD_HOME; });
 

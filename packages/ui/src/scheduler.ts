@@ -135,7 +135,7 @@ export function createScheduler(
         // Overnight-раннер не умирает от транзиентного глюка: ошибка едет в индикатор,
         // цикл продолжается тем же интервалом.
         run = {
-          at: now(), reclaimed: 0, spawned: 0, active: 0, reaped: 0,
+          at: now(), reclaimed: 0, killed: 0, stuck: 0, spawned: 0, active: 0, reaped: 0,
           error: e instanceof Error ? e.message : String(e),
         };
       }

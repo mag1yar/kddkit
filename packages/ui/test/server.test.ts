@@ -247,7 +247,7 @@ describe('/api/autotick', () => {
 
   it('GET отдаёт последний проход', async () => {
     const { db, app } = mk();
-    setLastRun(db, { at: 1700000000, reclaimed: 1, spawned: 2, active: 3, reaped: 0 });
+    setLastRun(db, { at: 1700000000, reclaimed: 1, killed: 0, stuck: 0, spawned: 2, active: 3, reaped: 0 });
     const s = (await (await app.request('/api/autotick')).json()) as
       { last: { spawned: number } | null };
     expect(s.last?.spawned).toBe(2);

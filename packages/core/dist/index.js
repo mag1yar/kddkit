@@ -1050,19 +1050,23 @@ function assertTtl(ttl) {
 var CLAIMABLE_SQL = `status = 'new' AND blocked = 0 AND archived_at IS NULL AND claimed_by IS NULL
    AND (SELECT COUNT(*) FROM criteria WHERE criteria.task_id = tasks.id) > 0`;
 var criteriaCount = (db, id) => db.prepare(`SELECT COUNT(*) c FROM criteria WHERE task_id = ?`).get(id).c;
-function reclaimExpired(db) {
-  const t = now();
-  const expired = db.prepare(
+var isTickLease = (claimedBy) => !!claimedBy?.startsWith("ai:tick:");
+function expiredLeases(db) {
+  return db.prepare(
     `SELECT id, claimed_by FROM tasks
      WHERE status = 'in_progress' AND claim_expires IS NOT NULL AND claim_expires < ?`
-  ).all(t);
+  ).all(now());
+}
+function reclaimExpired(db, opts = {}) {
+  const t = now();
+  const expired = expiredLeases(db).filter((e) => !opts.except?.has(e.id));
   const clear = db.prepare(
     `UPDATE tasks SET status='new', claimed_by=NULL, claim_expires=NULL, updated_at=? WHERE id=?`
   );
   for (const e of expired) {
     clear.run(t, e.id);
     appendEvent(db, e.id, SYSTEM, "reclaimed", { former: e.claimed_by }, { type: "claim", level: "warn" });
-    if (e.claimed_by?.startsWith("ai:tick:")) {
+    if (isTickLease(e.claimed_by)) {
       recordFailedAttempt(db, e.id, SYSTEM, "lease expired without progress");
       try {
         closeOrphanRun(db, e.id, e.claimed_by);
@@ -1070,7 +1074,7 @@ function reclaimExpired(db) {
       }
     }
   }
-  return expired.map((e) => e.id);
+  return expired;
 }
 function closeOrphanRun(db, taskId, claimedBy) {
   const wid = claimedBy.slice(3);
@@ -1095,10 +1099,41 @@ function closeOrphanRun(db, taskId, claimedBy) {
   );
   appendAgentEvent(db, taskId, wid, "run_end", { detail: { exitCode: null } });
 }
-function claimTask(db, id, actor, ttl = DEFAULT_TTL) {
+function reapExpired(db, kill) {
+  const seen = expiredLeases(db);
+  const except = /* @__PURE__ */ new Set();
+  let killed = 0;
+  let stuck = 0;
+  for (const l of seen) {
+    if (!isTickLease(l.claimed_by)) continue;
+    if (!kill) {
+      except.add(l.id);
+      continue;
+    }
+    let outcome;
+    try {
+      outcome = kill(l.id);
+    } catch {
+      outcome = "stuck";
+    }
+    if (outcome === "gone") killed++;
+    if (outcome === "stuck") {
+      except.add(l.id);
+      stuck++;
+    }
+  }
+  const reclaimed = db.transaction(() => {
+    for (const l of expiredLeases(db)) {
+      if (isTickLease(l.claimed_by) && !seen.some((s) => s.id === l.id)) except.add(l.id);
+    }
+    return reclaimExpired(db, { except });
+  })();
+  return { reclaimed, killed, stuck };
+}
+function claimTask(db, id, actor, ttl = DEFAULT_TTL, opts = {}) {
   assertTtl(ttl);
+  reapExpired(db, opts.kill);
   return db.transaction(() => {
-    reclaimExpired(db);
     const t = mustGetTask(db, id);
     if (criteriaCount(db, id) === 0) {
       appendEvent(
@@ -1128,8 +1163,8 @@ function claimTask(db, id, actor, ttl = DEFAULT_TTL) {
 }
 function claimNext(db, actor, ttl = DEFAULT_TTL, opts = {}) {
   assertTtl(ttl);
+  if (opts.reclaim !== false) reapExpired(db, opts.kill);
   return db.transaction(() => {
-    if (opts.reclaim !== false) reclaimExpired(db);
     const rows = db.prepare(
       `SELECT id FROM tasks WHERE ${CLAIMABLE_SQL} ORDER BY ${PRIORITY_ORDER}, created_at, id`
     ).all();
@@ -1147,7 +1182,7 @@ function claimNext(db, actor, ttl = DEFAULT_TTL, opts = {}) {
     return null;
   })();
 }
-function renewClaim(db, id, actor, ttl = DEFAULT_TTL) {
+function renewClaim(db, id, actor, ttl = DEFAULT_TTL, opts = {}) {
   assertTtl(ttl);
   return db.transaction(() => {
     mustGetTask(db, id);
@@ -1161,7 +1196,9 @@ function renewClaim(db, id, actor, ttl = DEFAULT_TTL) {
         error: `#${id} not held by ${authorOf(actor)} (lease lost or reclaimed) \u2014 stop work`
       };
     }
-    appendEvent(db, id, actor, "claim_renewed", { ttl, expires }, { type: "claim" });
+    if (opts.log !== false) {
+      appendEvent(db, id, actor, "claim_renewed", { ttl, expires }, { type: "claim" });
+    }
     return { ok: true, task: mustGetTask(db, id) };
   })();
 }
@@ -1173,7 +1210,7 @@ function activeWorkers(db) {
   ).get().c;
 }
 function tick(db, opts) {
-  const reclaimed = db.transaction(() => reclaimExpired(db))().length;
+  const { reclaimed, killed, stuck } = reapExpired(db, opts.kill);
   let active = activeWorkers(db);
   let spawned = 0;
   const nonce = now();
@@ -1195,7 +1232,7 @@ function tick(db, opts) {
       break;
     }
   }
-  return { reclaimed, spawned, active };
+  return { reclaimed: reclaimed.length, killed, stuck, spawned, active };
 }
 
 // src/worktree.ts
@@ -1274,14 +1311,16 @@ function ensureWorktree(repoRoot, dbPath, taskId, title) {
   git(repoRoot, ["worktree", "add", ...tail]);
   return path;
 }
-function sweepWorktrees(db, repoRoot) {
+function sweepWorktrees(db, repoRoot, isBusy) {
   const stmt = db.prepare(`SELECT status FROM tasks WHERE id = ?`);
   let removed = 0;
   for (const e of listWorktrees(repoRoot)) {
     const m = e.branch?.match(BRANCH_RE);
     if (!m) continue;
-    const row = stmt.get(Number(m[1]));
+    const taskId = Number(m[1]);
+    const row = stmt.get(taskId);
     if (row?.status === "in_progress") continue;
+    if (isBusy?.(taskId)) continue;
     gitTry(repoRoot, ["worktree", "remove", "--force", e.path]);
     removed++;
   }
@@ -1506,6 +1545,7 @@ export {
   editTask,
   editTrack,
   ensureWorktree,
+  expiredLeases,
   exportBoard,
   getAutoTick,
   getLastRun,
@@ -1532,6 +1572,7 @@ export {
   placeTask,
   projectPathOf,
   projectToplevelOf,
+  reapExpired,
   rebuild,
   recall,
   reclaimExpired,

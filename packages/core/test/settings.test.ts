@@ -61,7 +61,7 @@ describe('last run', () => {
   it('null до первого прохода, roundtrip после', () => {
     const db = mk();
     expect(getLastRun(db)).toBeNull();
-    const run = { at: 1700000000, reclaimed: 1, spawned: 2, active: 3, reaped: 0 };
+    const run = { at: 1700000000, reclaimed: 1, killed: 0, stuck: 0, spawned: 2, active: 3, reaped: 0 };
     setLastRun(db, run);
     expect(getLastRun(db)).toEqual(run);
   });

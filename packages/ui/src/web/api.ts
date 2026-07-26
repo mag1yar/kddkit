@@ -62,7 +62,8 @@ export interface ReleaseInfo {
   releases: Release[]; repoUrl: string | null; error: string | null;
 }
 export interface TickRun {
-  at: number; reclaimed: number; spawned: number; active: number; reaped: number;
+  at: number; reclaimed: number; killed: number; stuck: number;
+  spawned: number; active: number; reaped: number;
   skipped?: boolean; error?: string;
 }
 export interface AutoTickState {

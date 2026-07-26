@@ -73,12 +73,12 @@ export function createTickRunner(
     };
 
     child.on('error', (e) => {
-      settle({ at: now(), reclaimed: 0, spawned: 0, active: 0, reaped: 0, error: e.message });
+      settle({ at: now(), reclaimed: 0, killed: 0, stuck: 0, spawned: 0, active: 0, reaped: 0, error: e.message });
     });
     child.on('close', (code) => {
       if (timedOut) {
         settle({
-          at: now(), reclaimed: 0, spawned: 0, active: 0, reaped: 0,
+          at: now(), reclaimed: 0, killed: 0, stuck: 0, spawned: 0, active: 0, reaped: 0,
           error: `kdd tick killed after exceeding ${killTimeoutMs}ms timeout`,
         });
         return;

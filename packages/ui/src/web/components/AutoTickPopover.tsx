@@ -38,23 +38,30 @@ function countdown(deltaSec: number): string {
   return `${Math.floor(d / 60)}:${String(d % 60).padStart(2, '0')}`;
 }
 
-type Health = 'off' | 'running' | 'error' | 'armed';
+type Health = 'off' | 'running' | 'error' | 'stuck' | 'armed';
 
 function healthOf(s: AutoTickState): Health {
   if (s.running) return 'running';
   if (!s.enabled) return 'off';
-  return s.last?.error ? 'error' : 'armed';
+  if (s.last?.error) return 'error';
+  // stuck — не счётчик прошлого прохода, а состояние ПРЯМО СЕЙЧАС: воркер не умер ни от
+  // SIGTERM, ни от SIGKILL и до сих пор занимает слот. Проход при этом «успешен», поэтому
+  // без своего состояния индикатор горел бы зелёным над застрявшей доской.
+  if (s.last?.stuck) return 'stuck';
+  return 'armed';
 }
 
 const DOT: Record<Health, string> = {
   off: 'bg-muted-foreground/40',
   running: 'bg-primary',
   error: 'bg-destructive',
+  stuck: 'bg-destructive',
   armed: 'bg-primary',
 };
 
 const HEADLINE: Record<Health, string> = {
-  off: 'Off', running: 'Running…', error: 'Last run failed', armed: 'Idle',
+  off: 'Off', running: 'Running…', error: 'Last run failed',
+  stuck: 'Worker will not die', armed: 'Idle',
 };
 
 // Вторая строка статуса — что было в прошлый проход. Ошибка вытесняет цифры: если проход
@@ -64,7 +71,14 @@ function detailOf(s: AutoTickState): string {
   const ago = `${human(Date.now() / 1000 - s.last.at)} ago`;
   if (s.last.error) return s.last.error;
   if (s.last.skipped) return `${ago} · skipped, another tick was running`;
-  return `${ago} · spawned ${s.last.spawned}, active ${s.last.active}`;
+  // killed показываем только когда есть что показать: ноль убитых — норма, а не новость.
+  const killed = s.last.killed ? `, killed ${s.last.killed}` : '';
+  // stuck — не цифра в ряду, а диагноз: слот занят процессом, который пережил SIGKILL, и
+  // сам он не освободится. Поэтому словами и первым, а не хвостом после «active N».
+  const stuck = s.last.stuck
+    ? `${s.last.stuck} worker${s.last.stuck > 1 ? 's' : ''} survived SIGKILL and still hold`
+      + `${s.last.stuck > 1 ? '' : 's'} a slot · ` : '';
+  return `${stuck}${ago} · spawned ${s.last.spawned}, active ${s.last.active}${killed}`;
 }
 
 export function AutoTickPopover(
@@ -166,7 +180,8 @@ export function AutoTickPopover(
               </span>
             )}
           </div>
-          <p className={`text-xs ${health === 'error' ? 'text-destructive' : 'text-muted-foreground'}`}>
+          <p className={`text-xs ${health === 'error' || health === 'stuck'
+            ? 'text-destructive' : 'text-muted-foreground'}`}>
             {detailOf(state)}
           </p>
         </div>

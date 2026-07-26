@@ -5,7 +5,7 @@ import type { TickRun } from '@kddkit/core';
 // program.parse() на верхнем уровне, так что импорт index.ts в тесте убивает процесс через
 // process.exit — см. git history / review round 1 для repro.
 export function parseTickOutput(out: string, err: string, code: number | null, at: number): TickRun {
-  const zero = { at, reclaimed: 0, spawned: 0, active: 0, reaped: 0 };
+  const zero = { at, reclaimed: 0, killed: 0, stuck: 0, spawned: 0, active: 0, reaped: 0 };
   let parsed: unknown;
   try { parsed = JSON.parse(out); } catch { parsed = undefined; }
   // null и массивы — валидный JSON, но не объект настроек: JSON.parse('null') не бросает,
@@ -25,7 +25,7 @@ export function parseTickOutput(out: string, err: string, code: number | null, a
   if (obj.skipped) return { ...zero, skipped: true };
   const num = (v: unknown): number => typeof v === 'number' ? v : 0;
   return {
-    at, reclaimed: num(obj.reclaimed), spawned: num(obj.spawned),
-    active: num(obj.active), reaped: num(obj.reaped),
+    at, reclaimed: num(obj.reclaimed), killed: num(obj.killed), stuck: num(obj.stuck),
+    spawned: num(obj.spawned), active: num(obj.active), reaped: num(obj.reaped),
   };
 }

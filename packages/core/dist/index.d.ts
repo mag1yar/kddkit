@@ -269,8 +269,25 @@ declare const DEFAULT_TTL: number;
 declare const MAX_FAILED_ATTEMPTS = 3;
 declare function recordFailedAttempt(db: Database.Database, id: number, actor: Actor, reason: string): void;
 declare function releaseClaim(db: Database.Database, id: number, actor: Actor, reason: string): void;
-declare function reclaimExpired(db: Database.Database): number[];
-declare function claimTask(db: Database.Database, id: number, actor: Actor, ttl?: number): {
+interface ReclaimedLease {
+    id: number;
+    claimed_by: string | null;
+}
+type KillOutcome = 'gone' | 'absent' | 'stuck';
+type KillFn = (taskId: number) => KillOutcome;
+declare function expiredLeases(db: Database.Database): ReclaimedLease[];
+declare function reclaimExpired(db: Database.Database, opts?: {
+    except?: ReadonlySet<number>;
+}): ReclaimedLease[];
+interface ReapResult {
+    reclaimed: ReclaimedLease[];
+    killed: number;
+    stuck: number;
+}
+declare function reapExpired(db: Database.Database, kill?: KillFn): ReapResult;
+declare function claimTask(db: Database.Database, id: number, actor: Actor, ttl?: number, opts?: {
+    kill?: KillFn;
+}): {
     ok: true;
     task: Task;
 } | {
@@ -279,8 +296,11 @@ declare function claimTask(db: Database.Database, id: number, actor: Actor, ttl?
 };
 declare function claimNext(db: Database.Database, actor: Actor, ttl?: number, opts?: {
     reclaim?: boolean;
+    kill?: KillFn;
 }): Task | null;
-declare function renewClaim(db: Database.Database, id: number, actor: Actor, ttl?: number): {
+declare function renewClaim(db: Database.Database, id: number, actor: Actor, ttl?: number, opts?: {
+    log?: boolean;
+}): {
     ok: true;
     task: Task;
 } | {
@@ -290,6 +310,8 @@ declare function renewClaim(db: Database.Database, id: number, actor: Actor, ttl
 
 interface TickResult {
     reclaimed: number;
+    killed: number;
+    stuck: number;
     spawned: number;
     active: number;
 }
@@ -299,6 +321,7 @@ declare function tick(db: Database.Database, opts: {
     ttl: number;
     projectDir: string;
     spawn: SpawnFn;
+    kill?: KillFn;
 }): TickResult;
 
 type AgentEventKind = 'run_start' | 'text' | 'tool_start' | 'tool_finish' | 'error' | 'run_end';
@@ -337,7 +360,7 @@ declare function worktreePath(dbPath: string, taskId: number, title: string): st
 declare function headCommit(repoRoot: string): string;
 declare function taskBranchHead(repoRoot: string, taskId: number): string | null;
 declare function ensureWorktree(repoRoot: string, dbPath: string, taskId: number, title: string): string;
-declare function sweepWorktrees(db: Database.Database, repoRoot: string): number;
+declare function sweepWorktrees(db: Database.Database, repoRoot: string, isBusy?: (taskId: number) => boolean): number;
 
 /** Версия kdd. Все пакеты бампаются в локстепе (bumpp --all), поэтому версия core — общая. */
 declare function kddVersion(): string;
@@ -402,6 +425,8 @@ interface AutoTick {
 interface TickRun {
     at: number;
     reclaimed: number;
+    killed: number;
+    stuck: number;
     spawned: number;
     active: number;
     reaped: number;
@@ -415,4 +440,4 @@ declare function setLastRun(db: Database.Database, run: TickRun): void;
 declare function maxWorkers(db: Database.Database): number;
 declare const maxWorkersEnvLocked: () => boolean;
 
-export { type Actor, type AgentEvent, type AgentEventKind, type AutoTick, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionInput, type EventRow, KddError, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type RecallHit, type Release, type ReleaseInfo, type RunResult, STATUSES, type SpawnFn, type Status, TICK_INTERVALS, TRANSITIONS, type Task, type TaskDetailCapped, type TaskListRow, type TickResult, type TickRun, type Track, _cacheUntil, _resetCache, addCriterion, addDecision, addTask, appendAgentEvent, appendEvent, archiveTask, authorOf, blockTask, boardData, capText, checkMove, claimNext, claimTask, commentTask, compareVersions, contentHash, createTrack, deleteTrack, editTask, editTrack, ensureWorktree, exportBoard, getAutoTick, getLastRun, headCommit, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listProjects, listTracks, logError, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, now, openDb, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, projectPathOf, projectToplevelOf, rebuild, recall, reclaimExpired, recordFailedAttempt, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, slugify, statusDigest, sweepWorktrees, syncIndex, taskBranchHead, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, worktreePath };
+export { type Actor, type AgentEvent, type AgentEventKind, type AutoTick, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionInput, type EventRow, KddError, type KillFn, type KillOutcome, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RunResult, STATUSES, type SpawnFn, type Status, TICK_INTERVALS, TRANSITIONS, type Task, type TaskDetailCapped, type TaskListRow, type TickResult, type TickRun, type Track, _cacheUntil, _resetCache, addCriterion, addDecision, addTask, appendAgentEvent, appendEvent, archiveTask, authorOf, blockTask, boardData, capText, checkMove, claimNext, claimTask, commentTask, compareVersions, contentHash, createTrack, deleteTrack, editTask, editTrack, ensureWorktree, expiredLeases, exportBoard, getAutoTick, getLastRun, headCommit, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listProjects, listTracks, logError, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, now, openDb, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, projectPathOf, projectToplevelOf, reapExpired, rebuild, recall, reclaimExpired, recordFailedAttempt, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, slugify, statusDigest, sweepWorktrees, syncIndex, taskBranchHead, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, worktreePath };

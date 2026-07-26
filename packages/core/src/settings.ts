@@ -10,7 +10,9 @@ export interface AutoTick { enabled: boolean; intervalSec: number; maxWorkers: n
 
 export interface TickRun {
   at: number; // секунды, как все таймстемпы в kdd
-  reclaimed: number; spawned: number; active: number; reaped: number;
+  // stuck — воркер пережил SIGKILL и всё ещё держит слот: единственный сигнал доски о том,
+  // что чинить надо руками. Поле обязательное, чтобы ни один продюсер TickRun о нём не забыл.
+  reclaimed: number; killed: number; stuck: number; spawned: number; active: number; reaped: number;
   skipped?: boolean; // проход не состоялся: TICK_LOCK держит другой процесс
   error?: string;
 }

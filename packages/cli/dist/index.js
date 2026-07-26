@@ -15,6 +15,7 @@ import {
   addTask,
   appendAgentEvent,
   archiveTask,
+  authorOf,
   blockTask,
   boardData,
   claimNext,
@@ -85,6 +86,66 @@ function fail(msg, json) {
   if (json) console.log(JSON.stringify({ error: msg }));
   else console.error(`error: ${msg}`);
   process.exit(1);
+}
+
+// src/procs.ts
+import { execFileSync } from "child_process";
+import { createHash } from "crypto";
+var workerTag = (taskId, dbPath) => `kdd-worker-${taskId}@${createHash("sha256").update(dbPath).digest("hex").slice(0, 12)}`;
+var psAll = () => execFileSync(
+  "ps",
+  ["-eo", "pid=,pgid=,args="],
+  { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }
+);
+function parsePs(out2) {
+  const rows = [];
+  for (const line of out2.split("\n")) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (m) rows.push({ pid: Number(m[1]), pgid: Number(m[2]), args: m[3] });
+  }
+  return rows;
+}
+function scan(tag, ps) {
+  const rows = parsePs(ps());
+  return {
+    // Подстроки достаточно: хвост `@<hash>` делает метку задачи 8 не префиксом метки задачи 85.
+    hits: rows.filter((r) => r.args.includes(tag)).map((r) => ({ pid: r.pid, pgid: r.pgid })),
+    own: rows.find((r) => r.pid === process.pid)?.pgid
+  };
+}
+function findWorker(tag, ps = psAll) {
+  return scan(tag, ps).hits;
+}
+function workerAlive(tag, ps = psAll) {
+  try {
+    return findWorker(tag, ps).length > 0;
+  } catch {
+    return true;
+  }
+}
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+function signalGroup(pgid, sig, own) {
+  if (pgid <= 1 || pgid === own) return;
+  try {
+    process.kill(-pgid, sig);
+  } catch (e) {
+    if (e.code !== "ESRCH") throw e;
+  }
+}
+function killWorker(tag, opts = {}) {
+  const { ps = psAll, termWaitMs = 2e3, killWaitMs = 500 } = opts;
+  const pgids = (procs) => [...new Set(procs.map((p) => p.pgid))];
+  const { hits: first, own } = scan(tag, ps);
+  if (!first.length) return "absent";
+  for (const pgid of pgids(first)) signalGroup(pgid, "SIGTERM", own);
+  sleepSync(termWaitMs);
+  const left = findWorker(tag, ps);
+  if (!left.length) return "gone";
+  for (const pgid of pgids(left)) signalGroup(pgid, "SIGKILL", own);
+  sleepSync(killWaitMs);
+  return findWorker(tag, ps).length ? "stuck" : "gone";
 }
 
 // src/render.ts
@@ -207,7 +268,7 @@ import { now as now2 } from "@kddkit/core";
 
 // src/tick-output.ts
 function parseTickOutput(out2, err, code, at) {
-  const zero = { at, reclaimed: 0, spawned: 0, active: 0, reaped: 0 };
+  const zero = { at, reclaimed: 0, killed: 0, stuck: 0, spawned: 0, active: 0, reaped: 0 };
   let parsed;
   try {
     parsed = JSON.parse(out2);
@@ -225,6 +286,8 @@ function parseTickOutput(out2, err, code, at) {
   return {
     at,
     reclaimed: num(obj.reclaimed),
+    killed: num(obj.killed),
+    stuck: num(obj.stuck),
     spawned: num(obj.spawned),
     active: num(obj.active),
     reaped: num(obj.reaped)
@@ -274,13 +337,15 @@ function createTickRunner(scriptPath, killTimeoutMs, spawnFn = spawnProcess, kil
       resolve(run2);
     };
     child.on("error", (e) => {
-      settle({ at: now2(), reclaimed: 0, spawned: 0, active: 0, reaped: 0, error: e.message });
+      settle({ at: now2(), reclaimed: 0, killed: 0, stuck: 0, spawned: 0, active: 0, reaped: 0, error: e.message });
     });
     child.on("close", (code) => {
       if (timedOut) {
         settle({
           at: now2(),
           reclaimed: 0,
+          killed: 0,
+          stuck: 0,
           spawned: 0,
           active: 0,
           reaped: 0,
@@ -303,15 +368,17 @@ function readBody(opts) {
   if (opts.body === "-") return readFileSync(0, "utf8");
   return opts.body;
 }
-var WORKER_PROMPT = process.env.KDD_WORKER_PROMPT ?? `You are a kdd agent worker. Read your task: run \`kdd show $KDD_TASK_ID\`. Do the work in this repository. Renew your lease periodically with \`kdd claim $KDD_TASK_ID --renew\` \u2014 if that errors you have LOST the lease, stop immediately. When done, leave ONE concise summary comment (\`kdd comment $KDD_TASK_ID "<what you changed and why; caveats or follow-ups>"\`) \u2014 this is the durable note humans and future sessions read, so keep it tight, not a log. Then check acceptance criteria (\`kdd criteria ls $KDD_TASK_ID\`, then \`kdd criteria check $KDD_TASK_ID <criterionId>\` for each one) and \`kdd move $KDD_TASK_ID review\`. If you get blocked or must stop early, comment the reason first.`;
+var runMarker = (tag) => ` Ignore this run marker, it is not part of your task: ${tag}`;
+var workerPrompt = () => `You are a kdd agent worker. Read your task: run \`kdd show $KDD_TASK_ID\`. Do the work in this repository. When done, leave ONE concise summary comment (\`kdd comment $KDD_TASK_ID "<what you changed and why; caveats or follow-ups>"\`) \u2014 this is the durable note humans and future sessions read, so keep it tight, not a log. Then check acceptance criteria (\`kdd criteria ls $KDD_TASK_ID\`, then \`kdd criteria check $KDD_TASK_ID <criterionId>\` for each one) and \`kdd move $KDD_TASK_ID review\`. If you get blocked or must stop early, comment the reason first.`;
 var sq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
-var DEFAULT_SPAWN_CMD = `${sq(process.execPath)} ${sq(fileURLToPath(import.meta.url))} worker "$KDD_TASK_ID"`;
+var defaultSpawnCmd = (taskId, tag) => `${sq(process.execPath)} ${sq(fileURLToPath(import.meta.url))} worker ${taskId} --tag ${tag}`;
 var TICK_LOCK_STALE = 10 * 60 * 1e3;
 var TICK_KILL_TIMEOUT = 5 * 60 * 1e3;
-function spawnWorker(taskId, workerId, projectDir) {
-  const cmd = process.env.KDD_SPAWN_CMD ?? DEFAULT_SPAWN_CMD;
+function spawnWorker(taskId, workerId, projectDir, tag) {
+  const cmd = process.env.KDD_SPAWN_CMD ?? defaultSpawnCmd(taskId, tag);
   const shell = process.env.SHELL || "/bin/sh";
-  const child = spawnProcess2(shell, ["-lc", cmd], {
+  const ident = `export KDD_TASK_ID=${sq(String(taskId))} KDD_ACTOR=ai KDD_SESSION=${sq(workerId)}; `;
+  const child = spawnProcess2(shell, ["-lc", ident + cmd], {
     cwd: projectDir,
     env: { ...process.env, KDD_TASK_ID: String(taskId), KDD_ACTOR: "ai", KDD_SESSION: workerId },
     detached: true,
@@ -324,6 +391,10 @@ function spawnWorker(taskId, workerId, projectDir) {
   child.unref();
 }
 var tickRunner = createTickRunner(fileURLToPath(import.meta.url), TICK_KILL_TIMEOUT);
+var killerFor = (dbPath) => (taskId) => killWorker(workerTag(taskId, dbPath));
+var secondsError = (name, v) => Number.isFinite(v) && v > 0 ? null : `invalid ${name} '${process.env[name]}' (seconds > 0)`;
+var ttlError = (ttl) => secondsError("KDD_WORKER_TTL", ttl);
+var DEFAULT_IDLE = 1800;
 function run(json, fn) {
   try {
     fn();
@@ -387,8 +458,10 @@ program.command("move").argument("<id>").argument("<status>").option("--reason <
 program.command("claim").argument("[id]", "task id to claim; omit when using --next").option("--next", "claim the top ready task from the queue").option("--renew", "renew the lease on a task you already hold").option("--ttl <seconds>", "lease length in seconds", String(DEFAULT_TTL)).option("--json").action((id, o) => run(o.json, () => {
   const ttl = Number(o.ttl);
   const actor = getActor();
+  const { dbPath, projectPath } = resolveDbPath2();
+  const kill = killerFor(dbPath);
   if (o.next) {
-    const t = withDb((db) => claimNext(db, actor, ttl));
+    const t = withDbAt(dbPath, projectPath, (db) => claimNext(db, actor, ttl, { kill }));
     if (!t) {
       out(o.json, { task: null }, () => "no ready task");
       return;
@@ -397,7 +470,7 @@ program.command("claim").argument("[id]", "task id to claim; omit when using --n
     return;
   }
   if (!id) throw new KddError2("give a task id or use --next");
-  const res = withDb((db) => o.renew ? renewClaim(db, parseId(id), actor, ttl) : claimTask(db, parseId(id), actor, ttl));
+  const res = withDbAt(dbPath, projectPath, (db) => o.renew ? renewClaim(db, parseId(id), actor, ttl) : claimTask(db, parseId(id), actor, ttl, { kill }));
   if (!res.ok) {
     fail(res.error, o.json);
     return;
@@ -409,7 +482,9 @@ program.command("tick").description("agent-mode: reclaim expired leases, claim r
   if (o.watch && (!Number.isFinite(intervalMs) || intervalMs <= 0)) {
     fail(`--interval must be a positive number of seconds (got '${o.interval}')`, o.json);
   }
-  const ttl = Number(process.env.KDD_WORKER_TTL ?? 1800);
+  const ttl = Number(process.env.KDD_WORKER_TTL ?? DEFAULT_TTL);
+  const badTtl = ttlError(ttl);
+  if (badTtl) fail(badTtl, o.json);
   if (process.env.KDD_MAX_WORKERS !== void 0) {
     const n = Number(process.env.KDD_MAX_WORKERS);
     if (!Number.isInteger(n) || n < 1) {
@@ -429,8 +504,15 @@ program.command("tick").description("agent-mode: reclaim expired leases, claim r
       const toplevel = resolveToplevel();
       return withDbAt(dbPath, projectPath, (db) => {
         if (!process.env.KDD_TICK_SPAWNED) setProjectToplevel(db, toplevel);
-        const t = tick(db, { maxWorkers: maxWorkers(db), ttl, projectDir: toplevel, spawn: spawnWorker });
-        return { ...t, reaped: sweepWorktrees(db, toplevel) };
+        const tagOf = (taskId) => workerTag(taskId, dbPath);
+        const t = tick(db, {
+          maxWorkers: maxWorkers(db),
+          ttl,
+          projectDir: toplevel,
+          spawn: (taskId, workerId, dir) => spawnWorker(taskId, workerId, dir, tagOf(taskId)),
+          kill: killerFor(dbPath)
+        });
+        return { ...t, reaped: sweepWorktrees(db, toplevel, (taskId) => workerAlive(tagOf(taskId))) };
       });
     } finally {
       release();
@@ -440,7 +522,7 @@ program.command("tick").description("agent-mode: reclaim expired leases, claim r
     const ts = o.watch ? (/* @__PURE__ */ new Date()).toISOString() : "";
     out(o.json, o.watch ? { ...r, ts } : r, () => {
       const stamp = o.watch ? `[${ts}] ` : "";
-      return r.skipped ? `${stamp}tick: locked (another tick running)` : `${stamp}tick: reclaimed ${r.reclaimed}, spawned ${r.spawned}, active ${r.active}, reaped ${r.reaped}`;
+      return r.skipped ? `${stamp}tick: locked (another tick running)` : `${stamp}tick: reclaimed ${r.reclaimed}, killed ${r.killed}, stuck ${r.stuck}, spawned ${r.spawned}, active ${r.active}, reaped ${r.reaped}`;
     });
   };
   const pass = () => {
@@ -486,7 +568,7 @@ program.command("tick").description("agent-mode: reclaim expired leases, claim r
     process.off("SIGTERM", onSig);
   }
 });
-program.command("worker").argument("<id>").description("agent-mode supervisor: run claude on a task, ingest its stream into agent_events").action(async (id) => {
+program.command("worker").argument("<id>").option("--tag <tag>", "ps-visible run marker used to find this worker (set by kdd tick)").description("agent-mode supervisor: run claude on a task, ingest its stream into agent_events").action(async (id, o) => {
   const workerId = process.env.KDD_SESSION ?? `manual:${process.pid}`;
   let db;
   try {
@@ -496,24 +578,45 @@ program.command("worker").argument("<id>").description("agent-mode supervisor: r
     const claudeCmd = process.env.KDD_CLAUDE_CMD ?? "claude";
     const allowed = process.env.KDD_ALLOWED_TOOLS ?? "Bash Read Edit Write Grep Glob";
     const [bin, ...pre] = claudeCmd.split(/\s+/);
+    db = openDb2(dbPath, projectPath);
+    const task = mustGetTask(db, taskId);
+    const workdir = ensureWorktree(toplevel, dbPath, taskId, task.title);
+    const actor = getActor();
+    const ttl = Number(process.env.KDD_WORKER_TTL ?? DEFAULT_TTL);
+    const bad = ttlError(ttl);
+    if (bad) throw new KddError2(bad);
+    const idle = Number(process.env.KDD_WORKER_IDLE ?? DEFAULT_IDLE);
+    const badIdle = secondsError("KDD_WORKER_IDLE", idle);
+    if (badIdle) throw new KddError2(badIdle);
+    const holdsLease = task.claimed_by === authorOf(actor);
+    const leaseMismatch = !holdsLease && task.claimed_by !== null ? `held by ${task.claimed_by}, we are ${authorOf(actor)} \u2014 heartbeat disarmed, the lease will expire under a live agent (check KDD_ACTOR/KDD_SESSION in your shell profile)` : null;
+    if (leaseMismatch) process.stderr.write(`kdd worker: task #${taskId} ${leaseMismatch}
+`);
+    const marker = o.tag ?? (holdsLease ? workerTag(taskId, dbPath) : `kdd-worker-manual-${taskId}-${process.pid}`);
+    const prompt = (process.env.KDD_WORKER_PROMPT ?? workerPrompt()) + runMarker(marker);
     const args = [
       ...pre,
       "-p",
-      WORKER_PROMPT,
+      prompt,
       "--output-format",
       "stream-json",
       "--verbose",
       "--allowedTools",
       allowed
     ];
-    db = openDb2(dbPath, projectPath);
-    const task = mustGetTask(db, taskId);
-    const workdir = ensureWorktree(toplevel, dbPath, taskId, task.title);
     await new Promise((resolve) => {
       appendAgentEvent(db, taskId, workerId, "run_start", { detail: { head: headCommit(workdir) } });
+      if (leaseMismatch) {
+        appendAgentEvent(db, taskId, workerId, "error", { detail: { message: leaseMismatch } });
+      }
       const child = spawnProcess2(bin, args, {
         cwd: workdir,
         stdio: ["ignore", "pipe", "inherit"],
+        // Своя процессная группа (B3): всё, что claude поднимет через Bash и что переживёт его
+        // самого, сигнала по одному pid не получит, а метки рана в argv не несёт — значит и
+        // findWorker его больше не увидит. Порты и CPU держались бы до перезагрузки.
+        // killWorker это не ломает: он ищет claude по метке в промпте и берёт ЕГО pgid.
+        detached: true,
         // KDD_ACTOR/KDD_SESSION НЕ хардкодим здесь — они текут из окружения самого воркера.
         // Tick-путь: tick уже выставил их (ai / tick:<nonce>-<i>) на процессе воркера, ...process.env
         // их пробрасывает — ai-gating на move-to-review сохраняется. Ручной `kdd worker <id>`
@@ -522,10 +625,56 @@ program.command("worker").argument("<id>").description("agent-mode supervisor: r
         // KDD_SESSION — воркер claim'ом сознательно не владеет, им владеет tick.
         env: { ...process.env, KDD_TASK_ID: String(taskId) }
       });
+      let stopping = false;
+      const stopAgent = () => {
+        if (stopping || !child.pid) return;
+        stopping = true;
+        signalGroup(child.pid, "SIGTERM");
+        setTimeout(() => signalGroup(child.pid, "SIGKILL"), 2e3).unref();
+      };
+      const onSig = () => {
+        stopAgent();
+      };
+      process.on("SIGINT", onSig);
+      process.on("SIGTERM", onSig);
+      const beat = holdsLease ? setInterval(() => {
+        try {
+          const r = renewClaim(db, taskId, actor, ttl, { log: false });
+          if (r.ok) return;
+          clearInterval(beat);
+          stopAgent();
+          appendAgentEvent(db, taskId, workerId, "error", { detail: { message: r.error } });
+        } catch (e) {
+          process.stderr.write(
+            `kdd worker: heartbeat failed: ${e instanceof Error ? e.message : String(e)}
+`
+          );
+        }
+      }, Math.max(1, Math.floor(ttl / 3)) * 1e3) : void 0;
+      beat?.unref();
+      let lastLine = Date.now();
+      const watchdog = setInterval(() => {
+        if (Date.now() - lastLine < idle * 1e3) return;
+        clearInterval(watchdog);
+        if (beat) clearInterval(beat);
+        appendAgentEvent(
+          db,
+          taskId,
+          workerId,
+          "error",
+          { detail: { message: `agent produced no output for ${idle}s \u2014 wedged, stopping the run` } }
+        );
+        stopAgent();
+      }, Math.max(1, Math.floor(idle / 3)) * 1e3);
+      watchdog.unref();
       let ended = false;
       const end = (exitCode) => {
         if (ended) return;
         ended = true;
+        if (beat) clearInterval(beat);
+        clearInterval(watchdog);
+        process.off("SIGINT", onSig);
+        process.off("SIGTERM", onSig);
         let head;
         try {
           head = taskBranchHead(toplevel, taskId) ?? headCommit(workdir);
@@ -540,6 +689,7 @@ program.command("worker").argument("<id>").description("agent-mode supervisor: r
       });
       const rl = createInterface({ input: child.stdout });
       rl.on("line", (line) => {
+        lastLine = Date.now();
         for (const ev of parseClaudeStreamLine(line)) appendAgentEvent(db, taskId, workerId, ev.kind, ev);
       });
       child.on("close", (code) => {

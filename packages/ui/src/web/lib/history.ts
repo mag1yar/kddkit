@@ -77,9 +77,9 @@ export function groupHistory(events: RawEvent[]): HistoryDay[] {
     }
     const text = fmtEvent(e);
     const prev = group.rows[group.rows.length - 1];
-    // claim_renewed капает каждые ~25 с: за десятиминутный прогон это два десятка
-    // одинаковых строк. Схлопываем по тексту, а не по action — два разных критерия
-    // с одним action остаются двумя строками.
+    // Повторы схлопываем по тексту, а не по action — два разных критерия с одним action
+    // остаются двумя строками. (Heartbeat супервизора истории больше не пишет, но серию
+    // одинаковых ручных действий человек всё равно читает как одну строку со счётчиком.)
     if (prev && prev.text === text) { prev.count += 1; continue; }
     group.rows.push({
       id: e.id, action: e.action, text, at: e.created_at, count: 1,

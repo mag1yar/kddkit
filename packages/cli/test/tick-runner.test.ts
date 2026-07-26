@@ -8,12 +8,12 @@ describe('parseTickOutput', () => {
   it('normal result object', () => {
     const r = parseTickOutput(
       JSON.stringify({ reclaimed: 1, spawned: 2, active: 3, reaped: 4 }), '', 0, 100);
-    expect(r).toEqual({ at: 100, reclaimed: 1, spawned: 2, active: 3, reaped: 4 });
+    expect(r).toEqual({ at: 100, reclaimed: 1, killed: 0, stuck: 0, spawned: 2, active: 3, reaped: 4 });
   });
 
   it('{"skipped":true} → skipped, not an error (a held lock is not a failure)', () => {
     const r = parseTickOutput(JSON.stringify({ skipped: true }), '', 0, 100);
-    expect(r).toEqual({ at: 100, reclaimed: 0, spawned: 0, active: 0, reaped: 0, skipped: true });
+    expect(r).toEqual({ at: 100, reclaimed: 0, killed: 0, stuck: 0, spawned: 0, active: 0, reaped: 0, skipped: true });
   });
 
   it('output that is not JSON at all → error, code 0', () => {
@@ -56,12 +56,41 @@ describe('parseTickOutput', () => {
 
   it('missing numeric fields default to 0', () => {
     const r = parseTickOutput('{}', '', 0, 100);
-    expect(r).toEqual({ at: 100, reclaimed: 0, spawned: 0, active: 0, reaped: 0 });
+    expect(r).toEqual({ at: 100, reclaimed: 0, killed: 0, stuck: 0, spawned: 0, active: 0, reaped: 0 });
   });
 
   it('at is passed through in seconds, not derived internally', () => {
     const r = parseTickOutput('{}', '', 0, 1700000000);
     expect(r.at).toBe(1700000000);
+  });
+});
+
+describe('parseTickOutput killed', () => {
+  it('carries killed through', () => {
+    const r = parseTickOutput(
+      JSON.stringify({ reclaimed: 2, killed: 1, spawned: 1, active: 3, reaped: 0 }), '', 0, 100);
+    expect(r.killed).toBe(1);
+  });
+
+  it('defaults to 0 when an older tick omits it', () => {
+    const r = parseTickOutput(JSON.stringify({ reclaimed: 0, spawned: 0, active: 0, reaped: 0 }), '', 0, 100);
+    expect(r.killed).toBe(0);
+  });
+});
+
+// stuck = «воркер пережил SIGKILL и всё ещё держит слот». Единственный сигнал об этом на доске,
+// поэтому он обязан доехать до UI, а не потеряться в парсере.
+describe('parseTickOutput stuck', () => {
+  it('carries stuck through', () => {
+    const r = parseTickOutput(
+      JSON.stringify({ reclaimed: 1, killed: 0, stuck: 2, spawned: 0, active: 1, reaped: 0 }), '', 0, 100);
+    expect(r.stuck).toBe(2);
+  });
+
+  it('defaults to 0 when an older binary omits it — 0, не undefined', () => {
+    const r = parseTickOutput(JSON.stringify({ reclaimed: 0, killed: 0, spawned: 0, active: 0, reaped: 0 }),
+      '', 0, 100);
+    expect(r.stuck).toBe(0);
   });
 });
 
