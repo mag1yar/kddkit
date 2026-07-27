@@ -6,7 +6,7 @@ import type Database from 'better-sqlite3';
 import { serve } from '@hono/node-server';
 import { Hono, type Context } from 'hono';
 import {
-  KddError, addCriterion, addTask, blockTask, boardData, commentTask, createTrack, deleteTrack,
+  KddError, addCriterion, addTask, blockTask, boardData, closeDb, commentTask, createTrack, deleteTrack,
   editTask, editTrack, getAutoTick, getLastRun, kddHome, listAgentEvents, listProjects, listTracks,
   maxWorkers, maxWorkersEnvLocked, moveTask, openDb, placeTask, releaseInfo, removeCriterion,
   setAutoTick, setCriterionChecked, taskDetail, unblockTask, type Priority,
@@ -54,7 +54,9 @@ export function projectPool(defaultHash: string, opts: { lockToDefault?: boolean
   return {
     getDb: (c: Context) => get(opts.lockToDefault ? defaultHash : c.req.query('project') || defaultHash),
     get,
-    closeAll: () => { for (const d of pool.values()) d.close(); },
+    // closeDb, а не close: сервер — самый долгоживущий клиент доски, и его выход единственный
+    // момент, когда WAL можно обрезать наверняка.
+    closeAll: () => { for (const d of pool.values()) closeDb(d); },
   };
 }
 

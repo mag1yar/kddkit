@@ -8,7 +8,7 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import lockfile from 'proper-lockfile';
 import {
-  KddError, addCriterion, addDecision, addTask, appendAgentEvent, archiveTask, authorOf, blockTask,
+  KddError, addCriterion, addDecision, addTask, appendAgentEvent, archiveTask, authorOf, blockTask, closeDb,
   boardData, claimNext, claimTask, commentTask, createTrack, deleteTrack, DEFAULT_TTL, editTask,
   editTrack, ensureWorktree, exportBoard, headCommit, kddVersion, linkTasks, listAgentEvents, listCriteria, listProjects, taskBranchHead,
   listTracks, maxWorkers, moveTask, mustGetTask, openDb, parseClaudeStreamLine, rebuild, recall, removeCriterion,
@@ -542,15 +542,25 @@ program.command('worker')
         const rl = createInterface({ input: child.stdout! });
         rl.on('line', (line) => {
           lastLine = Date.now(); // поток агента И ЕСТЬ сигнал живости — другого у супервизора нет
-          for (const ev of parseClaudeStreamLine(line)) appendAgentEvent(db!, taskId, workerId, ev.kind, ev);
+          // Запись фида — не повод убить ран: колбэк readline ничем не обёрнут, и брошенное
+          // отсюда исключение роняет весь супервизор, оставляя claude сиротой без run_end.
+          // А SQLITE_BUSY тут реален: рядом ротация в tick и соседние воркеры, busy_timeout 5с.
+          // Фид — Tier1-наблюдаемость, его потеря стоит строчки в логе, не рана.
+          try {
+            for (const ev of parseClaudeStreamLine(line)) appendAgentEvent(db!, taskId, workerId, ev.kind, ev);
+          } catch (e) {
+            process.stderr.write(`kdd worker: feed write failed: ${e instanceof Error ? e.message : String(e)}\n`);
+          }
         });
         child.on('close', (code) => { rl.close(); end(code); });
       });
     } catch (e) {
-      db?.close();
+      if (db) closeDb(db);
       fail(e instanceof KddError ? e.message : String(e), false); // fail() exits — no fallthrough
     }
-    db?.close();
+    // closeDb: воркер — самый пишущий клиент доски (весь фид стрима идёт через него), и его
+    // выход единственный момент, когда WAL точно можно обрезать.
+    if (db) closeDb(db);
   });
 
 program.command('feed')

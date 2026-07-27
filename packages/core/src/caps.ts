@@ -17,6 +17,14 @@ export const CAPS = {
   recallBytes: 4096,       // бюджет текстовой выдачи kdd recall
   recallTitleChars: 60,
   trackDescChars: 200,
+  // Единственные капы на ЗАПИСЬ. Всё выше режет выдачу — эти режут то, что вообще ложится в базу:
+  // фид воркера принимает сырой ввод/вывод инструментов, и один `Read` большого файла кладёт
+  // сотни КБ одной строкой в базу, которую шарят все worktree проекта.
+  agentFieldChars: 4096,   // строковый лист в detail (вывод тула, аргумент, текст ответа)
+  agentDetailItems: 64,    // элементов массива в detail — content-блоков у тула бывает много
+  agentDetailBytes: 65536, // весь detail после капа листьев; выше — пишем только размер
+  agentEventDays: 7,       // столько живёт подробный фид завершённой задачи (см. pruneAgentEvents)
+  agentPruneBatch: 5000,   // строк за один проход ротации: DELETE держит write-lock, рядом пишут воркеры
 } as const;
 
 export function capText(s: string, n: number): string {

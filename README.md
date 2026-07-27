@@ -144,6 +144,13 @@ and committing.
   really does opt out: kdd no longer builds the command line, so a custom spawn carries no run
   marker and its workers are never killed on reclaim — your spawn, your lifecycle.
 
+**Feed hygiene.** A worker's activity feed carries raw tool input and output, so kdd caps each
+value before it reaches the store (4 KB per string, 64 KB per event) and redacts well-known secret
+shapes — API keys, GitHub/Slack tokens, JWTs, private key blocks, `*_TOKEN=`-style env lines — on
+the way in. Best-effort, not a guarantee: the point is not to keep the obvious ones forever in a
+file that gets backed up and shared. Seven days after a task is done or archived, `kdd tick` drops
+the verbose part of its feed; the run skeleton (`run_start`, `run_end`, errors) stays.
+
 **Worker contract.** A spawned worker gets only `KDD_TASK_ID` + actor env — never the task body
 (pull-context). It must:
 
@@ -170,6 +177,11 @@ is retried on the next tick; after 3 failed attempts it is auto-blocked for a hu
 
 - **Store:** `~/.kdd/<repo-hash>/kdd.db` (override the root with `KDD_HOME`).
 - **Decisions:** `.planning/decisions/` in your repo, versioned with your code.
+
+To copy a board, copy it with SQLite, not with `cp`: the store runs in WAL mode, and recent
+writes — sometimes all of them — live in the `-wal` file next to it. `sqlite3 kdd.db "VACUUM INTO
+'copy.db'"` writes one consistent file; `cp kdd.db` alone can silently lose everything since the
+last checkpoint. kdd itself already does this wherever it copies the board.
 
 ## Layout
 

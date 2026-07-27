@@ -211,6 +211,30 @@ export function openDb(dbPath: string, projectPath?: string): Database.Database 
   return db;
 }
 
+// Слить WAL в базу и обрезать сам файл. Авточекпоинт (PASSIVE) переиспользует место внутри
+// WAL, но НИКОГДА не уменьшает файл: у доски этого репо было 1.1M базы при 4.6M WAL, а у
+// пустой — 4K базы при 1.8M. Отсюда же второе: `cp kdd.db` без `-wal` копирует не всё —
+// после чекпоинта копия хотя бы полная. Занятость (чужой ридер в этот момент) — не ошибка:
+// файл подрежет следующий, кто закроется последним.
+export function checkpointWal(db: Database.Database): void {
+  // busy_timeout на время чекпоинта снимаем: TRUNCATE ждёт, пока разойдутся ВСЕ читатели, и с
+  // общими 5 секундами выход из UI с тремя живыми воркерами вис бы по пять секунд на каждый
+  // проект в пуле. Обрезка — оппортунистическая уборка, а не обязательство: не вышло сейчас —
+  // выйдет у того, кто закроется последним.
+  try {
+    db.pragma('busy_timeout = 0');
+    db.pragma('wal_checkpoint(TRUNCATE)');
+  } catch { /* busy — не повод падать на выходе */ }
+  finally { try { db.pragma('busy_timeout = 5000'); } catch { /* уже закрыта */ } }
+}
+
+// Закрытие долгоживущего клиента (сервер UI, `kdd tick --watch`, супервизор воркера):
+// единственный момент, когда обрезать WAL и дёшево, и заведомо безопасно.
+export function closeDb(db: Database.Database): void {
+  checkpointWal(db);
+  db.close();
+}
+
 // Читает project_path напрямую из уже открытой базы — без обхода ~/.kdd через listProjects(),
 // который каждому проекту стоит отдельного readonly-подключения ко всем остальным.
 export function projectPathOf(db: Database.Database): string | null {

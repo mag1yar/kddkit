@@ -21134,7 +21134,20 @@ var CAPS = {
   recallBytes: 4096,
   // бюджет текстовой выдачи kdd recall
   recallTitleChars: 60,
-  trackDescChars: 200
+  trackDescChars: 200,
+  // Единственные капы на ЗАПИСЬ. Всё выше режет выдачу — эти режут то, что вообще ложится в базу:
+  // фид воркера принимает сырой ввод/вывод инструментов, и один `Read` большого файла кладёт
+  // сотни КБ одной строкой в базу, которую шарят все worktree проекта.
+  agentFieldChars: 4096,
+  // строковый лист в detail (вывод тула, аргумент, текст ответа)
+  agentDetailItems: 64,
+  // элементов массива в detail — content-блоков у тула бывает много
+  agentDetailBytes: 65536,
+  // весь detail после капа листьев; выше — пишем только размер
+  agentEventDays: 7,
+  // столько живёт подробный фид завершённой задачи (см. pruneAgentEvents)
+  agentPruneBatch: 5e3
+  // строк за один проход ротации: DELETE держит write-lock, рядом пишут воркеры
 };
 function capText(s, n) {
   if (s.length <= n) return s;
@@ -21397,6 +21410,35 @@ function checkMove(from, to, actor, reason, openCriteria2 = 0, claimedBy = null)
   }
   return { ok: true };
 }
+var SECRETS = [
+  [/-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----/g, "[redacted key]"],
+  [/\bsk-[A-Za-z0-9_-]{16,}/g, "[redacted]"],
+  // openai/anthropic
+  [/\bgh[pousr]_[A-Za-z0-9]{20,}/g, "[redacted]"],
+  // github
+  [/\bAKIA[0-9A-Z]{16}\b/g, "[redacted]"],
+  // aws access key id
+  [/\bxox[baprs]-[A-Za-z0-9-]{10,}/g, "[redacted]"],
+  // slack
+  [/\bey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}/g, "[redacted jwt]"],
+  [/\bBearer\s+[A-Za-z0-9._~+/-]{20,}=*/gi, "Bearer [redacted]"],
+  // Только форма ДАМПА окружения: имя с начала строки, `=` без пробелов, значение без
+  // пробелов. Не «любое упоминание» — ревью поймало, что широкая версия съедала
+  // `API_KEY: string;` и `const GITHUB_TOKEN = cfg.token` в обычном исходнике, который
+  // агент правит через Edit. Редакция стоит ДО записи, то есть портила бы файл навсегда:
+  // читающий фид не отличил бы правку аннотации типа от правки секрета. Двоеточие ушло
+  // целиком (YAML-секрет реже, чем TS-аннотация), длина имени ограничена — с ней regex
+  // линеен, а прежний `[A-Z0-9_]*(?:TOKEN|…)` откатывался квадратично.
+  [
+    /^(export\s+)?([A-Z][A-Z0-9_]{0,48}(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|CREDENTIALS?))=(\S{8,})$/gm,
+    "$1$2=[redacted]"
+  ]
+];
+function redact(s) {
+  let out = s;
+  for (const [re, to] of SECRETS) out = out.replace(re, to);
+  return out;
+}
 function mustGetTrack(db, id) {
   const t = db.prepare(`SELECT * FROM tracks WHERE id = ?`).get(id);
   if (!t) throw new KddError(`track #${id} not found`);
@@ -21456,11 +21498,12 @@ function editTask(db, id, patch, actor) {
 }
 function commentTask(db, id, body, actor) {
   if (!body.trim()) throw new KddError("comment must not be empty");
+  const text = actor.type === "ai" ? redact(body) : body;
   return db.transaction(() => {
     mustGetTask(db, id);
     const r = db.prepare(
       `INSERT INTO comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)`
-    ).run(id, authorOf(actor), body, now());
+    ).run(id, authorOf(actor), text, now());
     appendEvent(db, id, actor, "commented");
     return db.prepare(`SELECT * FROM comments WHERE id = ?`).get(Number(r.lastInsertRowid));
   })();

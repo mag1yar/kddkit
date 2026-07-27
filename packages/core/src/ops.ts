@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { redact } from './agent_events.js';
 import { now } from './db.js';
 import { KddError } from './errors.js';
 import { checkMove, PRIORITIES, STATUSES, type Actor, type Priority, type Status } from './state.js';
@@ -90,11 +91,15 @@ export function commentTask(
   db: Database.Database, id: number, body: string, actor: Actor,
 ): Comment {
   if (!body.trim()) throw new KddError('comment must not be empty');
+  // Воркеру промптом велено оставить итоговый комментарий — и он приходит в ту же базу мимо
+  // редакции фида: агент, вставивший в резюме строку из `env`, клал бы токен навсегда через
+  // соседнюю дверь. Человеку текст не трогаем: он пишет своё, а не пересказывает вывод тулов.
+  const text = actor.type === 'ai' ? redact(body) : body;
   return db.transaction(() => {
     mustGetTask(db, id);
     const r = db.prepare(
       `INSERT INTO comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)`,
-    ).run(id, authorOf(actor), body, now());
+    ).run(id, authorOf(actor), text, now());
     appendEvent(db, id, actor, 'commented');
     return db.prepare(`SELECT * FROM comments WHERE id = ?`)
       .get(Number(r.lastInsertRowid)) as Comment;

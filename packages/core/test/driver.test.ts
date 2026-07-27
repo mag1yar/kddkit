@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { openDb, addTask } from '../src/index.js';
 import {
-  tick, addCriterion, setCriterionChecked, claimTask, reclaimExpired, appendAgentEvent, lastAgentEventKind, now,
+  tick, addCriterion, setCriterionChecked, claimTask, reclaimExpired, appendAgentEvent, lastAgentEventKind,
+  listAgentEvents, moveTask, now,
 } from '../src/index.js';
 
 describe('failed_attempts column', () => {
@@ -191,5 +192,23 @@ describe('tick kills reclaimed workers', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].id).toBe(id);
     expect(rows[0].claimed_by).toMatch(/^ai:tick:/);
+  });
+});
+
+// Хозяйство базы висит на тике намеренно: agent_events рождаются только там, где ходят
+// воркеры, и отдельной команды-уборщика, которую надо помнить запускать, быть не должно.
+describe('tick keeps the store from growing forever', () => {
+  it('prunes the stale feed of a finished task on its way through', () => {
+    const db = openDb(':memory:');
+    const t = addTask(db, { title: 'old' }, { type: 'user' });
+    appendAgentEvent(db, t.id, 'w', 'tool_finish', { detail: { output: 'x'.repeat(1000) } });
+    appendAgentEvent(db, t.id, 'w', 'run_end', { detail: { head: 'aaa' } });
+    moveTask(db, t.id, 'done', { type: 'user' });
+    // срок считается от завершения задачи, а не от возраста строк фида
+    db.prepare(`UPDATE tasks SET updated_at = updated_at - ? WHERE id = ?`).run(30 * 86_400, t.id);
+
+    tick(db, { maxWorkers: 1, ttl: 1800, projectDir: '/tmp', spawn: () => {} });
+
+    expect(listAgentEvents(db, t.id).map((e) => e.kind)).toEqual(['run_end']);
   });
 });

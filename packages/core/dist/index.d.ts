@@ -17,12 +17,19 @@ declare const CAPS: {
     readonly recallBytes: 4096;
     readonly recallTitleChars: 60;
     readonly trackDescChars: 200;
+    readonly agentFieldChars: 4096;
+    readonly agentDetailItems: 64;
+    readonly agentDetailBytes: 65536;
+    readonly agentEventDays: 7;
+    readonly agentPruneBatch: 5000;
 };
 declare function capText(s: string, n: number): string;
 
 declare const now: () => number;
 declare const MIGRATIONS: string[];
 declare function openDb(dbPath: string, projectPath?: string): Database.Database;
+declare function checkpointWal(db: Database.Database): void;
+declare function closeDb(db: Database.Database): void;
 declare function projectPathOf(db: Database.Database): string | null;
 declare function projectToplevelOf(db: Database.Database): string | null;
 declare function setProjectToplevel(db: Database.Database, toplevel: string): void;
@@ -346,9 +353,14 @@ interface ParsedEvent {
     detail?: object;
 }
 declare function parseClaudeStreamLine(line: string): ParsedEvent[];
+declare function redact(s: string): string;
+declare function capDetail(detail: object): string;
 declare function appendAgentEvent(db: Database.Database, taskId: number, workerId: string, kind: AgentEventKind, opts?: {
     name?: string;
     detail?: object;
+}): number;
+declare function pruneAgentEvents(db: Database.Database, days?: 7, opts?: {
+    force?: boolean;
 }): number;
 declare function listAgentEvents(db: Database.Database, taskId: number, opts?: {
     sinceId?: number;
@@ -446,4 +458,4 @@ declare function setLastRun(db: Database.Database, run: TickRun): void;
 declare function maxWorkers(db: Database.Database): number;
 declare const maxWorkersEnvLocked: () => boolean;
 
-export { type Actor, type AgentEvent, type AgentEventKind, type AutoTick, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionInput, type EventRow, KddError, type KillFn, type KillOutcome, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RunResult, STATUSES, type SpawnFn, type Status, type StopResult, TICK_INTERVALS, TRANSITIONS, type Task, type TaskDetailCapped, type TaskListRow, type TickResult, type TickRun, type Track, _cacheUntil, _resetCache, addCriterion, addDecision, addTask, appendAgentEvent, appendEvent, archiveTask, authorOf, blockTask, boardData, capText, checkMove, claimNext, claimTask, commentTask, compareVersions, contentHash, createTrack, deleteTrack, editTask, editTrack, ensureWorktree, expiredLeases, exportBoard, getAutoTick, getLastRun, headCommit, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listProjects, listTracks, logError, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, now, openDb, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, projectPathOf, projectToplevelOf, reapExpired, rebuild, recall, reclaimExpired, recordFailedAttempt, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, slugify, statusDigest, stopWorkers, sweepWorktrees, syncIndex, taskBranchHead, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, worktreePath };
+export { type Actor, type AgentEvent, type AgentEventKind, type AutoTick, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionInput, type EventRow, KddError, type KillFn, type KillOutcome, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RunResult, STATUSES, type SpawnFn, type Status, type StopResult, TICK_INTERVALS, TRANSITIONS, type Task, type TaskDetailCapped, type TaskListRow, type TickResult, type TickRun, type Track, _cacheUntil, _resetCache, addCriterion, addDecision, addTask, appendAgentEvent, appendEvent, archiveTask, authorOf, blockTask, boardData, capDetail, capText, checkMove, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, contentHash, createTrack, deleteTrack, editTask, editTrack, ensureWorktree, expiredLeases, exportBoard, getAutoTick, getLastRun, headCommit, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listProjects, listTracks, logError, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, now, openDb, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, projectPathOf, projectToplevelOf, pruneAgentEvents, reapExpired, rebuild, recall, reclaimExpired, recordFailedAttempt, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, slugify, statusDigest, stopWorkers, sweepWorktrees, syncIndex, taskBranchHead, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, worktreePath };

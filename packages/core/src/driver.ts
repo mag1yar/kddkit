@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
+import { pruneAgentEvents } from './agent_events.js';
 import { claimNext, reapExpired, releaseClaim, type KillFn } from './claim.js';
-import { now } from './db.js';
+import { checkpointWal, now } from './db.js';
 
 // stuck — лизы, чей процесс пережил SIGKILL: слот НЕ отдан, задача осталась in_progress.
 export interface TickResult {
@@ -45,5 +46,11 @@ export function tick(
       break;
     }
   }
+  // Хозяйство базы — здесь, а не отдельной командой: agent_events рождаются только там, где
+  // ходят воркеры, а tick — единственный процесс, который в агент-режиме заведомо запускается
+  // регулярно. Сама ротация ходит не чаще раза в сутки (водяной знак в meta) — тик идёт каждую
+  // минуту, и без него это был бы поминутный перечит фидов всех завершённых задач ради нуля строк.
+  const pruned = pruneAgentEvents(db);
+  if (pruned) checkpointWal(db); // WAL только что подрос на объём удалённого — самое время
   return { reclaimed: reclaimed.length, killed, stuck, spawned, active };
 }

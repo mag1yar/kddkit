@@ -18,6 +18,7 @@ import {
   archiveTask,
   authorOf,
   blockTask,
+  closeDb,
   boardData,
   claimNext,
   claimTask,
@@ -756,7 +757,12 @@ program.command("worker").argument("<id>").option("--tag <tag>", "ps-visible run
       const rl = createInterface({ input: child.stdout });
       rl.on("line", (line) => {
         lastLine = Date.now();
-        for (const ev of parseClaudeStreamLine(line)) appendAgentEvent(db, taskId, workerId, ev.kind, ev);
+        try {
+          for (const ev of parseClaudeStreamLine(line)) appendAgentEvent(db, taskId, workerId, ev.kind, ev);
+        } catch (e) {
+          process.stderr.write(`kdd worker: feed write failed: ${e instanceof Error ? e.message : String(e)}
+`);
+        }
       });
       child.on("close", (code) => {
         rl.close();
@@ -764,10 +770,10 @@ program.command("worker").argument("<id>").option("--tag <tag>", "ps-visible run
       });
     });
   } catch (e) {
-    db?.close();
+    if (db) closeDb(db);
     fail(e instanceof KddError2 ? e.message : String(e), false);
   }
-  db?.close();
+  if (db) closeDb(db);
 });
 program.command("feed").argument("<id>").option("--since <n>", "only events after this id").option("--json").action((id, o) => run(o.json, () => {
   const rows = withDb((db) => listAgentEvents(
