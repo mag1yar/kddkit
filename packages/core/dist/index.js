@@ -1206,6 +1206,24 @@ function exportBoard(db) {
     events: db.prepare(`SELECT * FROM events ORDER BY id`).all()
   };
 }
+function unsubmitted(db, author) {
+  const ids = db.prepare(
+    `SELECT id FROM tasks t
+      WHERE t.status = 'in_progress' AND t.archived_at IS NULL
+        AND EXISTS (SELECT 1 FROM criteria c WHERE c.task_id = t.id)
+        AND NOT EXISTS (SELECT 1 FROM criteria c WHERE c.task_id = t.id AND c.checked_at IS NULL)
+        AND (t.claimed_by IS NULL OR t.claimed_by NOT LIKE 'ai:%' OR t.claimed_by = ?)
+      ORDER BY id`
+  ).all(author);
+  const lastCheck = db.prepare(
+    `SELECT actor_type, actor_id FROM events
+      WHERE task_id = ? AND action = 'criterion_checked' ORDER BY id DESC LIMIT 1`
+  );
+  return ids.filter(({ id }) => {
+    const r = lastCheck.get(id);
+    return !!r && authorOf({ type: r.actor_type, id: r.actor_id ?? void 0 }) === author;
+  }).map(({ id }) => id);
+}
 
 // src/claim.ts
 var DEFAULT_TTL = 15 * 60;
@@ -1764,6 +1782,30 @@ function maxWorkers(db) {
   return n;
 }
 var maxWorkersEnvLocked = () => process.env.KDD_MAX_WORKERS !== void 0;
+var MAX_REMINDED_SESSIONS = 10;
+function getReminded(db, session) {
+  return readReminded(db).find(([s]) => s === session)?.[1] ?? [];
+}
+function setReminded(db, session, ids) {
+  db.transaction(() => {
+    const kept = readReminded(db).filter(([s]) => s !== session);
+    kept.push([session, ids]);
+    writeMeta(
+      db,
+      "stop_reminded",
+      JSON.stringify(kept.slice(Math.max(0, kept.length - MAX_REMINDED_SESSIONS)))
+    );
+  })();
+}
+function readReminded(db) {
+  try {
+    const raw = JSON.parse(readMeta(db, "stop_reminded") ?? "null");
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((e) => Array.isArray(e) && typeof e[0] === "string" && Array.isArray(e[1]));
+  } catch {
+    return [];
+  }
+}
 export {
   BUG_BODY_TEMPLATE,
   CAPS,
@@ -1809,6 +1851,7 @@ export {
   exportBoard,
   getAutoTick,
   getLastRun,
+  getReminded,
   headCommit,
   kddHome,
   kddVersion,
@@ -1855,6 +1898,7 @@ export {
   setCriterionChecked,
   setLastRun,
   setProjectToplevel,
+  setReminded,
   slugify,
   statusDigest,
   stopWorkers,
@@ -1866,5 +1910,6 @@ export {
   tick,
   unarchiveTask,
   unblockTask,
+  unsubmitted,
   worktreePath
 };

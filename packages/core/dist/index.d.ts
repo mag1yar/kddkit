@@ -291,6 +291,20 @@ declare function exportBoard(db: Database.Database): {
     links: unknown[];
     events: EventRow[];
 };
+/**
+ * Задачи, где работа выглядит законченной, а статус — нет: все критерии закрыты, задача
+ * всё ещё в `in_progress`. `author` — тот, кто поставил ПОСЛЕДНЮЮ галку (формат `authorOf`).
+ *
+ * Адресат именно он, а не тот, кто перевёл задачу в работу: в работу её чаще ставит человек
+ * на доске, а потом просит сделать — по такому признаку напоминание не пришло бы никому.
+ * Факт берём из журнала, а не из отдельной колонки: он уже записан и одинаков для всех путей
+ * (CLI, MCP, доска).
+ *
+ * Задача под чужим ai-lease не возвращается: `checkMove` откажет такому актору («lease lost»),
+ * и напоминание стоило бы ему хода на выяснение того, что двигать её нельзя. Условие держим
+ * в тех же терминах, что и fence — user-held и незанятые задачи не трогаем.
+ */
+declare function unsubmitted(db: Database.Database, author: string): number[];
 
 declare const DEFAULT_TTL: number;
 declare const MAX_FAILED_ATTEMPTS = 3;
@@ -477,5 +491,17 @@ declare function getLastRun(db: Database.Database): TickRun | null;
 declare function setLastRun(db: Database.Database, run: TickRun): void;
 declare function maxWorkers(db: Database.Database): number;
 declare const maxWorkersEnvLocked: () => boolean;
+/**
+ * Дедуп Stop-напоминаний (#119): одно напоминание на задачу за сессию. `Stop` срабатывает на
+ * каждом ходу, и хук, повторяющий одно и то же, читается как шум.
+ *
+ * Строка одна на всю базу, но внутри — список пар session/ids, а не одна пара: store keyed по
+ * git-common-dir, так что все воркеры одного репо делят этот `meta`-ключ. Одна пара на всех
+ * значила бы, что вторая параллельная сессия при каждом ходе стирает дедуп первой — и обе
+ * напоминают на каждом ходу вечно, ровно тот шум, для которого дедуп существует. Список с
+ * потолком в MAX_REMINDED_SESSIONS держит строку одной и ограниченной без отдельной таблицы.
+ */
+declare function getReminded(db: Database.Database, session: string): number[];
+declare function setReminded(db: Database.Database, session: string, ids: number[]): void;
 
-export { type Actor, type AgentEvent, type AgentEventKind, type AutoTick, BUG_BODY_TEMPLATE, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionInput, type EventRow, KINDS, KddError, type KillFn, type KillOutcome, type Kind, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RunResult, STATUSES, type SpawnFn, type Status, type StopResult, TICK_INTERVALS, TRANSITIONS, type Task, type TaskDetailCapped, type TaskListRow, type TickResult, type TickRun, type Track, _cacheUntil, _resetCache, addCriterion, addDecision, addTask, agentId, appendAgentEvent, appendEvent, archiveTask, authorOf, blockTask, boardData, capDetail, capText, checkMove, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, contentHash, createTrack, deleteTrack, editTask, editTrack, ensureWorktree, expiredLeases, exportBoard, getAutoTick, getLastRun, headCommit, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listProjects, listTracks, logError, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, now, openDb, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, projectPathOf, projectToplevelOf, pruneAgentEvents, reapExpired, rebuild, recall, reclaimExpired, recordFailedAttempt, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, slugify, statusDigest, stopWorkers, sweepWorktrees, syncIndex, taskBranchHead, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, worktreePath };
+export { type Actor, type AgentEvent, type AgentEventKind, type AutoTick, BUG_BODY_TEMPLATE, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionInput, type EventRow, KINDS, KddError, type KillFn, type KillOutcome, type Kind, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RunResult, STATUSES, type SpawnFn, type Status, type StopResult, TICK_INTERVALS, TRANSITIONS, type Task, type TaskDetailCapped, type TaskListRow, type TickResult, type TickRun, type Track, _cacheUntil, _resetCache, addCriterion, addDecision, addTask, agentId, appendAgentEvent, appendEvent, archiveTask, authorOf, blockTask, boardData, capDetail, capText, checkMove, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, contentHash, createTrack, deleteTrack, editTask, editTrack, ensureWorktree, expiredLeases, exportBoard, getAutoTick, getLastRun, getReminded, headCommit, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listProjects, listTracks, logError, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, now, openDb, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, projectPathOf, projectToplevelOf, pruneAgentEvents, reapExpired, rebuild, recall, reclaimExpired, recordFailedAttempt, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, setReminded, slugify, statusDigest, stopWorkers, sweepWorktrees, syncIndex, taskBranchHead, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, unsubmitted, worktreePath };

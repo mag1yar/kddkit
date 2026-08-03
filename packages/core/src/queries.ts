@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 import { CAPS, capText } from './caps.js';
-import { STATUSES, type Kind, type Status } from './state.js';
+import { authorOf, STATUSES, type Kind, type Status } from './state.js';
 import type { Comment, Criterion, EventRow, Task, TaskListRow } from './types.js';
 import { mustGetTask } from './ops.js';
 import { listCriteria } from './criteria.js';
@@ -120,4 +120,39 @@ export function exportBoard(db: Database.Database): {
     links: db.prepare(`SELECT * FROM task_links`).all(),
     events: db.prepare(`SELECT * FROM events ORDER BY id`).all() as EventRow[],
   };
+}
+
+/**
+ * Задачи, где работа выглядит законченной, а статус — нет: все критерии закрыты, задача
+ * всё ещё в `in_progress`. `author` — тот, кто поставил ПОСЛЕДНЮЮ галку (формат `authorOf`).
+ *
+ * Адресат именно он, а не тот, кто перевёл задачу в работу: в работу её чаще ставит человек
+ * на доске, а потом просит сделать — по такому признаку напоминание не пришло бы никому.
+ * Факт берём из журнала, а не из отдельной колонки: он уже записан и одинаков для всех путей
+ * (CLI, MCP, доска).
+ *
+ * Задача под чужим ai-lease не возвращается: `checkMove` откажет такому актору («lease lost»),
+ * и напоминание стоило бы ему хода на выяснение того, что двигать её нельзя. Условие держим
+ * в тех же терминах, что и fence — user-held и незанятые задачи не трогаем.
+ */
+export function unsubmitted(db: Database.Database, author: string): number[] {
+  const ids = db.prepare(
+    `SELECT id FROM tasks t
+      WHERE t.status = 'in_progress' AND t.archived_at IS NULL
+        AND EXISTS (SELECT 1 FROM criteria c WHERE c.task_id = t.id)
+        AND NOT EXISTS (SELECT 1 FROM criteria c WHERE c.task_id = t.id AND c.checked_at IS NULL)
+        AND (t.claimed_by IS NULL OR t.claimed_by NOT LIKE 'ai:%' OR t.claimed_by = ?)
+      ORDER BY id`,
+  ).all(author) as { id: number }[];
+  const lastCheck = db.prepare(
+    `SELECT actor_type, actor_id FROM events
+      WHERE task_id = ? AND action = 'criterion_checked' ORDER BY id DESC LIMIT 1`,
+  );
+  return ids
+    .filter(({ id }) => {
+      const r = lastCheck.get(id) as
+        { actor_type: 'user' | 'ai'; actor_id: string | null } | undefined;
+      return !!r && authorOf({ type: r.actor_type, id: r.actor_id ?? undefined }) === author;
+    })
+    .map(({ id }) => id);
 }

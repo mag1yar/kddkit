@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import type Database from 'better-sqlite3';
 import { openDb } from '../src/db.js';
 import { addTask, moveTask, blockTask, archiveTask } from '../src/ops.js';
-import { boardData, taskDetail, statusDigest, exportBoard } from '../src/queries.js';
+import { boardData, taskDetail, statusDigest, exportBoard, unsubmitted } from '../src/queries.js';
 import { linkTasks } from '../src/ops.js';
 import { addCriterion, setCriterionChecked } from '../src/criteria.js';
 
@@ -87,5 +87,68 @@ describe('exportBoard', () => {
     const dump = exportBoard(db);
     expect(dump.tasks).toHaveLength(3);
     expect(dump.events.length).toBeGreaterThan(3);
+  });
+});
+
+// #119: «работа закончена, статус нет» — все критерии закрыл этот автор, задача всё ещё в работе.
+describe('unsubmitted', () => {
+  const ai = { type: 'ai' as const, id: 's1' };
+  // задача #1 в работе, один критерий, закрыт агентом s1
+  const setup = (actor: { type: 'ai'; id: string } | { type: 'user' } = ai) => {
+    // guard: setup runs twice on task #1 in one test (второй критерий сценарий) — moveTask на
+    // тот же статус кидает (checkMove: from === to), поэтому двигаем только если ещё не в работе.
+    const t = db.prepare(`SELECT status FROM tasks WHERE id = 1`).get() as { status: string };
+    if (t.status !== 'in_progress') moveTask(db, 1, 'in_progress', user);
+    const c = addCriterion(db, 1, 'тест зелёный', user);
+    return setCriterionChecked(db, 1, c.id, true, actor);
+  };
+
+  it('возвращает задачу, у которой этот автор закрыл последний критерий', () => {
+    setup();
+    expect(unsubmitted(db, 'ai:s1')).toEqual([1]);
+  });
+
+  it('молчит, пока хоть один критерий не проставлен', () => {
+    setup();
+    addCriterion(db, 1, 'документация', user);
+    expect(unsubmitted(db, 'ai:s1')).toEqual([]);
+  });
+
+  it('молчит, когда критериев нет вовсе: сигнала «работа закончена» нет', () => {
+    moveTask(db, 1, 'in_progress', user);
+    expect(unsubmitted(db, 'ai:s1')).toEqual([]);
+  });
+
+  it('молчит, когда последнюю галку поставил кто-то другой', () => {
+    setup(user);
+    expect(unsubmitted(db, 'ai:s1')).toEqual([]);
+    setup({ type: 'ai', id: 's2' }); // второй критерий, закрыт другой сессией
+    expect(unsubmitted(db, 'ai:s1')).toEqual([]);
+    expect(unsubmitted(db, 'ai:s2')).toEqual([1]);
+  });
+
+  it('молчит про задачу под чужим ai-lease: checkMove её всё равно не отдаст', () => {
+    setup();
+    const lease = (by: string | null) =>
+      db.prepare(`UPDATE tasks SET claimed_by = ? WHERE id = 1`).run(by);
+    lease('ai:s2');
+    expect(unsubmitted(db, 'ai:s1')).toEqual([]);
+    lease('ai:s1'); // свой lease не мешает
+    expect(unsubmitted(db, 'ai:s1')).toEqual([1]);
+    lease('user'); // человек держит — fence по нему не бьёт
+    expect(unsubmitted(db, 'ai:s1')).toEqual([1]);
+    lease(null);
+    expect(unsubmitted(db, 'ai:s1')).toEqual([1]);
+  });
+
+  it('молчит, когда задача не в работе или в архиве', () => {
+    const c = setup();
+    moveTask(db, 1, 'review', user);
+    expect(unsubmitted(db, 'ai:s1')).toEqual([]);
+    moveTask(db, 1, 'in_progress', user);
+    expect(unsubmitted(db, 'ai:s1')).toEqual([1]); // вернулась в работу — снова видна
+    archiveTask(db, 1, user);
+    expect(unsubmitted(db, 'ai:s1')).toEqual([]);
+    expect(c.checked_at).not.toBeNull(); // галка всё это время стоит
   });
 });
