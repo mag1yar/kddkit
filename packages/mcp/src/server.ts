@@ -10,17 +10,30 @@ import * as h from './handlers.js';
 
 type Result = { content: { type: 'text'; text: string }[]; isError?: boolean };
 
+/** База и каталог решений. Добывается лениво: см. startServer. */
+export interface Ctx { db: Database.Database; dir: string }
+type CtxFn = () => Ctx;
+
 const ok = (data: unknown): Result => ({ content: [{ type: 'text', text: JSON.stringify(data) }] });
 
-function guard(db: Database.Database, fn: () => unknown): Result {
+const fail = (text: string): Result => ({ content: [{ type: 'text', text }], isError: true });
+
+function guard(getCtx: CtxFn, fn: (c: Ctx) => unknown): Result {
+  // Раньше базу открывал startServer, и любая её проблема (не git-репо, чужая схема,
+  // битый нативный модуль) убивала процесс ДО хендшейка: клиент показывал «disconnected»
+  // и ни строчки причины — объяснить можно только то, что успело подключиться.
+  let c: Ctx;
   try {
-    return ok(fn());
+    c = getCtx();
   } catch (e) {
-    if (e instanceof KddError) {
-      return { content: [{ type: 'text', text: e.message }], isError: true };
-    }
-    try { logError(db, 'mcp', String(e)); } catch { /* logging is best-effort */ }
-    return { content: [{ type: 'text', text: 'internal error' }], isError: true };
+    return fail(e instanceof KddError ? e.message : String(e));
+  }
+  try {
+    return ok(fn(c));
+  } catch (e) {
+    if (e instanceof KddError) return fail(e.message);
+    try { logError(c.db, 'mcp', String(e)); } catch { /* logging is best-effort */ }
+    return fail('internal error');
   }
 }
 
@@ -29,7 +42,7 @@ const statusEnum = z.enum(STATUSES as [Status, ...Status[]]);
 const priorityEnum = z.enum(PRIORITIES as [string, ...string[]]);
 const kindEnum = z.enum(KINDS as [Kind, ...Kind[]]);
 
-export function createServer(db: Database.Database, dir: string, actor: Actor): McpServer {
+export function createServer(getCtx: CtxFn, actor: Actor): McpServer {
   const server = new McpServer({ name: 'kdd', version: '0.1.0' });
 
   server.registerTool('get_task',
@@ -39,7 +52,7 @@ export function createServer(db: Database.Database, dir: string, actor: Actor): 
         + 'full=true returns the complete uncapped history',
       inputSchema: { id: z.number().int().positive(), full: z.boolean().optional() },
     },
-    async ({ id, full }) => guard(db, () => h.getTask(db, id, full)));
+    async ({ id, full }) => guard(getCtx, (c) => h.getTask(c.db, id, full)));
 
   server.registerTool('list_tasks',
     {
@@ -54,7 +67,7 @@ export function createServer(db: Database.Database, dir: string, actor: Actor): 
         ready: z.boolean().optional(),
       },
     },
-    async (a) => guard(db, () => h.listTasks(db, a)));
+    async (a) => guard(getCtx, (c) => h.listTasks(c.db, a)));
 
   server.registerTool('list_tracks',
     {
@@ -63,7 +76,7 @@ export function createServer(db: Database.Database, dir: string, actor: Actor): 
         + 'finished body of work (kept for context, not a routing target)',
       inputSchema: {},
     },
-    async () => guard(db, () => h.listTracksTool(db)));
+    async () => guard(getCtx, (c) => h.listTracksTool(c.db)));
 
   server.registerTool('recall',
     {
@@ -74,7 +87,7 @@ export function createServer(db: Database.Database, dir: string, actor: Actor): 
         kind: z.enum(['decision', 'task']).optional(),
       },
     },
-    async ({ query, k, kind }) => guard(db, () => h.recallTool(db, dir, query, { k, kind })));
+    async ({ query, k, kind }) => guard(getCtx, (c) => h.recallTool(c.db, c.dir, query, { k, kind })));
 
   server.registerTool('update_task',
     {
@@ -91,15 +104,29 @@ export function createServer(db: Database.Database, dir: string, actor: Actor): 
         comment: z.string().optional(),
       },
     },
-    async (a) => guard(db, () => h.updateTask(db, a as h.UpdateInput, actor)));
+    async (a) => guard(getCtx, (c) => h.updateTask(c.db, a as h.UpdateInput, actor)));
 
   return server;
 }
 
+/**
+ * Ленивое подключение к базе. Кэшируем только успех: если репо появится (клиент сменил cwd)
+ * или нативный модуль пересоберут, следующий вызов инструмента поднимется сам, без реконнекта.
+ */
+export function lazyCtx(): CtxFn {
+  let ctx: Ctx | null = null;
+  return () => {
+    if (ctx) return ctx;
+    // Сначала всё, что может бросить, не заняв ресурс: иначе упавший resolveDecisionsDir
+    // оставлял бы открытое соединение, которое некому закрыть — и так на каждый вызов.
+    const dir = resolveDecisionsDir();
+    const { dbPath, projectPath } = resolveDbPath();
+    ctx = { db: openDb(dbPath, projectPath), dir };
+    return ctx;
+  };
+}
+
 export async function startServer(): Promise<void> {
-  const { dbPath, projectPath } = resolveDbPath();
-  const db = openDb(dbPath, projectPath);
-  const dir = resolveDecisionsDir();
   const actor: Actor = { type: 'ai', id: process.env.KDD_SESSION ?? 'mcp' };
-  await createServer(db, dir, actor).connect(new StdioServerTransport());
+  await createServer(lazyCtx(), actor).connect(new StdioServerTransport());
 }

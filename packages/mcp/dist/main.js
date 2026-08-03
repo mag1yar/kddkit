@@ -21820,24 +21820,29 @@ function updateTask(db, input, actor) {
 
 // src/server.ts
 var ok = (data) => ({ content: [{ type: "text", text: JSON.stringify(data) }] });
-function guard(db, fn) {
+var fail = (text) => ({ content: [{ type: "text", text }], isError: true });
+function guard(getCtx, fn) {
+  let c;
   try {
-    return ok(fn());
+    c = getCtx();
   } catch (e) {
-    if (e instanceof KddError) {
-      return { content: [{ type: "text", text: e.message }], isError: true };
-    }
+    return fail(e instanceof KddError ? e.message : String(e));
+  }
+  try {
+    return ok(fn(c));
+  } catch (e) {
+    if (e instanceof KddError) return fail(e.message);
     try {
-      logError(db, "mcp", String(e));
+      logError(c.db, "mcp", String(e));
     } catch {
     }
-    return { content: [{ type: "text", text: "internal error" }], isError: true };
+    return fail("internal error");
   }
 }
 var statusEnum = external_exports.enum(STATUSES);
 var priorityEnum = external_exports.enum(PRIORITIES);
 var kindEnum = external_exports.enum(KINDS);
-function createServer(db, dir, actor) {
+function createServer(getCtx, actor) {
   const server = new McpServer({ name: "kdd", version: "0.1.0" });
   server.registerTool(
     "get_task",
@@ -21845,7 +21850,7 @@ function createServer(db, dir, actor) {
       description: `Task with links, last ${CAPS.comments} comments and last ${CAPS.events} events (comments_total/events_total show the full counts); full=true returns the complete uncapped history`,
       inputSchema: { id: external_exports.number().int().positive(), full: external_exports.boolean().optional() }
     },
-    async ({ id, full }) => guard(db, () => getTask(db, id, full))
+    async ({ id, full }) => guard(getCtx, (c) => getTask(c.db, id, full))
   );
   server.registerTool(
     "list_tasks",
@@ -21859,7 +21864,7 @@ function createServer(db, dir, actor) {
         ready: external_exports.boolean().optional()
       }
     },
-    async (a) => guard(db, () => listTasks(db, a))
+    async (a) => guard(getCtx, (c) => listTasks(c.db, a))
   );
   server.registerTool(
     "list_tracks",
@@ -21867,7 +21872,7 @@ function createServer(db, dir, actor) {
       description: 'Tracks with their "use when\u2026" description and status. Route new tasks to an active track matching the current branch/worktree; status=done marks a finished body of work (kept for context, not a routing target)',
       inputSchema: {}
     },
-    async () => guard(db, () => listTracksTool(db))
+    async () => guard(getCtx, (c) => listTracksTool(c.db))
   );
   server.registerTool(
     "recall",
@@ -21879,7 +21884,7 @@ function createServer(db, dir, actor) {
         kind: external_exports.enum(["decision", "task"]).optional()
       }
     },
-    async ({ query, k, kind }) => guard(db, () => recallTool(db, dir, query, { k, kind }))
+    async ({ query, k, kind }) => guard(getCtx, (c) => recallTool(c.db, c.dir, query, { k, kind }))
   );
   server.registerTool(
     "update_task",
@@ -21899,16 +21904,23 @@ function createServer(db, dir, actor) {
         comment: external_exports.string().optional()
       }
     },
-    async (a) => guard(db, () => updateTask(db, a, actor))
+    async (a) => guard(getCtx, (c) => updateTask(c.db, a, actor))
   );
   return server;
 }
+function lazyCtx() {
+  let ctx = null;
+  return () => {
+    if (ctx) return ctx;
+    const dir = resolveDecisionsDir();
+    const { dbPath, projectPath } = resolveDbPath();
+    ctx = { db: openDb(dbPath, projectPath), dir };
+    return ctx;
+  };
+}
 async function startServer() {
-  const { dbPath, projectPath } = resolveDbPath();
-  const db = openDb(dbPath, projectPath);
-  const dir = resolveDecisionsDir();
   const actor = { type: "ai", id: process.env.KDD_SESSION ?? "mcp" };
-  await createServer(db, dir, actor).connect(new StdioServerTransport());
+  await createServer(lazyCtx(), actor).connect(new StdioServerTransport());
 }
 
 // src/main.ts
