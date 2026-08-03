@@ -36,6 +36,51 @@ describe('kdd add / board / show', () => {
   });
 });
 
+// #117: агент, дёргающий kdd из Bash без экспортированного KDD_ACTOR, писался в лог человеком
+// и проскакивал мимо ai-гейтов checkMove. Личность берём из окружения самой сессии Claude Code.
+describe('actor detection', () => {
+  const cc = (extra: NodeJS.ProcessEnv = {}) =>
+    ({ ...env, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'abcdef12-3456-7890', ...extra });
+
+  it('CLAUDECODE marks the actor ai with a short session id', () => {
+    kdd(cc(), 'add', 'из сессии');
+    const out = JSON.parse(kdd(env, 'show', '1', '--json'));
+    expect(out.events[0]).toMatchObject({ actor_type: 'ai', actor_id: 'cc:abcdef12' });
+  });
+
+  // Без id сессии все безымянные агенты сливались бы в одного `ai:?` — а на этом же сравнении
+  // держится fence по lease, то есть они могли бы отбирать друг у друга задачи.
+  it('falls back to the Claude pid when the session id is missing', () => {
+    kdd(cc({ CLAUDE_CODE_SESSION_ID: '', CLAUDE_PID: '41557' }), 'add', 'без id сессии');
+    const out = JSON.parse(kdd(env, 'show', '1', '--json'));
+    expect(out.events[0]).toMatchObject({ actor_type: 'ai', actor_id: 'cc:pid-41557' });
+  });
+
+  it('KDD_ACTOR=user wins over the environment', () => {
+    kdd(cc({ KDD_ACTOR: 'user' }), 'add', 'руками');
+    const out = JSON.parse(kdd(env, 'show', '1', '--json'));
+    expect(out.events[0]).toMatchObject({ actor_type: 'user' });
+  });
+
+  it('KDD_SESSION wins over the detected id', () => {
+    kdd(cc({ KDD_SESSION: 'tick:1-0' }), 'add', 'воркер');
+    const out = JSON.parse(kdd(env, 'show', '1', '--json'));
+    expect(out.events[0]).toMatchObject({ actor_type: 'ai', actor_id: 'tick:1-0' });
+  });
+
+  // Смысл всей задачи: гейты ядра начинают действовать сами, без ручной переменной.
+  it('checkMove gates the detected agent, not just an explicit one', () => {
+    kdd(env, 'add', 'с критерием');
+    kdd(env, 'criteria', 'add', '1', 'не закрыт');
+    kdd(cc(), 'move', '1', 'in_progress');
+    const r = kddFail(cc(), 'move', '1', 'review');
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('1 unchecked acceptance criteria');
+    // человек тем же путём проходит
+    expect(kdd({ ...cc(), KDD_ACTOR: 'user' }, 'move', '1', 'review')).toContain('review');
+  });
+});
+
 // #34: доска из будущего (user_version больше, чем знает этот kdd). Раньше цикл миграций просто
 // не выполнялся и kdd молча работал на незнакомой схеме — тихая порча данных. Проверяем не сам
 // гвард (это тест ядра), а что человек в терминале видит внятную строку, а не голый стектрейс.

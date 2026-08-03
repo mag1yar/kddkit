@@ -56,6 +56,7 @@ Adding a task-related feature usually touches core (`ops.ts`/`queries.ts`) **plu
 - **Every mutation wraps in `db.transaction(() => {...})()`** — even single statements. Mutations append to the `events` log; a partial write breaks the audit trail. Validate first (guard clauses / `KddError`), transaction after.
 - **Actor is threaded, never global.** State-changing ops take `actor: Actor` (`{type:'user'}` | `{type:'ai', id}`) as a required param. Resolved per-call from CLI context or request metadata. Reusing a module-level actor causes attribution bugs.
 - **AI is gated by acceptance criteria.** `checkMove` blocks an `ai` actor from moving a task to `review` while criteria are unchecked; a `user` actor is not gated. This gate is a core rule, not UI logic.
+- **Whoever submitted a task for review does not accept it on their own.** `checkMove` blocks `review → done` for the actor whose `moved`-to-`review` event is the last one on that task. Another actor (human or a second session) accepts freely; the submitter needs `--reason` — the user saying "close it" is that reason — and such a move is stamped `self_accepted: true` in the event. Never reach for `KDD_ACTOR=user` instead: it also turns off the criteria gate, the lease fence and the transition matrix. See `.planning/decisions/2026-08-03-self-accept-needs-the-user-to-say-so.md`.
 - **Decisions index on demand.** Editing `.planning/decisions/*.md` does not update search until the next `recall` (which calls `syncIndex`) or `kdd rebuild`. FTS5 is watermark-incremental for tasks, full-rescan for decisions.
 - **Schema changes = append a migration** to `MIGRATIONS` in `packages/core/src/db.ts`. Don't edit existing migrations.
 
@@ -73,4 +74,4 @@ Adding a task-related feature usually touches core (`ops.ts`/`queries.ts`) **plu
 
 ## Env vars
 
-`KDD_HOME` (data root, default `~/.kdd`), `KDD_DB`, `KDD_DECISIONS_DIR` (path overrides), `KDD_ACTOR`/`KDD_SESSION` (actor identity). Store path resolves via `git rev-parse` — commands must run inside a git repo.
+`KDD_HOME` (data root, default `~/.kdd`), `KDD_DB`, `KDD_DECISIONS_DIR` (path overrides), `KDD_ACTOR`/`KDD_SESSION` (actor identity — по умолчанию CLI определяет агента по `CLAUDECODE=1`, то есть вызовы из сессии Claude Code это `ai`; `KDD_ACTOR=user` — обратный обход). Store path resolves via `git rev-parse` — commands must run inside a git repo.

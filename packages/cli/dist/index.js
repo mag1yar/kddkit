@@ -71,9 +71,12 @@ import {
 } from "@kddkit/ui";
 
 // src/context.ts
-import { KddError, openDb, resolveDbPath } from "@kddkit/core";
+import { agentId, KddError, openDb, resolveDbPath } from "@kddkit/core";
 function getActor() {
-  return process.env.KDD_ACTOR === "ai" ? { type: "ai", id: process.env.KDD_SESSION } : { type: "user" };
+  const explicit = process.env.KDD_ACTOR;
+  if (explicit === "user") return { type: "user" };
+  if (explicit !== "ai" && process.env.CLAUDECODE !== "1") return { type: "user" };
+  return { type: "ai", id: agentId() };
 }
 function withDbAt(dbPath, projectPath, fn) {
   const db = openDb(dbPath, projectPath);

@@ -21399,10 +21399,22 @@ var TRANSITIONS = {
   review: ["in_progress", "done"],
   done: ["review"]
 };
-function checkMove(from, to, actor, reason, openCriteria2 = 0, claimedBy = null) {
+var authorOf = (a) => a.type === "ai" ? `ai:${a.id ?? "?"}` : "user";
+function agentId() {
+  const e = process.env;
+  const cc = e.CLAUDE_CODE_SESSION_ID ? `cc:${e.CLAUDE_CODE_SESSION_ID.slice(0, 8)}` : void 0;
+  return e.KDD_SESSION || cc || (e.CLAUDE_PID ? `cc:pid-${e.CLAUDE_PID}` : void 0);
+}
+function checkMove(from, to, actor, reason, openCriteria2 = 0, claimedBy = null, submittedBy2 = null) {
   if (from === to) return { ok: false, error: `task is already in ${to}` };
   if (actor.type === "user") return { ok: true };
   if (reason) return { ok: true };
+  if (from === "review" && to === "done" && submittedBy2 === authorOf(actor)) {
+    return {
+      ok: false,
+      error: `you submitted this task for review yourself; accepting it is someone else's call \u2014 ask the user, and pass --reason if they told you to close it`
+    };
+  }
   if (from === "in_progress" && claimedBy?.startsWith("ai:") && claimedBy !== `ai:${actor.id ?? "?"}`) {
     return {
       ok: false,
@@ -21467,7 +21479,6 @@ function listTracks(db, opts = {}) {
      GROUP BY tr.id ORDER BY tr.status, tr.name`
   ).all({ status: opts.status ?? null });
 }
-var authorOf = (a) => a.type === "ai" ? `ai:${a.id ?? "?"}` : "user";
 function appendEvent(db, taskId, actor, action, detail, opts) {
   const r = db.prepare(
     `INSERT INTO events (task_id, actor_type, actor_id, action, detail, created_at,
@@ -21537,6 +21548,14 @@ function openCriteria(db, taskId) {
     `SELECT COUNT(*) AS c FROM criteria WHERE task_id = ? AND checked_at IS NULL`
   ).get(taskId).c;
 }
+function submittedBy(db, taskId) {
+  const r = db.prepare(
+    `SELECT actor_type, actor_id FROM events
+      WHERE task_id = ? AND action = 'moved' AND detail LIKE '%"to":"review"%'
+      ORDER BY id DESC LIMIT 1`
+  ).get(taskId);
+  return r ? authorOf({ type: r.actor_type, id: r.actor_id ?? void 0 }) : null;
+}
 function nextPosition(db, status) {
   return db.prepare(
     `SELECT COALESCE(MAX(position), -1) + 1 AS p
@@ -21547,21 +21566,22 @@ function moveTask(db, id, to, actor, reason) {
   checkStatus(to);
   return db.transaction(() => {
     const t = mustGetTask(db, id);
-    const res = checkMove(t.status, to, actor, reason, openCriteria(db, id), t.claimed_by);
+    const submitter = t.status === "review" ? submittedBy(db, id) : null;
+    const res = checkMove(t.status, to, actor, reason, openCriteria(db, id), t.claimed_by, submitter);
     if (!res.ok) throw new KddError(res.error);
+    const self = t.status === "review" && to === "done" && submitter === authorOf(actor);
     const leaving = t.status === "in_progress" && to !== "in_progress";
     const reset = to === "review";
     db.prepare(
       `UPDATE tasks SET status = ?, position = ?, updated_at = ?${leaving ? ", claimed_by = NULL, claim_expires = NULL" : ""}${reset ? ", failed_attempts = 0" : ""}
        WHERE id = ?`
     ).run(to, nextPosition(db, to), now(), id);
-    appendEvent(
-      db,
-      id,
-      actor,
-      "moved",
-      reason ? { from: t.status, to, reason } : { from: t.status, to }
-    );
+    appendEvent(db, id, actor, "moved", {
+      from: t.status,
+      to,
+      ...reason ? { reason } : {},
+      ...self ? { self_accepted: true } : {}
+    });
     if (reason) {
       db.prepare(
         `INSERT INTO comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)`
@@ -21918,9 +21938,9 @@ function lazyCtx() {
     return ctx;
   };
 }
+var mcpActor = () => ({ type: "ai", id: agentId() ?? "mcp" });
 async function startServer() {
-  const actor = { type: "ai", id: process.env.KDD_SESSION ?? "mcp" };
-  await createServer(lazyCtx(), actor).connect(new StdioServerTransport());
+  await createServer(lazyCtx(), mcpActor()).connect(new StdioServerTransport());
 }
 
 // src/main.ts

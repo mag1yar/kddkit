@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { addTask, openDb } from '@kddkit/core';
+import { addTask, agentId, openDb } from '@kddkit/core';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createServer, lazyCtx } from '../src/server.js';
+import { createServer, lazyCtx, mcpActor } from '../src/server.js';
 
 const ai = { type: 'ai', id: 'smoke' } as const;
 
@@ -58,6 +58,22 @@ describe('mcp server over a real transport', () => {
     });
     expect(bad.isError).toBe(true);
     expect(rawText(bad)).toMatch(/invalid transition/);
+  });
+});
+
+// #117: MCP жил под собственным id ('mcp'), CLI — под id сессии. Один агент выходил двумя
+// авторами: сдал задачу через kdd, принял через MCP — гейт самоприёмки не срабатывал.
+describe('actor identity', () => {
+  it('matches the id the CLI derives from the same session', () => {
+    const prev = process.env.CLAUDE_CODE_SESSION_ID;
+    process.env.CLAUDE_CODE_SESSION_ID = 'abcdef12-3456-7890';
+    try {
+      expect(mcpActor()).toEqual({ type: 'ai', id: agentId() });
+      expect(mcpActor().id).toBe('cc:abcdef12');
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CODE_SESSION_ID;
+      else process.env.CLAUDE_CODE_SESSION_ID = prev;
+    }
   });
 });
 

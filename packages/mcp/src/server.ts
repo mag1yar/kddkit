@@ -3,7 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import {
-  CAPS, KddError, logError, openDb, resolveDbPath, resolveDecisionsDir,
+  agentId, CAPS, KddError, logError, openDb, resolveDbPath, resolveDecisionsDir,
   PRIORITIES, STATUSES, KINDS, type Actor, type Status, type Kind,
 } from '@kddkit/core';
 import * as h from './handlers.js';
@@ -126,7 +126,13 @@ export function lazyCtx(): CtxFn {
   };
 }
 
+/**
+ * Тот же id, что у CLI (`agentId`): один агент в одной сессии обязан писаться одним автором,
+ * иначе «сдал через kdd — принял через MCP» проходит мимо гейта на самоприёмку. Экспортируется
+ * ради теста — расхождение с CLI уже было баг.
+ */
+export const mcpActor = (): Actor => ({ type: 'ai', id: agentId() ?? 'mcp' });
+
 export async function startServer(): Promise<void> {
-  const actor: Actor = { type: 'ai', id: process.env.KDD_SESSION ?? 'mcp' };
-  await createServer(lazyCtx(), actor).connect(new StdioServerTransport());
+  await createServer(lazyCtx(), mcpActor()).connect(new StdioServerTransport());
 }

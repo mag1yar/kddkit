@@ -1,10 +1,18 @@
 import Database from 'better-sqlite3';
-import { KddError, openDb, resolveDbPath, type Actor } from '@kddkit/core';
+import { agentId, KddError, openDb, resolveDbPath, type Actor } from '@kddkit/core';
 
+/**
+ * Кто дёргает CLI. KDD_ACTOR — явное слово (его ставят tick/worker), иначе смотрим на само
+ * окружение: Claude Code выставляет CLAUDECODE=1 каждой команде своего Bash-инструмента.
+ * Раньше дефолтом был `user`, и агент без экспортированной переменной писался в лог человеком —
+ * а заодно проскакивал мимо всех ai-гейтов checkMove: правило ядра работало как opt-in.
+ * Ручной запуск из сессии Claude («! kdd …») тоже посчитается агентом — обходится KDD_ACTOR=user.
+ */
 export function getActor(): Actor {
-  return process.env.KDD_ACTOR === 'ai'
-    ? { type: 'ai', id: process.env.KDD_SESSION }
-    : { type: 'user' };
+  const explicit = process.env.KDD_ACTOR;
+  if (explicit === 'user') return { type: 'user' };
+  if (explicit !== 'ai' && process.env.CLAUDECODE !== '1') return { type: 'user' };
+  return { type: 'ai', id: agentId() };
 }
 
 export function withDbAt<T>(dbPath: string, projectPath: string, fn: (db: Database.Database) => T): T {

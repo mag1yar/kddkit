@@ -2,11 +2,11 @@ import type Database from 'better-sqlite3';
 import { redact } from './agent_events.js';
 import { now } from './db.js';
 import { KddError } from './errors.js';
-import { checkMove, KINDS, PRIORITIES, STATUSES, type Actor, type Kind, type Priority, type Status } from './state.js';
+import { authorOf, checkMove, KINDS, PRIORITIES, STATUSES, type Actor, type Kind, type Priority, type Status } from './state.js';
 import type { Comment, Task } from './types.js';
 import { mustGetTrack } from './tracks.js';
 
-export const authorOf = (a: Actor): string => (a.type === 'ai' ? `ai:${a.id ?? '?'}` : 'user');
+export { authorOf }; // живёт в state.ts: checkMove сравнивает автора, а state не может импортировать ops
 
 export function appendEvent(
   db: Database.Database, taskId: number | null, actor: Actor,
@@ -136,6 +136,21 @@ function openCriteria(db: Database.Database, taskId: number): number {
   ).get(taskId) as { c: number }).c;
 }
 
+/**
+ * Кто последним сдал задачу в review — гейт «сдал, но не принимаешь» (see checkMove).
+ * Считаем по журналу, а не по колонке в tasks: факт уже записан, и он один для всех путей
+ * перехода (CLI, MCP, drag на доске). LIKE, а не json_extract: detail у части событий не JSON,
+ * и SQLite на таком бросает malformed JSON вместо того, чтобы вернуть NULL.
+ */
+function submittedBy(db: Database.Database, taskId: number): string | null {
+  const r = db.prepare(
+    `SELECT actor_type, actor_id FROM events
+      WHERE task_id = ? AND action = 'moved' AND detail LIKE '%"to":"review"%'
+      ORDER BY id DESC LIMIT 1`,
+  ).get(taskId) as { actor_type: 'user' | 'ai'; actor_id: string | null } | undefined;
+  return r ? authorOf({ type: r.actor_type, id: r.actor_id ?? undefined }) : null;
+}
+
 // Следующая свободная позиция в конце колонки (порядок на доске = position).
 function nextPosition(db: Database.Database, status: Status): number {
   return (db.prepare(
@@ -150,16 +165,21 @@ export function moveTask(
   checkStatus(to);
   return db.transaction(() => {
     const t = mustGetTask(db, id);
-    const res = checkMove(t.status, to, actor, reason, openCriteria(db, id), t.claimed_by);
+    const submitter = t.status === 'review' ? submittedBy(db, id) : null;
+    const res = checkMove(t.status, to, actor, reason, openCriteria(db, id), t.claimed_by, submitter);
     if (!res.ok) throw new KddError(res.error);
+    // Сдал и сам принял по просьбе пользователя — переход легальный, но не рядовой: помечаем,
+    // иначе «закрыл сам себя» неотличимо от «принял кто-то другой» ровно там, где это и важно.
+    const self = t.status === 'review' && to === 'done' && submitter === authorOf(actor);
     const leaving = t.status === 'in_progress' && to !== 'in_progress';
     const reset = to === 'review'; // достигли review = продуктивный прогресс, обнуляем счётчик неудач
     db.prepare(
       `UPDATE tasks SET status = ?, position = ?, updated_at = ?${leaving ? ', claimed_by = NULL, claim_expires = NULL' : ''}${reset ? ', failed_attempts = 0' : ''}
        WHERE id = ?`,
     ).run(to, nextPosition(db, to), now(), id); // CLI-move дописывает в конец колонки; выход из in_progress снимает claim
-    appendEvent(db, id, actor, 'moved',
-      reason ? { from: t.status, to, reason } : { from: t.status, to });
+    appendEvent(db, id, actor, 'moved', {
+      from: t.status, to, ...(reason ? { reason } : {}), ...(self ? { self_accepted: true } : {}),
+    });
     if (reason) {
       db.prepare(
         `INSERT INTO comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)`,
@@ -178,7 +198,8 @@ export function placeTask(
   return db.transaction(() => {
     const t = mustGetTask(db, id);
     if (t.status !== to) {
-      const res = checkMove(t.status, to, actor, undefined, openCriteria(db, id), t.claimed_by);
+      const res = checkMove(t.status, to, actor, undefined, openCriteria(db, id), t.claimed_by,
+        t.status === 'review' ? submittedBy(db, id) : null);
       if (!res.ok) throw new KddError(res.error);
       appendEvent(db, id, actor, 'moved', { from: t.status, to });
     }

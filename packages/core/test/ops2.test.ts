@@ -20,6 +20,51 @@ describe('moveTask', () => {
     expect(JSON.parse(ev.detail)).toEqual({ from: 'new', to: 'in_progress' });
   });
 
+  // #117: «кто сдал» берётся из журнала — проверяем сам вывод, а не только правило в checkMove.
+  describe('self-accept', () => {
+    const submit = (actor = ai) => {
+      moveTask(db, 1, 'in_progress', actor);
+      moveTask(db, 1, 'review', actor);
+    };
+
+    it('the agent that submitted does not close its own task on its own', () => {
+      submit();
+      expect(() => moveTask(db, 1, 'done', ai)).toThrow(/submitted this task for review yourself/);
+      expect(mustGetTask(db, 1).status).toBe('review');
+      // тот же запрет на drag-пути доски
+      expect(() => placeTask(db, 1, 'done', [1], ai)).toThrow(/submitted this task for review/);
+    });
+
+    it('a reason closes it and the event says the submitter accepted itself', () => {
+      submit();
+      expect(moveTask(db, 1, 'done', ai, 'пользователь попросил закрыть').status).toBe('done');
+      const ev: any = db.prepare(
+        `SELECT detail FROM events WHERE action='moved' ORDER BY id DESC LIMIT 1`).get();
+      expect(JSON.parse(ev.detail)).toMatchObject({ to: 'done', self_accepted: true });
+    });
+
+    it('an ordinary acceptance carries no such mark', () => {
+      submit();
+      moveTask(db, 1, 'done', { type: 'ai', id: 's2' });
+      const ev: any = db.prepare(
+        `SELECT detail FROM events WHERE action='moved' ORDER BY id DESC LIMIT 1`).get();
+      expect(JSON.parse(ev.detail).self_accepted).toBeUndefined();
+    });
+
+    it('a human or another session closes it', () => {
+      submit();
+      expect(moveTask(db, 1, 'done', { type: 'ai', id: 's2' }).status).toBe('done');
+    });
+
+    it('only the last submission counts: reject, rework by another agent, close', () => {
+      submit();                                            // сдал s1
+      moveTask(db, 1, 'in_progress', user);                // человек вернул
+      moveTask(db, 1, 'review', { type: 'ai', id: 's2' }); // переделал и сдал s2
+      expect(() => moveTask(db, 1, 'done', { type: 'ai', id: 's2' })).toThrow(/yourself/);
+      expect(moveTask(db, 1, 'done', ai).status).toBe('done'); // s1 теперь принимающая сторона
+    });
+  });
+
   it('rejects ai skip without reason, task untouched', () => {
     expect(() => moveTask(db, 1, 'done', ai)).toThrow(/invalid transition/);
     expect(db.prepare(`SELECT status FROM tasks WHERE id=1`).get())
