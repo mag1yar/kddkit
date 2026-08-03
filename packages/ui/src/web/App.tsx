@@ -184,7 +184,9 @@ export default function App() {
           <Button size="sm" onClick={() => setCreating(true)}>New task</Button>
         </div>
       </header>
-      <main className="flex-1 overflow-auto">
+      {/* overflow-y-hidden: вертикально скроллит каждая колонка сама (Board), не страница —
+          иначе колонки нельзя растянуть на всю высоту */}
+      <main className="flex-1 overflow-x-auto overflow-y-hidden">
         {/* бейдж трека на карточке — только в режиме all tracks: внутри трека он шум */}
         <Board board={board} trackName={track == null ? trackName : new Map()}
           onMove={onMove} onOpen={setOpenId} />

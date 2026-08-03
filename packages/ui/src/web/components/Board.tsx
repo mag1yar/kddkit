@@ -75,7 +75,9 @@ export function Board({ board, trackName, onMove, onOpen }: {
       getItemValue={(t) => String(t.id)}
       onMove={handleMove}
     >
-      <KanbanBoard className="flex items-start gap-4 p-4">
+      {/* items-stretch (дефолт): колонка во всю высоту, чтобы дроп-зона была во весь экран,
+          а не по высоте карточек — попасть в короткую колонку было почти нельзя */}
+      <KanbanBoard className="flex h-full gap-4 p-4">
         {STATUSES.map((s) => (
           <Column key={s} status={s} tasks={board[s]} trackName={trackName} onOpen={onOpen} />
         ))}
@@ -98,12 +100,14 @@ function Column({ status, tasks, trackName, onOpen }: {
   // Колонки семантические (backlog…done) — без drag: не рендерим KanbanColumnHandle.
   // disabled НЕ ставим: dnd-kit disabled вырубает и drop → пустая колонка перестаёт принимать карточки.
   return (
-    <KanbanColumn value={status} className="w-64 shrink-0 rounded-xl bg-muted/40 p-2 ring-1 ring-foreground/10">
+    <KanbanColumn value={status} className="flex w-64 min-h-0 shrink-0 flex-col rounded-xl bg-muted/40 p-2 ring-1 ring-foreground/10">
       <div className="flex items-center justify-between px-1.5 py-1">
         <span className="text-sm font-semibold">{COLUMN_TITLE[status]}</span>
         <Badge variant="outline" className="rounded-sm">{tasks.length}</Badge>
       </div>
-      <KanbanColumnContent value={status} className="min-h-8 gap-2 p-0.5">
+      {/* flex-1 + min-h-0: список забирает остаток колонки (пустая колонка = дроп-зона во всю
+          высоту) и скроллится сам; 83 задачи в backlog не тянут страницу */}
+      <KanbanColumnContent value={status} className="min-h-8 flex-1 gap-2 overflow-y-auto p-0.5">
         {tasks.map((t) => (
           <TaskCard key={t.id} task={t} trackName={trackName} onOpen={onOpen} asHandle />
         ))}
