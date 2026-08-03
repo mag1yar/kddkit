@@ -32,7 +32,9 @@ export function fmtEvent(e: RawEvent): string {
       const f = d?.fields;
       return Array.isArray(f) && f.length ? `edited ${f.join(', ')}` : 'edited';
     }
-    case 'moved': return `moved ${d?.from} → ${d?.to}`;
+    // self_accepted ставится, когда задачу принял тот же актор, что её сдал (по просьбе человека).
+    // Отметка существует, чтобы это было видно там, где смотрят, — то есть на доске.
+    case 'moved': return `moved ${d?.from} → ${d?.to}${d?.self_accepted ? ' (accepted its own submission)' : ''}`;
     case 'blocked': return `blocked: ${d?.reason}`;
     case 'unblocked': return 'unblocked';
     case 'linked': return `linked #${d?.to} (${d?.kind})`;

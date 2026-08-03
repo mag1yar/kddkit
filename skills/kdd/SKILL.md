@@ -11,22 +11,20 @@ board.
 
 ## Surfaces — which one to use
 
-There are two ways in, and picking wrong misattributes your work to the human.
+Two ways in, and both write as `ai`: MCP always, the CLI because it recognises
+the Claude Code environment it runs in. Attribution is automatic — you never pass
+a flag to be yourself.
 
 - **MCP tools — your default for everything task-shaped.** Reads: `list_tasks`,
   `get_task`, `recall`, `list_tracks`. The one write: `update_task` (edit / move /
-  comment ONE task). Every MCP write is logged as `ai` automatically — no flags,
-  no prefix.
-- **`kdd` CLI — the human's surface** (it also runs the web board, `kdd ui`). It
-  logs as the **human** by default. So do NOT reach for `kdd comment` / `kdd move`
-  / `kdd edit` — those exist for the person, and running them yourself stamps your
-  work as theirs. Use `update_task` instead; same effect, correct author.
-- **When you genuinely need a CLI op MCP doesn't expose** (below), prefix
-  `KDD_ACTOR=ai` or the event shows up as the user's:
-
-  ```
-  KDD_ACTOR=ai kdd block 12 "waiting on the API key"
-  ```
+  comment ONE task).
+- **`kdd` CLI — the human's surface** (it also runs the web board, `kdd ui`), and
+  yours for the ops MCP doesn't expose (below). For move / comment / edit prefer
+  `update_task`: same effect, and the MCP tool is the stable contract.
+- **Never set `KDD_ACTOR=user`.** It does not merely relabel the author — it
+  turns off every rule that keys on `ai` at once: the acceptance-criteria gate,
+  the lease fence, the transition matrix. A refused move is answered with
+  `--reason` once the user has asked for it, never by changing identity.
 
 ### CLI reference — the whole surface, no `--help` needed
 
@@ -45,7 +43,7 @@ kdd recall "<query>" [-k <n>] [--kind decision|task]   # kind = result type here
 kdd track ls [--all]               # --all includes done tracks
 ```
 
-Writes — prefix `KDD_ACTOR=ai`, and only on an explicit user request (see Iron Law):
+Writes — only on an explicit user request (see Iron Law):
 
 ```
 kdd block <id> "<reason>"   /   kdd unblock <id>
@@ -61,10 +59,10 @@ kdd track edit <id> [--name …] [--description …]
 kdd track done <id>   /   kdd track reopen <id>   /   kdd track rm <id>
 ```
 
-Worked example — block a task as yourself, then read the board as JSON to act on it:
+Worked example — block a task, then read the board as JSON to act on it:
 
 ```
-KDD_ACTOR=ai kdd block 12 "waiting on the API key"   # → #12 blocked: waiting on the API key
+kdd block 12 "waiting on the API key"                # → #12 blocked: waiting on the API key
 kdd board --track 3 --json                           # → {"backlog":[…],"new":[…],"in_progress":[…],…}
 kdd track add "Secondary backend" --description "use when: partner-fed tasks, module X"  # → track #4 Secondary backend
 ```
@@ -115,6 +113,13 @@ CLI equivalents.
   normal flow needs `move.reason` explaining that the user asked for it.
 - Edit a task's fields with `update_task { id, edit: { ... } }`.
 
+**You do not accept your own submission.** A task you moved to `review` yourself
+will refuse `review → done` for you — accepting is the user's call, or another
+session's. When the work is ready, say so and leave it in `review`. If the user
+answers "close it", that sentence is the reason: pass it as `move.reason` and the
+move goes through, stamped in the event as a self-acceptance. Do not close a task
+in silence because the criteria look checked.
+
 ### Acceptance criteria
 
 A task's `criteria` list (visible in `get_task`) is the acceptance contract: the
@@ -124,11 +129,10 @@ task is done when every criterion holds. Working a task, you own the checkboxes:
   holds (test ran, behavior observed), not when you merely wrote the code:
 
   ```
-  KDD_ACTOR=ai kdd criteria check <taskId> <id>
+  kdd criteria check <taskId> <id>
   ```
 
-  (`kdd criteria ls <taskId>` shows ids; criteria writes are CLI-only, so the
-  `KDD_ACTOR=ai` prefix is mandatory here.)
+  (`kdd criteria ls <taskId>` shows ids; criteria writes are CLI-only.)
 - **Move to review only when every criterion is checked.** An unchecked
   criterion means the task is not ready — finish it or say why you cannot.
 - Never check a criterion you did not verify. If one is impossible or obsolete,

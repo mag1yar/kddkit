@@ -48,5 +48,5 @@ net. For UI changes, smoke on `pnpm dev:ui`. Evidence before "it works".
 ## Writing to a board during dev
 
 If you record dev progress on an actual board, that is the **kdd** skill's job and
-its attribution rules apply (MCP `update_task`, or `KDD_ACTOR=ai` for CLI writes).
+its attribution rules apply (MCP `update_task`; the CLI already detects you).
 This skill is about changing the codebase.

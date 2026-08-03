@@ -52,7 +52,7 @@ export function checkMove(
   // возможно только с честной атрибуцией (#117).
   if (from === 'review' && to === 'done' && submittedBy === authorOf(actor)) {
     return { ok: false,
-      error: `you submitted this task for review yourself; accepting it is someone else's call — ask the user, and pass --reason if they told you to close it` };
+      error: `you submitted this task for review yourself; accepting it is someone else's call — ask the user, and pass a reason if they told you to close it` };
   }
   // fence: задачу, занятую ЛЮБЫМ ai-актором (claimed_by 'ai:...'), не может двигать ДРУГОЙ актор.
   // Держит tick-воркеров (ai:tick:...) друг от друга + ai-vs-ai ручные сессии. user-held и unclaimed
@@ -64,13 +64,13 @@ export function checkMove(
   if (!TRANSITIONS[from].includes(to)) {
     return {
       ok: false,
-      error: `invalid transition ${from} → ${to} for ai; allowed: ${TRANSITIONS[from].join(', ')}; pass --reason if user requested a skip`,
+      error: `invalid transition ${from} → ${to} for ai; allowed: ${TRANSITIONS[from].join(', ')}; pass a reason if the user requested a skip`,
     };
   }
   if (to === 'review' && openCriteria > 0) {
     return {
       ok: false,
-      error: `cannot move to review: ${openCriteria} unchecked acceptance criteria; check them (kdd criteria check) or pass --reason if user asked to skip`,
+      error: `cannot move to review: ${openCriteria} unchecked acceptance criteria; check them (kdd criteria check) or pass a reason if the user asked to skip`,
     };
   }
   return { ok: true };

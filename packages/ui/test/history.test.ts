@@ -23,6 +23,13 @@ describe('fmtEvent', () => {
       .toBe('edited title, priority');
     expect(fmtEvent(ev({ id: 2, action: 'edited' }))).toBe('edited');
   });
+  it('a self-accepted move says so — the mark exists to be seen on the board', () => {
+    expect(fmtEvent(ev({ id: 1, action: 'moved', actor_type: 'ai',
+      detail: '{"from":"review","to":"done","reason":"user asked","self_accepted":true}' })))
+      .toBe('moved review → done (accepted its own submission)');
+    expect(fmtEvent(ev({ id: 2, action: 'moved', detail: '{"from":"review","to":"done"}' })))
+      .toBe('moved review → done');
+  });
   it('unknown action falls back to its own name, broken detail does not throw', () => {
     expect(fmtEvent(ev({ id: 1, action: 'teleported' }))).toBe('teleported');
     expect(fmtEvent(ev({ id: 2, action: 'moved', detail: 'not json{' }))).toBe('moved undefined → undefined');

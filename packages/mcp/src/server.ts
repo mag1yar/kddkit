@@ -91,7 +91,9 @@ export function createServer(getCtx: CtxFn, actor: Actor): McpServer {
 
   server.registerTool('update_task',
     {
-      description: 'Edit, move and/or comment a single task (actor=ai)',
+      description: 'Edit, move and/or comment a single task (actor=ai). '
+        + 'A move may be refused (unchecked criteria, a task you submitted for review yourself) — '
+        + 'the way through is move.reason, and only once the user has asked for it',
       inputSchema: {
         id: z.number().int().positive(),
         edit: z.object({

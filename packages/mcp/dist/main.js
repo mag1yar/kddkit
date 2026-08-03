@@ -21412,7 +21412,7 @@ function checkMove(from, to, actor, reason, openCriteria2 = 0, claimedBy = null,
   if (from === "review" && to === "done" && submittedBy2 === authorOf(actor)) {
     return {
       ok: false,
-      error: `you submitted this task for review yourself; accepting it is someone else's call \u2014 ask the user, and pass --reason if they told you to close it`
+      error: `you submitted this task for review yourself; accepting it is someone else's call \u2014 ask the user, and pass a reason if they told you to close it`
     };
   }
   if (from === "in_progress" && claimedBy?.startsWith("ai:") && claimedBy !== `ai:${actor.id ?? "?"}`) {
@@ -21424,13 +21424,13 @@ function checkMove(from, to, actor, reason, openCriteria2 = 0, claimedBy = null,
   if (!TRANSITIONS[from].includes(to)) {
     return {
       ok: false,
-      error: `invalid transition ${from} \u2192 ${to} for ai; allowed: ${TRANSITIONS[from].join(", ")}; pass --reason if user requested a skip`
+      error: `invalid transition ${from} \u2192 ${to} for ai; allowed: ${TRANSITIONS[from].join(", ")}; pass a reason if the user requested a skip`
     };
   }
   if (to === "review" && openCriteria2 > 0) {
     return {
       ok: false,
-      error: `cannot move to review: ${openCriteria2} unchecked acceptance criteria; check them (kdd criteria check) or pass --reason if user asked to skip`
+      error: `cannot move to review: ${openCriteria2} unchecked acceptance criteria; check them (kdd criteria check) or pass a reason if the user asked to skip`
     };
   }
   return { ok: true };
@@ -21909,7 +21909,7 @@ function createServer(getCtx, actor) {
   server.registerTool(
     "update_task",
     {
-      description: "Edit, move and/or comment a single task (actor=ai)",
+      description: "Edit, move and/or comment a single task (actor=ai). A move may be refused (unchecked criteria, a task you submitted for review yourself) \u2014 the way through is move.reason, and only once the user has asked for it",
       inputSchema: {
         id: external_exports.number().int().positive(),
         edit: external_exports.object({

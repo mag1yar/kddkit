@@ -39,7 +39,7 @@ describe('checkMove', () => {
     const res = checkMove('new', 'done', { type: 'ai' });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toBe(
-      'invalid transition new → done for ai; allowed: backlog, in_progress; pass --reason if user requested a skip');
+      'invalid transition new → done for ai; allowed: backlog, in_progress; pass a reason if the user requested a skip');
   });
 
   it('ai cannot move to review with unchecked criteria', () => {
