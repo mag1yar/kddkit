@@ -102,8 +102,7 @@ export const setTrackDone = (id: number) =>
   req<Track>(`/api/tracks/${id}`, { method: 'PATCH', body: JSON.stringify({ status: 'done' }) });
 export const deleteTrack = (id: number) =>
   req<{ ok: true }>(`/api/tracks/${id}`, { method: 'DELETE' });
-export const getBoard = (trackId?: number) =>
-  req<Board>(trackId ? `/api/board?track=${trackId}` : '/api/board');
+export const getBoard = () => req<Board>('/api/board');
 export const getVersion = () => req<{ version: number }>('/api/version');
 export const getReleases = () => req<ReleaseInfo>('/api/releases');
 export const getAutoTick = () => req<AutoTickState>('/api/autotick');

@@ -16,8 +16,10 @@ const board = (t: Task): BoardData => {
   return b;
 };
 
-const show = (t: Task) => render(
-  <Board board={board(t)} trackName={new Map()} onMove={vi.fn()} onOpen={vi.fn()} />);
+const show = (t: Task) => {
+  const b = board(t);
+  return render(<Board board={b} fullBoard={b} trackName={new Map()} onMove={vi.fn()} onOpen={vi.fn()} />);
+};
 
 afterEach(cleanup);
 
@@ -89,5 +91,50 @@ describe('kind badge', () => {
   it('says nothing about a feature — the silent default', () => {
     show(task({ kind: 'feature' }));
     expect(screen.queryByText('feature')).toBeNull();
+  });
+});
+
+// Регрессия: Kanban-корень (vendored kanban.tsx) не задаёт себе высоту сам — без h-full
+// колонка резолвит h-full против content-sized блока, и короткая/отфильтрованная доска
+// не тянется на весь экран. jsdom не считает layout, поэтому проверяем класс, не пиксели.
+describe('board fills the viewport', () => {
+  it('the Kanban root carries h-full', () => {
+    const { container } = show(task());
+    expect(container.querySelector('[data-slot="kanban"]')?.className).toContain('h-full');
+  });
+});
+
+// Доска рисует отфильтрованное, а порядок для сервера считает по полному списку —
+// иначе перетаскивание при активном фильтре молча перемешивает скрытые карточки.
+describe('filtered board', () => {
+  const two = (visible: Task[], hidden: Task[]): [BoardData, BoardData] => {
+    const full = Object.fromEntries(STATUSES.map((s) => [s, []])) as unknown as BoardData;
+    const vis = Object.fromEntries(STATUSES.map((s) => [s, []])) as unknown as BoardData;
+    for (const t of [...visible, ...hidden]) full[t.status].push(t);
+    for (const t of visible) vis[t.status].push(t);
+    return [vis, full];
+  };
+
+  it('renders only the cards it was given', () => {
+    const [vis, full] = two([task({ id: 1, title: 'visible one' })], [task({ id: 2, title: 'hidden one' })]);
+    render(<Board board={vis} fullBoard={full} trackName={new Map()} onMove={vi.fn()} onOpen={vi.fn()} />);
+    expect(screen.getByText('visible one')).toBeTruthy();
+    expect(screen.queryByText('hidden one')).toBeNull();
+  });
+
+  it('counts filtered out of total in the column header', () => {
+    const [vis, full] = two(
+      [task({ id: 1 })],
+      [task({ id: 2 }), task({ id: 3 })],
+    );
+    render(<Board board={vis} fullBoard={full} trackName={new Map()} onMove={vi.fn()} onOpen={vi.fn()} />);
+    expect(screen.getByText('1 / 3')).toBeTruthy();
+  });
+
+  it('shows a bare count when nothing is filtered', () => {
+    const [vis] = two([task({ id: 1 })], []);
+    render(<Board board={vis} fullBoard={vis} trackName={new Map()} onMove={vi.fn()} onOpen={vi.fn()} />);
+    expect(screen.getByText('1')).toBeTruthy();
+    expect(screen.queryByText('1 / 1')).toBeNull();
   });
 });

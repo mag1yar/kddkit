@@ -1,14 +1,24 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import App from '../src/web/App';
-import { STATUSES, projectHref, type Board } from '../src/web/api';
+import { STATUSES, projectHref, type Board, type Task } from '../src/web/api';
+
+const task = (over: Partial<Task> = {}): Task => ({
+  id: 1, title: 'do a thing', body: null, status: 'new', blocked: 0, block_reason: null,
+  priority: 'medium', kind: 'feature', area: null, track_id: null, ready: 1,
+  criteria_checked: 0, criteria_total: 0, created_at: 0, updated_at: 0, ...over,
+});
 
 // Единственный мок здесь — сетевая граница (fetch), ровно как в серверных тестах единственная
 // подмена — путь к базе. Всё остальное настоящее: настоящий App, настоящие хуки, настоящий DOM.
 function stubFetch(): Map<string, number> {
   const calls = new Map<string, number>();
   const board = Object.fromEntries(STATUSES.map((s) => [s, []])) as unknown as Board;
+  board.new.push(
+    task({ id: 1, title: 'fix login bug' }),
+    task({ id: 2, title: 'write docs' }),
+  );
   const body = (path: string): unknown => {
     if (path.startsWith('/api/version')) return { version: 1 };
     if (path.startsWith('/api/releases')) {
@@ -76,5 +86,41 @@ describe('projectHref', () => {
   it('adds nothing that was not in the URL', () => {
     window.history.replaceState({}, '', '/');
     expect(projectHref('abc')).toBe('?project=abc');
+  });
+});
+
+// Фильтр обязан переживать перезагрузку и уезжать в ссылку — иначе им нельзя поделиться,
+// а «пустая доска» после F5 читается как потеря задач.
+describe('filter in the URL', () => {
+  it('starts filtered when the address bar says so', async () => {
+    stubFetch();
+    await act(async () => {
+      window.history.replaceState({}, '', '/?project=abc123&kind=bug');
+      render(<App />);
+    });
+    expect(screen.getByRole('button', { name: 'Kind: bug' })).toBeTruthy();
+  });
+
+  it('mirrors the filter into the address bar and keeps the project there', async () => {
+    stubFetch();
+    await act(async () => { mount(); });
+    await act(async () => {
+      fireEvent.change(screen.getByPlaceholderText('Search…'), { target: { value: 'воркер' } });
+    });
+    const q = new URLSearchParams(location.search);
+    expect(q.get('q')).toBe('воркер');
+    expect(q.get('project')).toBe('abc123');
+  });
+
+  // Ревью: ничего не падает, если fullBoard[to] и board[to] в Board.tsx перепутаны местами —
+  // нужен тест, который реально прячет карточку через фильтр из URL, а не просто читает JSON.
+  it('a URL filter hides the non-matching card and keeps the matching one', async () => {
+    stubFetch();
+    await act(async () => {
+      window.history.replaceState({}, '', '/?project=abc123&q=login');
+      render(<App />);
+    });
+    expect(screen.getByText('fix login bug')).toBeTruthy();
+    expect(screen.queryByText('write docs')).toBeNull();
   });
 });

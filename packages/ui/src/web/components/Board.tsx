@@ -1,4 +1,3 @@
-import { arrayMove } from '@dnd-kit/sortable';
 import { Bug, FlaskConical, ListChecks, ListX, Wrench } from 'lucide-react';
 import {
   Kanban, KanbanBoard, KanbanColumn, KanbanColumnContent, KanbanItem,
@@ -7,6 +6,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { STATUSES, type Board as BoardData, type Kind, type Priority, type Status, type Task } from '../api';
+import { orderWithHidden } from '../filters';
 
 const PRIORITY_VARIANT: Record<Priority, 'default' | 'secondary' | 'destructive' | 'outline'> =
   { urgent: 'destructive', high: 'default', medium: 'secondary', low: 'outline' };
@@ -45,8 +45,9 @@ function KindBadge({ kind }: { kind: Kind }) {
   );
 }
 
-export function Board({ board, trackName, onMove, onOpen }: {
-  board: BoardData;
+export function Board({ board, fullBoard, trackName, onMove, onOpen }: {
+  board: BoardData;       // отфильтрованная — то, что рисуем
+  fullBoard: BoardData;   // полная — то, из чего считаем порядок для сервера
   trackName: Map<number, string>;
   onMove: (taskId: number, to: Status, order: number[]) => void;
   onOpen: (id: number) => void;
@@ -59,18 +60,21 @@ export function Board({ board, trackName, onMove, onOpen }: {
   ) => {
     const id = Number(event.active.id);
     const to = overContainer as Status;
-    const destIds = board[to].map((t) => t.id);
-    // Итоговый порядок колонки-назначения: reorder внутри → arrayMove; из другой → вставка по индексу.
-    const order = activeContainer === overContainer
-      ? arrayMove(destIds, activeIndex, overIndex)
-      : (destIds.splice(Math.min(Math.max(overIndex, 0), destIds.length), 0, id), destIds);
     if (activeContainer === overContainer && activeIndex === overIndex) return; // ничего не двигали
-    onMove(id, to, order);
+    // Один путь и для reorder внутри колонки, и для переноса между колонками: скрытые фильтром
+    // карточки обязаны сохранить свои позиции, а без фильтра полный список равен видимому.
+    onMove(id, to, orderWithHidden(
+      fullBoard[to].map((t) => t.id), board[to].map((t) => t.id), id, overIndex,
+    ));
   };
 
   return (
     <Kanban
       value={board}
+      // h-full: без него корень — обычный блок с height:auto, и h-full на KanbanBoard ниже
+      // резолвится против контент-высоты — короткая или отфильтрованная доска не тянется
+      // на весь экран (vendored kanban.tsx className не задаёт высоту сама).
+      className="h-full"
       onValueChange={() => {}} // состояние доски ведёт App (оптимистично + рефетч), не local reorder
       getItemValue={(t) => String(t.id)}
       onMove={handleMove}
@@ -79,7 +83,10 @@ export function Board({ board, trackName, onMove, onOpen }: {
           а не по высоте карточек — попасть в короткую колонку было почти нельзя */}
       <KanbanBoard className="flex h-full gap-4 p-4">
         {STATUSES.map((s) => (
-          <Column key={s} status={s} tasks={board[s]} trackName={trackName} onOpen={onOpen} />
+          <Column
+            key={s} status={s} tasks={board[s]} total={fullBoard[s].length}
+            trackName={trackName} onOpen={onOpen}
+          />
         ))}
       </KanbanBoard>
       <KanbanOverlay>
@@ -94,8 +101,9 @@ export function Board({ board, trackName, onMove, onOpen }: {
   );
 }
 
-function Column({ status, tasks, trackName, onOpen }: {
-  status: Status; tasks: Task[]; trackName: Map<number, string>; onOpen: (id: number) => void;
+function Column({ status, tasks, total, trackName, onOpen }: {
+  status: Status; tasks: Task[]; total: number;
+  trackName: Map<number, string>; onOpen: (id: number) => void;
 }) {
   // Колонки семантические (backlog…done) — без drag: не рендерим KanbanColumnHandle.
   // disabled НЕ ставим: dnd-kit disabled вырубает и drop → пустая колонка перестаёт принимать карточки.
@@ -103,7 +111,10 @@ function Column({ status, tasks, trackName, onOpen }: {
     <KanbanColumn value={status} className="flex w-64 min-h-0 shrink-0 flex-col rounded-xl bg-muted/40 p-2 ring-1 ring-foreground/10">
       <div className="flex items-center justify-between px-1.5 py-1">
         <span className="text-sm font-semibold">{COLUMN_TITLE[status]}</span>
-        <Badge variant="outline" className="rounded-sm">{tasks.length}</Badge>
+        {/* При активном фильтре колонка обязана сказать, что она не пуста, а сужена */}
+        <Badge variant="outline" className="rounded-sm">
+          {total === tasks.length ? tasks.length : `${tasks.length} / ${total}`}
+        </Badge>
       </div>
       {/* flex-1 + min-h-0: список забирает остаток колонки (пустая колонка = дроп-зона во всю
           высоту) и скроллится сам; 83 задачи в backlog не тянут страницу */}
