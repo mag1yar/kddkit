@@ -1,8 +1,9 @@
-import type { Status, Priority } from './state.js';
+import type { Status, Priority, Kind } from './state.js';
 
 export interface Task {
   id: number; title: string; body: string | null; status: Status;
   blocked: 0 | 1; block_reason: string | null; priority: Priority; area: string | null;
+  kind: Kind;                   // feature | bug | chore | research; дефолт feature (см. migration 9)
   track_id: number | null;
   claimed_by: string | null;    // 'ai:<id>' | 'user'; NULL когда не занята (инвариант claim)
   claim_expires: number | null; // unix-сек истечения lease

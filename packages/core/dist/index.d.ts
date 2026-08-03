@@ -4,6 +4,7 @@ declare const CAPS: {
     readonly boardRows: 8;
     readonly listRows: 20;
     readonly statusRows: 5;
+    readonly statusBytes: 2048;
     readonly statusEvents: 5;
     readonly titleChars: 50;
     readonly blockReasonChars: 40;
@@ -55,6 +56,8 @@ type Status = 'backlog' | 'new' | 'in_progress' | 'review' | 'done';
 declare const STATUSES: Status[];
 type Priority = 'low' | 'medium' | 'high' | 'urgent';
 declare const PRIORITIES: Priority[];
+type Kind = 'feature' | 'bug' | 'chore' | 'research';
+declare const KINDS: Kind[];
 type Actor = {
     type: 'user' | 'ai';
     id?: string;
@@ -76,6 +79,7 @@ interface Task {
     block_reason: string | null;
     priority: Priority;
     area: string | null;
+    kind: Kind;
     track_id: number | null;
     claimed_by: string | null;
     claim_expires: number | null;
@@ -132,6 +136,7 @@ declare function appendEvent(db: Database.Database, taskId: number | null, actor
     level?: 'info' | 'warn' | 'error';
 }): number;
 declare function mustGetTask(db: Database.Database, id: number): Task;
+declare const BUG_BODY_TEMPLATE = "## Steps\n\n## Expected\n\n## Actual\n";
 declare function addTask(db: Database.Database, input: {
     title: string;
     body?: string;
@@ -139,6 +144,7 @@ declare function addTask(db: Database.Database, input: {
     area?: string;
     track_id?: number;
     criteria?: string[];
+    kind?: Kind;
 }, actor: Actor): Task;
 declare function editTask(db: Database.Database, id: number, patch: {
     title?: string;
@@ -146,6 +152,7 @@ declare function editTask(db: Database.Database, id: number, patch: {
     priority?: Priority;
     area?: string;
     track_id?: number | null;
+    kind?: Kind;
 }, actor: Actor): Task;
 declare function commentTask(db: Database.Database, id: number, body: string, actor: Actor): Comment;
 declare function moveTask(db: Database.Database, id: number, to: string, actor: Actor, reason?: string): Task;
@@ -232,6 +239,7 @@ declare function boardData(db: Database.Database, f?: {
     archived?: boolean;
     track_id?: number;
     ready?: boolean;
+    kind?: Kind;
 }): Record<Status, TaskListRow[]>;
 declare function taskDetail(db: Database.Database, id: number): {
     task: Task;
@@ -458,4 +466,4 @@ declare function setLastRun(db: Database.Database, run: TickRun): void;
 declare function maxWorkers(db: Database.Database): number;
 declare const maxWorkersEnvLocked: () => boolean;
 
-export { type Actor, type AgentEvent, type AgentEventKind, type AutoTick, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionInput, type EventRow, KddError, type KillFn, type KillOutcome, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RunResult, STATUSES, type SpawnFn, type Status, type StopResult, TICK_INTERVALS, TRANSITIONS, type Task, type TaskDetailCapped, type TaskListRow, type TickResult, type TickRun, type Track, _cacheUntil, _resetCache, addCriterion, addDecision, addTask, appendAgentEvent, appendEvent, archiveTask, authorOf, blockTask, boardData, capDetail, capText, checkMove, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, contentHash, createTrack, deleteTrack, editTask, editTrack, ensureWorktree, expiredLeases, exportBoard, getAutoTick, getLastRun, headCommit, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listProjects, listTracks, logError, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, now, openDb, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, projectPathOf, projectToplevelOf, pruneAgentEvents, reapExpired, rebuild, recall, reclaimExpired, recordFailedAttempt, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, slugify, statusDigest, stopWorkers, sweepWorktrees, syncIndex, taskBranchHead, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, worktreePath };
+export { type Actor, type AgentEvent, type AgentEventKind, type AutoTick, BUG_BODY_TEMPLATE, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionInput, type EventRow, KINDS, KddError, type KillFn, type KillOutcome, type Kind, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RunResult, STATUSES, type SpawnFn, type Status, type StopResult, TICK_INTERVALS, TRANSITIONS, type Task, type TaskDetailCapped, type TaskListRow, type TickResult, type TickRun, type Track, _cacheUntil, _resetCache, addCriterion, addDecision, addTask, appendAgentEvent, appendEvent, archiveTask, authorOf, blockTask, boardData, capDetail, capText, checkMove, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, contentHash, createTrack, deleteTrack, editTask, editTrack, ensureWorktree, expiredLeases, exportBoard, getAutoTick, getLastRun, headCommit, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listProjects, listTracks, logError, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, now, openDb, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, projectPathOf, projectToplevelOf, pruneAgentEvents, reapExpired, rebuild, recall, reclaimExpired, recordFailedAttempt, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, slugify, statusDigest, stopWorkers, sweepWorktrees, syncIndex, taskBranchHead, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, worktreePath };

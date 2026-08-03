@@ -9,7 +9,7 @@ import {
   KddError, addCriterion, addTask, blockTask, boardData, closeDb, commentTask, createTrack, deleteTrack,
   editTask, editTrack, getAutoTick, getLastRun, kddHome, listAgentEvents, listProjects, listTracks,
   maxWorkers, maxWorkersEnvLocked, moveTask, openDb, placeTask, releaseInfo, removeCriterion,
-  setAutoTick, setCriterionChecked, taskDetail, unblockTask, type Priority,
+  setAutoTick, setCriterionChecked, taskDetail, unblockTask, type Kind, type Priority,
 } from '@kddkit/core';
 
 export {
@@ -253,6 +253,7 @@ export function createApp(
       title: String(b.title ?? ''),
       body: b.body as string | undefined,
       priority: b.priority as Priority | undefined,
+      kind: b.kind as Kind | undefined,
       track_id: b.track_id as number | undefined,
     }, USER));
   });
@@ -263,6 +264,7 @@ export function createApp(
       title: b.title as string | undefined,
       body: b.body as string | undefined,
       priority: b.priority as Priority | undefined,
+      kind: b.kind as Kind | undefined,
       track_id: b.track_id as number | null | undefined,
     }, USER));
   });

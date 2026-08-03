@@ -316,6 +316,29 @@ describe('projectPool', () => {
   });
 });
 
+describe('kind over the http api', () => {
+  it('is accepted on create and echoed back', async () => {
+    const { app } = mk();
+    const res = await app.request('/api/tasks', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'broken', kind: 'bug' }),
+    });
+    expect(await res.json()).toMatchObject({ title: 'broken', kind: 'bug' });
+  });
+
+  it('is patchable', async () => {
+    const { db, app } = mk();
+    addTask(db, { title: 'a' }, user);
+    const res = await app.request('/api/tasks/1', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'chore' }),
+    });
+    expect(await res.json()).toMatchObject({ kind: 'chore' });
+  });
+});
+
 // #34: сервер обслуживает ЛЮБОЙ проект из ~/.kdd по ?project=<hash> — в том числе доску,
 // которую уже мигрировал более новый kdd из другого worktree. Ошибка обязана доехать до
 // вкладки текстом, а не 500 «internal error».

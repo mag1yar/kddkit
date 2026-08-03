@@ -21,6 +21,7 @@ export function renderAge(epoch: number): string {
 // чтобы taskLine обслуживал оба источника без дублирования.
 function taskLine(t: Task & { criteria_total?: number; criteria_checked?: number }): string {
   const bits = [`#${t.id}`, cap(t.title, CAPS.titleChars), `[${t.priority}]`];
+  if (t.kind !== 'feature') bits.push(`{${t.kind}}`); // дефолт молчит: см. spec task-kind
   if (t.area) bits.push(`@${t.area}`);
   if (t.criteria_total) bits.push(`${t.criteria_checked}/${t.criteria_total}`);
   if (t.blocked) bits.push(`BLOCKED: ${cap(t.block_reason ?? '', CAPS.blockReasonChars)}`);
@@ -45,6 +46,7 @@ export function renderShow(d: TaskDetailCapped): string {
   const lines = [
     `#${t.id} ${t.title}`,
     `status: ${t.status}${t.blocked ? ` (BLOCKED: ${t.block_reason})` : ''}` +
+      `  kind: ${t.kind}` +
       `  priority: ${t.priority}${t.area ? `  area: ${t.area}` : ''}` +
       `${t.archived_at ? '  ARCHIVED' : ''}`,
   ];
@@ -107,23 +109,48 @@ export function renderTracks(ts: (Track & { open_tasks: number })[]): string {
   }).join('\n');
 }
 
+// Строки статуса не bounded by row count: {kind}-маркер и BLOCKED: reason растягивают одну
+// строку сильнее, чем statusRows режет их число. Поэтому, как renderRecall с recallBytes,
+// после сборки режем с конца по байтовому бюджету — и, в отличие от renderRecall, режем
+// по секциям, чтобы каждое "(+N more)" оставалось правдой, а не молчаливой недостачей.
 export function renderStatus(d: {
   in_progress: Task[]; review: Task[]; blocked: Task[]; recent: EventRow[];
 }): string {
-  const lines: string[] = [];
-  const section = (name: string, ts: Task[]) => {
-    lines.push(`${name} (${ts.length})`);
-    const shown = ts.slice(0, CAPS.statusRows);
-    for (const t of shown) lines.push(taskLine(t));
-    if (ts.length > shown.length) lines.push(`  (+${ts.length - shown.length} more)`);
+  const mkSection = (name: string, ts: Task[]) => ({
+    header: `${name} (${ts.length})`,
+    total: ts.length,
+    rows: ts.slice(0, CAPS.statusRows).map(taskLine),
+  });
+  // Порядок = порядок вывода, важно для "снизу вверх" при урезании.
+  const sections = [
+    mkSection('in_progress', d.in_progress),
+    mkSection('review', d.review),
+    mkSection('blocked', d.blocked),
+  ];
+  const recent = d.recent.map((e) =>
+    `  ${renderAge(e.created_at)} ago ${e.actor_type} ${e.action} #${e.task_id ?? '-'}`);
+  let recentHidden = 0;
+
+  const render = (): string => {
+    const lines: string[] = [];
+    for (const s of sections) {
+      lines.push(s.header, ...s.rows);
+      const hidden = s.total - s.rows.length;
+      if (hidden > 0) lines.push(`  (+${hidden} more)`);
+    }
+    lines.push('recent:', ...recent);
+    if (recentHidden > 0) lines.push(`  (+${recentHidden} more, see kdd show <id> for history)`);
+    return lines.join('\n');
   };
-  section('in_progress', d.in_progress);
-  section('review', d.review);
-  section('blocked', d.blocked);
-  lines.push('recent:');
-  for (const e of d.recent) {
-    lines.push(`  ${renderAge(e.created_at)} ago ${e.actor_type} ${e.action}` +
-      ` #${e.task_id ?? '-'}`);
+
+  // Наименее ценное первым: recent — уже прошлое, не блокирует работу; затем строки секций
+  // снизу вверх (blocked -> review -> in_progress) — то, ради чего скорее всего открыли status,
+  // остаётся видно дольше всего.
+  while (Buffer.byteLength(render(), 'utf8') > CAPS.statusBytes) {
+    if (recent.length > 0) { recent.pop(); recentHidden++; continue; }
+    const s = [...sections].reverse().find((s) => s.rows.length > 0);
+    if (!s) break; // резать больше нечего — отдаём как есть, дальше только заголовки и маркеры
+    s.rows.pop();
   }
-  return lines.join('\n');
+  return render();
 }

@@ -21115,6 +21115,10 @@ var CAPS = {
   // строк на колонку в MCP list_tasks (Claude, без байт-бюджета)
   statusRows: 5,
   // строк на секцию kdd status
+  statusBytes: 2048,
+  // бюджет текстовой выдачи kdd status — контракт, structural cap в
+  // renderStatus (как recallBytes в renderRecall): строк не хватает
+  // как замера, заголовок/kind-маркер/blocked-reason не bounded by row count
   statusEvents: 5,
   // recent-событий в statusDigest
   titleChars: 50,
@@ -21295,6 +21299,14 @@ var MIGRATIONS = [
     created_at INTEGER NOT NULL
   );
   CREATE INDEX idx_agent_events_task ON agent_events(task_id, id);
+  `,
+  `
+  -- \u0422\u0438\u043F \u0440\u0430\u0431\u043E\u0442\u044B. \u0414\u0435\u0444\u043E\u043B\u0442 'feature' \u041C\u041E\u041B\u0427\u0410\u041B\u0418\u0412\u042B\u0419: \u043A\u0430\u0440\u0442\u043E\u0447\u043A\u0430 \u0435\u0433\u043E \u043D\u0435 \u0440\u0438\u0441\u0443\u0435\u0442, \u043F\u043E\u044D\u0442\u043E\u043C\u0443
+  -- \u0437\u0430\u0434\u0430\u0447\u0438, \u0437\u0430\u0432\u0435\u0434\u0451\u043D\u043D\u044B\u0435 \u0434\u043E \u044D\u0442\u043E\u0439 \u043C\u0438\u0433\u0440\u0430\u0446\u0438\u0438, \u043D\u0435 \u043D\u0430\u0447\u0438\u043D\u0430\u044E\u0442 \u0443\u0442\u0432\u0435\u0440\u0436\u0434\u0430\u0442\u044C \xAB\u044D\u0442\u043E \u0444\u0438\u0447\u0430\xBB. NOT NULL, \u0430 \u043D\u0435
+  -- nullable: \u043A \u0442\u0438\u043F\u0443 \u043F\u0440\u0438\u0432\u044F\u0437\u0430\u043D\u043E \u043F\u043E\u0432\u0435\u0434\u0435\u043D\u0438\u0435 (claim, \u043F\u0440\u043E\u043C\u043F\u0442, \u0442\u0438\u043F \u043A\u043E\u043C\u043C\u0438\u0442\u0430), \u0438 NULL-\u0432\u0435\u0442\u043A\u0430 \u0432 \u043A\u0430\u0436\u0434\u043E\u043C
+  -- \u043F\u043E\u0442\u0440\u0435\u0431\u0438\u0442\u0435\u043B\u0435 \u0431\u044B\u043B\u0430 \u0431\u044B \u0446\u0435\u043D\u043E\u0439 \u0431\u0435\u0437 \u0432\u044B\u0433\u043E\u0434\u044B.
+  ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'feature'
+    CHECK (kind IN ('feature','bug','chore','research'));
   `
 ];
 function backupBeforeMigrate(db, dbPath, from) {
@@ -21379,6 +21391,7 @@ function resolveDecisionsDir(cwd = process.cwd()) {
 }
 var STATUSES = ["backlog", "new", "in_progress", "review", "done"];
 var PRIORITIES = ["low", "medium", "high", "urgent"];
+var KINDS = ["feature", "bug", "chore", "research"];
 var TRANSITIONS = {
   backlog: ["new"],
   new: ["backlog", "in_progress"],
@@ -21483,8 +21496,14 @@ function checkPriority(p) {
     throw new KddError(`invalid priority '${p}'; allowed: ${PRIORITIES.join(", ")}`);
   }
 }
+function checkKind(k) {
+  if (!KINDS.includes(k)) {
+    throw new KddError(`invalid kind '${k}'; allowed: ${KINDS.join(", ")}`);
+  }
+}
 function editTask(db, id, patch, actor) {
   if (patch.priority !== void 0) checkPriority(patch.priority);
+  if (patch.kind !== void 0) checkKind(patch.kind);
   if (patch.track_id != null) mustGetTrack(db, patch.track_id);
   const fields = Object.keys(patch).filter((k) => patch[k] !== void 0);
   if (fields.length === 0) throw new KddError("nothing to edit");
@@ -21678,13 +21697,17 @@ function recall(db, decisionsDir, query, opts = {}) {
   });
 }
 var PRIORITY_ORDER = `CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
-var READY_SQL = `(status = 'new' AND blocked = 0 AND archived_at IS NULL)`;
+var READY_SQL = `(status = 'new' AND blocked = 0 AND archived_at IS NULL AND kind <> 'research')`;
 function boardData(db, f = {}) {
   const where = [f.archived ? "archived_at IS NOT NULL" : "archived_at IS NULL"];
   const params = [];
   if (f.area) {
     where.push("area = ?");
     params.push(f.area);
+  }
+  if (f.kind) {
+    where.push("kind = ?");
+    params.push(f.kind);
   }
   if (f.track_id != null) {
     where.push("track_id = ?");
@@ -21770,6 +21793,7 @@ function listTasks(db, filter = {}) {
       id: t.id,
       title: t.title,
       status: t.status,
+      kind: t.kind,
       priority: t.priority,
       blocked: !!t.blocked,
       ready: !!t.ready,
@@ -21812,6 +21836,7 @@ function guard(db, fn) {
 }
 var statusEnum = external_exports.enum(STATUSES);
 var priorityEnum = external_exports.enum(PRIORITIES);
+var kindEnum = external_exports.enum(KINDS);
 function createServer(db, dir, actor) {
   const server = new McpServer({ name: "kdd", version: "0.1.0" });
   server.registerTool(
@@ -21825,10 +21850,11 @@ function createServer(db, dir, actor) {
   server.registerTool(
     "list_tasks",
     {
-      description: `Compact board rows in tasks, grouped by status (no body), top ${CAPS.listRows} per status; each row has ready (takeable now) and criteria {checked,total}; an omitted map names truncated columns \u2014 narrow with status/track_id/area/ready`,
+      description: `Compact board rows in tasks, grouped by status (no body), top ${CAPS.listRows} per status; each row has kind (feature|bug|chore|research), ready (takeable now) and criteria {checked,total}; an omitted map names truncated columns \u2014 narrow with status/kind/track_id/area/ready`,
       inputSchema: {
         status: statusEnum.optional(),
         area: external_exports.string().optional(),
+        kind: kindEnum.optional(),
         track_id: external_exports.number().int().positive().optional(),
         ready: external_exports.boolean().optional()
       }
@@ -21865,6 +21891,7 @@ function createServer(db, dir, actor) {
           title: external_exports.string().optional(),
           body: external_exports.string().optional(),
           priority: priorityEnum.optional(),
+          kind: kindEnum.optional(),
           area: external_exports.string().optional(),
           track_id: external_exports.number().int().positive().nullable().optional()
         }).optional(),

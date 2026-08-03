@@ -6,7 +6,9 @@ import { Input } from '@/components/ui/input';
 import {
   Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { PRIORITIES, createTask, type Priority, type Track } from '../api';
+import {
+  BUG_BODY_TEMPLATE, KINDS, PRIORITIES, createTask, type Kind, type Priority, type Track,
+} from '../api';
 import { MarkdownEditor } from './MarkdownEditor';
 
 export function NewTaskDialog({ open, tracks, defaultTrack, onClose, onCreated }: {
@@ -16,15 +18,24 @@ export function NewTaskDialog({ open, tracks, defaultTrack, onClose, onCreated }
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [priority, setPriority] = useState<Priority>('medium');
+  const [kind, setKind] = useState<Kind>('feature');
   const [track, setTrack] = useState<number | null>(defaultTrack);
 
   // диалог не размонтируется → синхроним с фильтром доски при открытии
   useEffect(() => { if (open) setTrack(defaultTrack); }, [open, defaultTrack]);
 
+  // Скелет repro — подсказка о форме готовности в момент, когда её ещё можно заполнить.
+  // Только в пустое тело: написанное человеком не трогаем. Обратное переключение типа
+  // текст не забирает — редактор принадлежит автору, а не селекту.
+  const pickKind = (k: Kind) => {
+    setKind(k);
+    if (k === 'bug' && body === '') setBody(BUG_BODY_TEMPLATE);
+  };
+
   const create = () => {
-    createTask({ title, body: body || undefined, priority, track_id: track ?? undefined })
+    createTask({ title, body: body || undefined, priority, kind, track_id: track ?? undefined })
       .then(() => {
-        setTitle(''); setBody(''); setPriority('medium');
+        setTitle(''); setBody(''); setPriority('medium'); setKind('feature');
         onCreated(); onClose();
       })
       .catch((e: Error) => toast.error(e.message));
@@ -42,6 +53,16 @@ export function NewTaskDialog({ open, tracks, defaultTrack, onClose, onCreated }
             className="overflow-hidden rounded-md border focus-within:ring-1 focus-within:ring-ring"
           />
           <div className="flex gap-2">
+            <Select value={kind} onValueChange={(v) => pickKind(v as Kind)}>
+              <SelectTrigger className="w-40 capitalize"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {KINDS.map((k) => (
+                    <SelectItem key={k} value={k} className="capitalize">{k}</SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
             <Select value={priority} onValueChange={(v) => setPriority(v as Priority)}>
               <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
               <SelectContent>

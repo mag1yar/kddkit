@@ -9,13 +9,13 @@ import { fileURLToPath } from 'node:url';
 import lockfile from 'proper-lockfile';
 import {
   KddError, addCriterion, addDecision, addTask, appendAgentEvent, archiveTask, authorOf, blockTask, closeDb,
-  boardData, claimNext, claimTask, commentTask, createTrack, deleteTrack, DEFAULT_TTL, editTask,
-  editTrack, ensureWorktree, exportBoard, headCommit, kddVersion, linkTasks, listAgentEvents, listCriteria, listProjects, taskBranchHead,
+  boardData, BUG_BODY_TEMPLATE, claimNext, claimTask, commentTask, createTrack, deleteTrack, DEFAULT_TTL, editTask,
+  editTrack, ensureWorktree, exportBoard, headCommit, kddVersion, KINDS, linkTasks, listAgentEvents, listCriteria, listProjects, taskBranchHead,
   listTracks, maxWorkers, moveTask, mustGetTask, openDb, parseClaudeStreamLine, rebuild, recall, removeCriterion,
   renewClaim, resolveDbPath, resolveDecisionsDir, resolveToplevel, setAutoTick, setCriterionChecked,
   setProjectToplevel, statusDigest, stopWorkers,
   sweepWorktrees, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask,
-  type KillFn, type Status,
+  type KillFn, type Kind, type Status,
 } from '@kddkit/core';
 import {
   createScheduler, projectPool, startUi, type TickRunner, type WorkerStopper,
@@ -26,6 +26,7 @@ import {
   renderBoard, renderClaim, renderCriteria, renderRecall, renderShow, renderStatus, renderTracks,
 } from './render.js';
 import { createStopRunner, createTickRunner } from './tick-runner.js';
+import { workerPrompt } from './prompt.js';
 
 const program = new Command()
   .name('kdd')
@@ -49,20 +50,6 @@ function readBody(opts: { body?: string; bodyFile?: string }): string | undefine
 // служебную строку за часть задания.
 const runMarker = (tag: string): string =>
   ` Ignore this run marker, it is not part of your task: ${tag}`;
-
-const workerPrompt = (): string =>
-  `You are a kdd agent worker. Read your task: run \`kdd show $KDD_TASK_ID\`. ` +
-  `Do the work in this repository. ` +
-  // комментарий = durable-канал: он в taskDetail (get_task/kdd show), его читают люди и будущие
-  // сессии. Activity-фид туда НЕ входит намеренно (не засоряет LLM-контекст). Потому итог — в коммент.
-  `When done, leave ONE concise summary comment ` +
-  `(\`kdd comment $KDD_TASK_ID "<what you changed and why; caveats or follow-ups>"\`) — this is the ` +
-  `durable note humans and future sessions read, so keep it tight, not a log. Then check acceptance ` +
-  // Сигнатура полностью, с обоими аргументами: на «kdd criteria check» без них агент тратит
-  // ходы на missing required argument и --help, прежде чем добирается до нужной формы.
-  `criteria (\`kdd criteria ls $KDD_TASK_ID\`, then \`kdd criteria check $KDD_TASK_ID <criterionId>\` ` +
-  `for each one) and \`kdd move $KDD_TASK_ID review\`. ` +
-  `If you get blocked or must stop early, comment the reason first.`;
 
 // #19: воркер зовём тем же node, что и сам tick (process.execPath) + абс. путём к этому dist/index.js,
 // а НЕ bare `kdd` через login-shell node. У nvm/fnm-юзеров login-shell node может ≠ node сборки →
@@ -157,13 +144,17 @@ program.command('add')
   .option('--body <md>', 'markdown body, or "-" for stdin')
   .option('--body-file <path>')
   .option('--priority <p>', 'low|medium|high|urgent')
+  .option('--kind <k>', 'feature|bug|chore|research')
   .option('--area <area>')
   .option('--track <id>', 'track id')
   .option('--criterion <text>', 'acceptance criterion (repeatable)', collect, [])
   .option('--json', 'machine-readable output')
   .action((title, o) => run(o.json, () => {
+    // Скелет repro — только в пустое тело и только при создании: он подсказка о форме
+    // готовности, а не содержимое, и затирать написанное человеком ему нечем.
+    const body = readBody(o) ?? (o.kind === 'bug' ? BUG_BODY_TEMPLATE : undefined);
     const t = withDb((db) => addTask(db,
-      { title, body: readBody(o), priority: o.priority, area: o.area,
+      { title, body, priority: o.priority, kind: o.kind as Kind | undefined, area: o.area,
         track_id: o.track ? parseId(o.track) : undefined,
         criteria: o.criterion.length ? o.criterion : undefined }, getActor()));
     out(o.json, t, () => `#${t.id} created`);
@@ -189,13 +180,20 @@ program.command('decide')
 program.command('board')
   .option('--area <area>')
   .option('--status <s>')
+  .option('--kind <k>', 'feature|bug|chore|research')
   .option('--track <id>', 'track id')
   .option('--ready', 'only tasks takeable now (new, not blocked)')
   .option('--archived', 'show archived tasks only')
   .option('--json')
   .action((o) => run(o.json, () => {
+    // add/edit валидируют kind через ops (KINDS-словарь); board шёл прямо в WHERE и типо
+    // тихо давал 0 строк вместо ошибки — то же сообщение, что и там, для единообразия.
+    if (o.kind && !KINDS.includes(o.kind)) {
+      throw new KddError(`invalid kind '${o.kind}'; allowed: ${KINDS.join(', ')}`);
+    }
     const b = withDb((db) => boardData(db,
       { area: o.area, status: o.status as Status | undefined, archived: o.archived,
+        kind: o.kind as Kind | undefined,
         ready: o.ready ? true : undefined,
         track_id: o.track ? parseId(o.track) : undefined }));
     out(o.json, b, () => renderBoard(b));
@@ -441,7 +439,7 @@ program.command('worker')
       const marker = o.tag
         ?? (holdsLease ? workerTag(taskId, dbPath) : `kdd-worker-manual-${taskId}-${process.pid}`);
       // Свой промпт настраивает ИНСТРУКЦИИ, а не lifecycle: маркер дописывается к любому.
-      const prompt = (process.env.KDD_WORKER_PROMPT ?? workerPrompt()) + runMarker(marker);
+      const prompt = (process.env.KDD_WORKER_PROMPT ?? workerPrompt(task.kind, task.area)) + runMarker(marker);
       const args = [...pre, '-p', prompt,
         '--output-format', 'stream-json', '--verbose', '--allowedTools', allowed];
 
@@ -578,12 +576,14 @@ program.command('edit')
   .argument('<id>')
   .option('--title <t>').option('--body <md>').option('--body-file <path>')
   .option('--priority <p>').option('--area <a>')
+  .option('--kind <k>', 'feature|bug|chore|research')
   .option('--track <id>', 'track id, or "none" to detach')
   .option('--json')
   .action((id, o) => run(o.json, () => {
     const track_id = o.track === undefined ? undefined : o.track === 'none' ? null : parseId(o.track);
     const t = withDb((db) => editTask(db, parseId(id),
-      { title: o.title, body: readBody(o), priority: o.priority, area: o.area, track_id },
+      { title: o.title, body: readBody(o), priority: o.priority,
+        kind: o.kind as Kind | undefined, area: o.area, track_id },
       getActor()));
     out(o.json, t, () => `#${t.id} updated`);
   }));

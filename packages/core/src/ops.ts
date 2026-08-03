@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3';
 import { redact } from './agent_events.js';
 import { now } from './db.js';
 import { KddError } from './errors.js';
-import { checkMove, PRIORITIES, STATUSES, type Actor, type Priority, type Status } from './state.js';
+import { checkMove, KINDS, PRIORITIES, STATUSES, type Actor, type Kind, type Priority, type Status } from './state.js';
 import type { Comment, Task } from './types.js';
 import { mustGetTrack } from './tracks.js';
 
@@ -35,16 +35,29 @@ function checkPriority(p: string): asserts p is Priority {
   }
 }
 
+function checkKind(k: string): asserts k is Kind {
+  if (!KINDS.includes(k as Kind)) {
+    throw new KddError(`invalid kind '${k}'; allowed: ${KINDS.join(', ')}`);
+  }
+}
+
+// Скелет тела бага: форма готовности у бага — воспроизведение, и она должна быть видна
+// в момент заведения, а не вспоминаться потом. Подставляется только при СОЗДАНИИ и только
+// в пустое тело; ничего не гейтит, пустой не блокирует (см. spec 2026-08-03-task-kind-design).
+export const BUG_BODY_TEMPLATE = '## Steps\n\n## Expected\n\n## Actual\n';
+
 export function addTask(
   db: Database.Database,
   input: {
     title: string; body?: string; priority?: Priority; area?: string;
-    track_id?: number; criteria?: string[];
+    track_id?: number; criteria?: string[]; kind?: Kind;
   },
   actor: Actor,
 ): Task {
   const priority = input.priority ?? 'medium';
   checkPriority(priority);
+  const kind = input.kind ?? 'feature';
+  checkKind(kind);
   if (!input.title.trim()) throw new KddError('title must not be empty');
   if (input.criteria?.some((c) => !c.trim())) {
     throw new KddError('criterion text must not be empty');
@@ -53,10 +66,10 @@ export function addTask(
   return db.transaction(() => {
     const ts = now();
     const r = db.prepare(
-      `INSERT INTO tasks (title, body, priority, area, track_id, position, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(input.title, input.body ?? null, priority, input.area ?? null, input.track_id ?? null,
-      nextPosition(db, 'new'), ts, ts);
+      `INSERT INTO tasks (title, body, priority, kind, area, track_id, position, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(input.title, input.body ?? null, priority, kind, input.area ?? null,
+      input.track_id ?? null, nextPosition(db, 'new'), ts, ts);
     const id = Number(r.lastInsertRowid);
     // criteria при создании — без criterion_added-событий: их покрывает 'created'
     const ins = db.prepare(
@@ -69,10 +82,14 @@ export function addTask(
 
 export function editTask(
   db: Database.Database, id: number,
-  patch: { title?: string; body?: string; priority?: Priority; area?: string; track_id?: number | null },
+  patch: {
+    title?: string; body?: string; priority?: Priority; area?: string;
+    track_id?: number | null; kind?: Kind;
+  },
   actor: Actor,
 ): Task {
   if (patch.priority !== undefined) checkPriority(patch.priority);
+  if (patch.kind !== undefined) checkKind(patch.kind);
   if (patch.track_id != null) mustGetTrack(db, patch.track_id);
   const fields = (Object.keys(patch) as (keyof typeof patch)[])
     .filter((k) => patch[k] !== undefined);

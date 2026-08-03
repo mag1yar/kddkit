@@ -1,13 +1,14 @@
 import type Database from 'better-sqlite3';
 import {
   CAPS, capText, boardData, taskDetail, taskDetailCapped, recall, editTask, moveTask,
-  commentTask, mustGetTask, listTracks, KddError, type Actor, type Priority, type Status,
+  commentTask, mustGetTask, listTracks, KddError, type Actor, type Priority, type Status, type Kind,
 } from '@kddkit/core';
 
 export interface TaskRow {
   id: number;
   title: string;
   status: string;
+  kind: string;
   priority: string;
   blocked: boolean;
   ready: boolean;
@@ -30,7 +31,7 @@ export function listTracksTool(db: Database.Database) {
 
 export function listTasks(
   db: Database.Database,
-  filter: { status?: Status; area?: string; track_id?: number; ready?: boolean } = {},
+  filter: { status?: Status; area?: string; track_id?: number; ready?: boolean; kind?: Kind } = {},
 ): { tasks: Record<string, TaskRow[]>; omitted?: Record<string, number> } {
   const board = boardData(db, filter);
   const tasks: Record<string, TaskRow[]> = {};
@@ -38,7 +39,7 @@ export function listTasks(
   for (const [status, rows] of Object.entries(board)) {
     if (rows.length > CAPS.listRows) omitted[status] = rows.length - CAPS.listRows;
     tasks[status] = rows.slice(0, CAPS.listRows).map((t) => ({
-      id: t.id, title: t.title, status: t.status,
+      id: t.id, title: t.title, status: t.status, kind: t.kind,
       priority: t.priority, blocked: !!t.blocked, ready: !!t.ready,
       criteria: { checked: t.criteria_checked, total: t.criteria_total },
     }));
@@ -55,7 +56,7 @@ export function recallTool(
 
 export interface UpdateInput {
   id: number;
-  edit?: { title?: string; body?: string; priority?: Priority; area?: string; track_id?: number | null };
+  edit?: { title?: string; body?: string; priority?: Priority; area?: string; track_id?: number | null; kind?: Kind };
   move?: { to: string; reason?: string };
   comment?: string;
 }

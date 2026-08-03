@@ -141,6 +141,14 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX idx_agent_events_task ON agent_events(task_id, id);
   `,
+  `
+  -- Тип работы. Дефолт 'feature' МОЛЧАЛИВЫЙ: карточка его не рисует, поэтому
+  -- задачи, заведённые до этой миграции, не начинают утверждать «это фича». NOT NULL, а не
+  -- nullable: к типу привязано поведение (claim, промпт, тип коммита), и NULL-ветка в каждом
+  -- потребителе была бы ценой без выгоды.
+  ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'feature'
+    CHECK (kind IN ('feature','bug','chore','research'));
+  `,
 ];
 
 // Копия базы перед миграцией. VACUUM INTO, а не copyFile: она пишет один консистентный файл,

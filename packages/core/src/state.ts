@@ -4,6 +4,11 @@ export const STATUSES: Status[] = ['backlog', 'new', 'in_progress', 'review', 'd
 export type Priority = 'low' | 'medium' | 'high' | 'urgent';
 export const PRIORITIES: Priority[] = ['low', 'medium', 'high', 'urgent'];
 
+// Тип работы. От него расходятся форма готовности, промпт воркера и тип коммита —
+// это не ярлык. Словарь закрытый: расширяется миграцией и осознанно.
+export type Kind = 'feature' | 'bug' | 'chore' | 'research';
+export const KINDS: Kind[] = ['feature', 'bug', 'chore', 'research'];
+
 export type Actor = { type: 'user' | 'ai'; id?: string };
 
 export const TRANSITIONS: Record<Status, Status[]> = {

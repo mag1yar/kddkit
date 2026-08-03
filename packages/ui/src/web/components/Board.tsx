@@ -1,19 +1,49 @@
 import { arrayMove } from '@dnd-kit/sortable';
-import { ListChecks, ListX } from 'lucide-react';
+import { Bug, FlaskConical, ListChecks, ListX, Wrench } from 'lucide-react';
 import {
   Kanban, KanbanBoard, KanbanColumn, KanbanColumnContent, KanbanItem,
   KanbanItemHandle, KanbanOverlay, type KanbanMoveEvent,
 } from '@/components/reui/kanban';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
-import { STATUSES, type Board as BoardData, type Priority, type Status, type Task } from '../api';
+import { STATUSES, type Board as BoardData, type Kind, type Priority, type Status, type Task } from '../api';
 
 const PRIORITY_VARIANT: Record<Priority, 'default' | 'secondary' | 'destructive' | 'outline'> =
   { urgent: 'destructive', high: 'default', medium: 'secondary', low: 'outline' };
 
+// feature в карте нет намеренно: дефолт молчит (см. spec 2026-08-03-task-kind-design).
+// Задачи, заведённые до типизации, получили 'feature' от миграции, и рисовать его значило бы
+// заставить доску утверждать то, чего никто не выбирал.
+const KIND_ICON: Record<Exclude<Kind, 'feature'>, typeof Bug> = {
+  bug: Bug, chore: Wrench, research: FlaskConical,
+};
+
 const COLUMN_TITLE: Record<Status, string> = {
   backlog: 'Backlog', new: 'New', in_progress: 'In Progress', review: 'Review', done: 'Done',
 };
+
+function KindBadge({ kind }: { kind: Kind }) {
+  if (kind === 'feature') return null;
+  const Icon = KIND_ICON[kind];
+  // Вокабуляр может разъехаться с core (см. api.ts): неизвестный kind рисует пустоту,
+  // а не роняет всю доску на "Element type is invalid".
+  if (!Icon) return null;
+  return (
+    <Badge
+      variant={kind === 'bug' ? 'destructive' : 'outline'}
+      // research — единственный kind, который claimNext агенту никогда не отдаёт (core/claim.ts:
+      // CLAIMABLE_SQL). title + sr-only по образцу «no criteria» ниже: title не доходит ни до
+      // скринридера, ни до тача.
+      title={kind === 'research' ? 'an agent will never pick up this task' : undefined}
+      className={cn('h-5 gap-1 rounded-sm px-1.5 text-xs',
+        kind !== 'bug' && 'text-muted-foreground')}
+    >
+      <Icon className="size-3" />
+      {kind}
+      {kind === 'research' && <span className="sr-only"> — agents will not take this task</span>}
+    </Badge>
+  );
+}
 
 export function Board({ board, trackName, onMove, onOpen }: {
   board: BoardData;
@@ -106,6 +136,7 @@ function TaskCard({ task, trackName, onOpen, asHandle }: {
       {/* wrap + min-w-0: дети все shrink-0, и без переноса длинный трек вместе с бейджами
           вылезал за карточку на соседнюю колонку — карточка не режет overflow */}
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 pt-2 text-xs text-muted-foreground">
+        <KindBadge kind={task.kind} />
         <span>#{task.id}</span>
         {track && (
           <Badge variant="outline" className="h-5 max-w-[9rem] truncate rounded-sm px-1.5 text-xs">

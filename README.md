@@ -90,6 +90,24 @@ Full command set: `add`, `board`, `show`, `move`, `edit`, `comment`,
 `status`, `rebuild`, `projects`, `export`, `ui`. Add `--json` to most for
 machine-readable output.
 
+### Task kinds
+
+Every task carries a kind: `feature` (the default), `bug`, `chore` or `research`. It is not a
+label — three rules hang off it. A `research` task is never picked up by an agent: its
+deliverable is a recorded decision, not a commit. The worker prompt branches on it, so a bug
+worker is told to reproduce the failure and fix the cause rather than the symptom. And it
+fixes the commit type the worker writes (`feat` / `fix` / `chore` / `docs`), which matters
+because the release notes are generated from commit subjects and a non-conventional subject is
+dropped silently.
+
+Only non-default kinds are shown on a card: a board full of tasks that predate kinds says
+nothing about them rather than calling them all features.
+
+```bash
+kdd add "crashes on start" --kind bug   # seeds an empty body with Steps / Expected / Actual
+kdd board --kind bug
+```
+
 Prefer not to link globally? Run it directly: `node /path/to/kddkit/packages/cli/dist/index.js ui`.
 
 The board listens on `127.0.0.1` only — it has no login, and `/api/projects` knows the absolute

@@ -16,9 +16,9 @@ import { History } from './History';
 import { MarkdownEditor } from './MarkdownEditor';
 import { Prose } from './Prose';
 import {
-  PRIORITIES, STATUSES, addComment, addCriterion, blockTask, editTask, getTask, moveTask,
+  KINDS, PRIORITIES, STATUSES, addComment, addCriterion, blockTask, editTask, getTask, moveTask,
   removeCriterion, setCriterionChecked, unblockTask,
-  type Criterion, type Priority, type Status, type Task, type TaskDetail,
+  type Criterion, type Kind, type Priority, type Status, type Task, type TaskDetail,
   type Track,
 } from '../api';
 
@@ -172,6 +172,23 @@ export function TaskDialog({ id, version, tracks, onClose, onChanged }: {
                 <SelectContent>
                   <SelectGroup>
                     {STATUSES.map((s) => <SelectItem key={s} value={s}>{STATUS_LABEL[s]}</SelectItem>)}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </Field>
+
+            <Field label="Kind">
+              <Select
+                value={task.kind}
+                onValueChange={(v) => editTask(task.id, { kind: v as Kind })
+                  .then(after).catch((e: Error) => toast.error(e.message))}
+              >
+                <SelectTrigger className="h-8 w-full capitalize"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {KINDS.map((k) => (
+                      <SelectItem key={k} value={k} className="capitalize">{k}</SelectItem>
+                    ))}
                   </SelectGroup>
                 </SelectContent>
               </Select>

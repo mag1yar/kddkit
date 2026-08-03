@@ -123,7 +123,8 @@ describe('schema version guard', () => {
     const db = openDb(p, 'x');
     db.prepare(`INSERT INTO tasks (title, created_at, updated_at) VALUES ('keep me', 1, 1)`).run();
     // откатываем базу на версию назад вместе с артефактами последней миграции
-    db.exec('DROP TABLE agent_events');
+    // drop-таргет — артефакт ПОСЛЕДНЕЙ миграции; добавили новую миграцию — меняйте вместе с ней
+    db.exec(`ALTER TABLE tasks DROP COLUMN kind`);
     db.pragma(`user_version = ${MIGRATIONS.length - 1}`);
     db.close();
 

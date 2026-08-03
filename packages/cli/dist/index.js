@@ -20,6 +20,7 @@ import {
   blockTask,
   closeDb,
   boardData,
+  BUG_BODY_TEMPLATE,
   claimNext,
   claimTask,
   commentTask,
@@ -32,6 +33,7 @@ import {
   exportBoard,
   headCommit,
   kddVersion,
+  KINDS,
   linkTasks,
   listAgentEvents,
   listCriteria,
@@ -193,6 +195,7 @@ function renderAge(epoch) {
 }
 function taskLine(t) {
   const bits = [`#${t.id}`, cap(t.title, CAPS.titleChars), `[${t.priority}]`];
+  if (t.kind !== "feature") bits.push(`{${t.kind}}`);
   if (t.area) bits.push(`@${t.area}`);
   if (t.criteria_total) bits.push(`${t.criteria_checked}/${t.criteria_total}`);
   if (t.blocked) bits.push(`BLOCKED: ${cap(t.block_reason ?? "", CAPS.blockReasonChars)}`);
@@ -214,7 +217,7 @@ function renderShow(d) {
   const t = d.task;
   const lines = [
     `#${t.id} ${t.title}`,
-    `status: ${t.status}${t.blocked ? ` (BLOCKED: ${t.block_reason})` : ""}  priority: ${t.priority}${t.area ? `  area: ${t.area}` : ""}${t.archived_at ? "  ARCHIVED" : ""}`
+    `status: ${t.status}${t.blocked ? ` (BLOCKED: ${t.block_reason})` : ""}  kind: ${t.kind}  priority: ${t.priority}${t.area ? `  area: ${t.area}` : ""}${t.archived_at ? "  ARCHIVED" : ""}`
   ];
   if (t.body) lines.push("", t.body);
   if (d.criteria.length) {
@@ -270,21 +273,40 @@ function renderTracks(ts) {
   }).join("\n");
 }
 function renderStatus(d) {
-  const lines = [];
-  const section = (name, ts) => {
-    lines.push(`${name} (${ts.length})`);
-    const shown = ts.slice(0, CAPS.statusRows);
-    for (const t of shown) lines.push(taskLine(t));
-    if (ts.length > shown.length) lines.push(`  (+${ts.length - shown.length} more)`);
+  const mkSection = (name, ts) => ({
+    header: `${name} (${ts.length})`,
+    total: ts.length,
+    rows: ts.slice(0, CAPS.statusRows).map(taskLine)
+  });
+  const sections = [
+    mkSection("in_progress", d.in_progress),
+    mkSection("review", d.review),
+    mkSection("blocked", d.blocked)
+  ];
+  const recent = d.recent.map((e) => `  ${renderAge(e.created_at)} ago ${e.actor_type} ${e.action} #${e.task_id ?? "-"}`);
+  let recentHidden = 0;
+  const render = () => {
+    const lines = [];
+    for (const s of sections) {
+      lines.push(s.header, ...s.rows);
+      const hidden = s.total - s.rows.length;
+      if (hidden > 0) lines.push(`  (+${hidden} more)`);
+    }
+    lines.push("recent:", ...recent);
+    if (recentHidden > 0) lines.push(`  (+${recentHidden} more, see kdd show <id> for history)`);
+    return lines.join("\n");
   };
-  section("in_progress", d.in_progress);
-  section("review", d.review);
-  section("blocked", d.blocked);
-  lines.push("recent:");
-  for (const e of d.recent) {
-    lines.push(`  ${renderAge(e.created_at)} ago ${e.actor_type} ${e.action} #${e.task_id ?? "-"}`);
+  while (Buffer.byteLength(render(), "utf8") > CAPS.statusBytes) {
+    if (recent.length > 0) {
+      recent.pop();
+      recentHidden++;
+      continue;
+    }
+    const s = [...sections].reverse().find((s2) => s2.rows.length > 0);
+    if (!s) break;
+    s.rows.pop();
   }
-  return lines.join("\n");
+  return render();
 }
 
 // src/tick-runner.ts
@@ -402,6 +424,24 @@ function createTickRunner(scriptPath, killTimeoutMs, spawnFn = spawnProcess, kil
   });
 }
 
+// src/prompt.ts
+var COMMIT_TYPE = {
+  feature: "feat",
+  bug: "fix",
+  chore: "chore",
+  research: "docs"
+};
+var BODY = {
+  feature: "Read the acceptance criteria first \u2014 they are the definition of done \u2014 then implement them.",
+  bug: "Reproduce the failure first, then find its cause. Fix the CAUSE, not the symptom: grep every caller of the function you are about to touch, because a guard in one caller leaves its siblings broken. Add a test that fails on that cause and passes after your fix, and make sure the whole suite is green \u2014 a fix that breaks a neighbour is not a fix.",
+  chore: "Read the acceptance criteria first \u2014 they are the definition of done. No behaviour test is expected here; the existing suite must stay green.",
+  research: "The deliverable is a written decision, not code. Investigate, then propose the outcome in your summary comment \u2014 decision, rationale, and alternatives considered \u2014 for a human to record with `kdd decide`; decisions are human-gated, so do not run that command yourself."
+};
+var scopeOf = (area) => area && /^[a-z0-9._-]+$/i.test(area) ? `(${area})` : "";
+function workerPrompt(kind, area) {
+  return `You are a kdd agent worker. Read your task: run \`kdd show $KDD_TASK_ID\`. Do the work in this repository. ${BODY[kind]} Commit your work as \`${COMMIT_TYPE[kind]}${scopeOf(area)}: <subject>\` \u2014 the changelog is generated from commit subjects, and a non-conventional subject is silently dropped. When done, leave ONE concise summary comment (\`kdd comment $KDD_TASK_ID "<what you changed and why; caveats or follow-ups>"\`) \u2014 this is the durable note humans and future sessions read, so keep it tight, not a log. Then check acceptance criteria (\`kdd criteria ls $KDD_TASK_ID\`, then \`kdd criteria check $KDD_TASK_ID <criterionId>\` for each one) and \`kdd move $KDD_TASK_ID review\`. If you get blocked or must stop early, comment the reason first.`;
+}
+
 // src/index.ts
 var program = new Command().name("kdd").description("kanban substrate for humans and Claude").version(kddVersion());
 function out(json, obj, text) {
@@ -413,7 +453,6 @@ function readBody(opts) {
   return opts.body;
 }
 var runMarker = (tag) => ` Ignore this run marker, it is not part of your task: ${tag}`;
-var workerPrompt = () => `You are a kdd agent worker. Read your task: run \`kdd show $KDD_TASK_ID\`. Do the work in this repository. When done, leave ONE concise summary comment (\`kdd comment $KDD_TASK_ID "<what you changed and why; caveats or follow-ups>"\`) \u2014 this is the durable note humans and future sessions read, so keep it tight, not a log. Then check acceptance criteria (\`kdd criteria ls $KDD_TASK_ID\`, then \`kdd criteria check $KDD_TASK_ID <criterionId>\` for each one) and \`kdd move $KDD_TASK_ID review\`. If you get blocked or must stop early, comment the reason first.`;
 var sq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 var defaultSpawnCmd = (taskId, tag) => `${sq(process.execPath)} ${sq(fileURLToPath(import.meta.url))} worker ${taskId} --tag ${tag}`;
 var nodeFirstPath = () => [dirname2(process.execPath), process.env.PATH].filter(Boolean).join(delimiter);
@@ -449,13 +488,15 @@ function run(json, fn) {
   }
 }
 var collect = (v, acc) => [...acc, v];
-program.command("add").argument("<title>").option("--body <md>", 'markdown body, or "-" for stdin').option("--body-file <path>").option("--priority <p>", "low|medium|high|urgent").option("--area <area>").option("--track <id>", "track id").option("--criterion <text>", "acceptance criterion (repeatable)", collect, []).option("--json", "machine-readable output").action((title, o) => run(o.json, () => {
+program.command("add").argument("<title>").option("--body <md>", 'markdown body, or "-" for stdin').option("--body-file <path>").option("--priority <p>", "low|medium|high|urgent").option("--kind <k>", "feature|bug|chore|research").option("--area <area>").option("--track <id>", "track id").option("--criterion <text>", "acceptance criterion (repeatable)", collect, []).option("--json", "machine-readable output").action((title, o) => run(o.json, () => {
+  const body = readBody(o) ?? (o.kind === "bug" ? BUG_BODY_TEMPLATE : void 0);
   const t = withDb((db) => addTask(
     db,
     {
       title,
-      body: readBody(o),
+      body,
       priority: o.priority,
+      kind: o.kind,
       area: o.area,
       track_id: o.track ? parseId(o.track) : void 0,
       criteria: o.criterion.length ? o.criterion : void 0
@@ -477,13 +518,17 @@ program.command("decide").argument("<title>").option("--decision <t>").option("-
   out(o.json, r, () => r.created ? `decided: ${r.slug}
 ${r.path}` : `already recorded: ${r.slug}`);
 }));
-program.command("board").option("--area <area>").option("--status <s>").option("--track <id>", "track id").option("--ready", "only tasks takeable now (new, not blocked)").option("--archived", "show archived tasks only").option("--json").action((o) => run(o.json, () => {
+program.command("board").option("--area <area>").option("--status <s>").option("--kind <k>", "feature|bug|chore|research").option("--track <id>", "track id").option("--ready", "only tasks takeable now (new, not blocked)").option("--archived", "show archived tasks only").option("--json").action((o) => run(o.json, () => {
+  if (o.kind && !KINDS.includes(o.kind)) {
+    throw new KddError2(`invalid kind '${o.kind}'; allowed: ${KINDS.join(", ")}`);
+  }
   const b = withDb((db) => boardData(
     db,
     {
       area: o.area,
       status: o.status,
       archived: o.archived,
+      kind: o.kind,
       ready: o.ready ? true : void 0,
       track_id: o.track ? parseId(o.track) : void 0
     }
@@ -660,7 +705,7 @@ program.command("worker").argument("<id>").option("--tag <tag>", "ps-visible run
     if (leaseMismatch) process.stderr.write(`kdd worker: task #${taskId} ${leaseMismatch}
 `);
     const marker = o.tag ?? (holdsLease ? workerTag(taskId, dbPath) : `kdd-worker-manual-${taskId}-${process.pid}`);
-    const prompt = (process.env.KDD_WORKER_PROMPT ?? workerPrompt()) + runMarker(marker);
+    const prompt = (process.env.KDD_WORKER_PROMPT ?? workerPrompt(task.kind, task.area)) + runMarker(marker);
     const args = [
       ...pre,
       "-p",
@@ -783,12 +828,19 @@ program.command("feed").argument("<id>").option("--since <n>", "only events afte
   ));
   out(o.json, rows, () => rows.map((e) => `${e.kind}${e.name ? " " + e.name : ""}${e.detail ? " " + e.detail : ""}`).join("\n") || "no activity");
 }));
-program.command("edit").argument("<id>").option("--title <t>").option("--body <md>").option("--body-file <path>").option("--priority <p>").option("--area <a>").option("--track <id>", 'track id, or "none" to detach').option("--json").action((id, o) => run(o.json, () => {
+program.command("edit").argument("<id>").option("--title <t>").option("--body <md>").option("--body-file <path>").option("--priority <p>").option("--area <a>").option("--kind <k>", "feature|bug|chore|research").option("--track <id>", 'track id, or "none" to detach').option("--json").action((id, o) => run(o.json, () => {
   const track_id = o.track === void 0 ? void 0 : o.track === "none" ? null : parseId(o.track);
   const t = withDb((db) => editTask(
     db,
     parseId(id),
-    { title: o.title, body: readBody(o), priority: o.priority, area: o.area, track_id },
+    {
+      title: o.title,
+      body: readBody(o),
+      priority: o.priority,
+      kind: o.kind,
+      area: o.area,
+      track_id
+    },
     getActor()
   ));
   out(o.json, t, () => `#${t.id} updated`);

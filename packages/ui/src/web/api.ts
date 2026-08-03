@@ -3,10 +3,15 @@ export const STATUSES = ['backlog', 'new', 'in_progress', 'review', 'done'] as c
 export type Status = (typeof STATUSES)[number];
 export const PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const;
 export type Priority = (typeof PRIORITIES)[number];
+export const KINDS = ['feature', 'bug', 'chore', 'research'] as const;
+export type Kind = (typeof KINDS)[number];
+// Дубликат core.BUG_BODY_TEMPLATE — расхождение ловит test/bug-template.test.ts.
+export const BUG_BODY_TEMPLATE = '## Steps\n\n## Expected\n\n## Actual\n';
 
 export interface Task {
   id: number; title: string; body: string | null; status: Status;
   blocked: 0 | 1; block_reason: string | null; priority: Priority; area: string | null;
+  kind: Kind;
   track_id: number | null;
   ready: 0 | 1; // takeable агентом прямо сейчас: new & не blocked & не archived (core: READY_SQL)
   criteria_checked: number; criteria_total: number;
@@ -107,10 +112,10 @@ export const patchAutoTick = (
 ) => req<AutoTickState>('/api/autotick', { method: 'PATCH', body: JSON.stringify(b) });
 export const getTask = (id: number) => req<TaskDetail>(`/api/tasks/${id}`);
 export const createTask =
-  (b: { title: string; body?: string; priority?: Priority; track_id?: number }) =>
+  (b: { title: string; body?: string; priority?: Priority; kind?: Kind; track_id?: number }) =>
     req<Task>('/api/tasks', { method: 'POST', body: JSON.stringify(b) });
 export const editTask = (id: number,
-  b: { title?: string; body?: string; priority?: Priority; track_id?: number | null }) =>
+  b: { title?: string; body?: string; priority?: Priority; kind?: Kind; track_id?: number | null }) =>
   req<Task>(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(b) });
 export const moveTask = (id: number, to: Status, order?: number[]) =>
   req<Task>(`/api/tasks/${id}/move`, { method: 'POST', body: JSON.stringify({ to, order }) });

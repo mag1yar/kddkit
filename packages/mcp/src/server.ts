@@ -4,7 +4,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import {
   CAPS, KddError, logError, openDb, resolveDbPath, resolveDecisionsDir,
-  PRIORITIES, STATUSES, type Actor, type Status,
+  PRIORITIES, STATUSES, KINDS, type Actor, type Status, type Kind,
 } from '@kddkit/core';
 import * as h from './handlers.js';
 
@@ -27,6 +27,7 @@ function guard(db: Database.Database, fn: () => unknown): Result {
 // zod's z.enum needs a non-empty tuple; the core arrays are validated at runtime.
 const statusEnum = z.enum(STATUSES as [Status, ...Status[]]);
 const priorityEnum = z.enum(PRIORITIES as [string, ...string[]]);
+const kindEnum = z.enum(KINDS as [Kind, ...Kind[]]);
 
 export function createServer(db: Database.Database, dir: string, actor: Actor): McpServer {
   const server = new McpServer({ name: 'kdd', version: '0.1.0' });
@@ -43,10 +44,12 @@ export function createServer(db: Database.Database, dir: string, actor: Actor): 
   server.registerTool('list_tasks',
     {
       description: 'Compact board rows in tasks, grouped by status (no body), top '
-        + `${CAPS.listRows} per status; each row has ready (takeable now) and criteria {checked,total}; `
-        + 'an omitted map names truncated columns — narrow with status/track_id/area/ready',
+        + `${CAPS.listRows} per status; each row has kind (feature|bug|chore|research), `
+        + 'ready (takeable now) and criteria {checked,total}; '
+        + 'an omitted map names truncated columns — narrow with status/kind/track_id/area/ready',
       inputSchema: {
         status: statusEnum.optional(), area: z.string().optional(),
+        kind: kindEnum.optional(),
         track_id: z.number().int().positive().optional(),
         ready: z.boolean().optional(),
       },
@@ -80,7 +83,8 @@ export function createServer(db: Database.Database, dir: string, actor: Actor): 
         id: z.number().int().positive(),
         edit: z.object({
           title: z.string().optional(), body: z.string().optional(),
-          priority: priorityEnum.optional(), area: z.string().optional(),
+          priority: priorityEnum.optional(), kind: kindEnum.optional(),
+          area: z.string().optional(),
           track_id: z.number().int().positive().nullable().optional(),
         }).optional(),
         move: z.object({ to: statusEnum, reason: z.string().optional() }).optional(),

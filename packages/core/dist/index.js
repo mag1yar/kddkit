@@ -6,6 +6,10 @@ var CAPS = {
   // строк на колонку в MCP list_tasks (Claude, без байт-бюджета)
   statusRows: 5,
   // строк на секцию kdd status
+  statusBytes: 2048,
+  // бюджет текстовой выдачи kdd status — контракт, structural cap в
+  // renderStatus (как recallBytes в renderRecall): строк не хватает
+  // как замера, заголовок/kind-маркер/blocked-reason не bounded by row count
   statusEvents: 5,
   // recent-событий в statusDigest
   titleChars: 50,
@@ -195,6 +199,14 @@ var MIGRATIONS = [
     created_at INTEGER NOT NULL
   );
   CREATE INDEX idx_agent_events_task ON agent_events(task_id, id);
+  `,
+  `
+  -- \u0422\u0438\u043F \u0440\u0430\u0431\u043E\u0442\u044B. \u0414\u0435\u0444\u043E\u043B\u0442 'feature' \u041C\u041E\u041B\u0427\u0410\u041B\u0418\u0412\u042B\u0419: \u043A\u0430\u0440\u0442\u043E\u0447\u043A\u0430 \u0435\u0433\u043E \u043D\u0435 \u0440\u0438\u0441\u0443\u0435\u0442, \u043F\u043E\u044D\u0442\u043E\u043C\u0443
+  -- \u0437\u0430\u0434\u0430\u0447\u0438, \u0437\u0430\u0432\u0435\u0434\u0451\u043D\u043D\u044B\u0435 \u0434\u043E \u044D\u0442\u043E\u0439 \u043C\u0438\u0433\u0440\u0430\u0446\u0438\u0438, \u043D\u0435 \u043D\u0430\u0447\u0438\u043D\u0430\u044E\u0442 \u0443\u0442\u0432\u0435\u0440\u0436\u0434\u0430\u0442\u044C \xAB\u044D\u0442\u043E \u0444\u0438\u0447\u0430\xBB. NOT NULL, \u0430 \u043D\u0435
+  -- nullable: \u043A \u0442\u0438\u043F\u0443 \u043F\u0440\u0438\u0432\u044F\u0437\u0430\u043D\u043E \u043F\u043E\u0432\u0435\u0434\u0435\u043D\u0438\u0435 (claim, \u043F\u0440\u043E\u043C\u043F\u0442, \u0442\u0438\u043F \u043A\u043E\u043C\u043C\u0438\u0442\u0430), \u0438 NULL-\u0432\u0435\u0442\u043A\u0430 \u0432 \u043A\u0430\u0436\u0434\u043E\u043C
+  -- \u043F\u043E\u0442\u0440\u0435\u0431\u0438\u0442\u0435\u043B\u0435 \u0431\u044B\u043B\u0430 \u0431\u044B \u0446\u0435\u043D\u043E\u0439 \u0431\u0435\u0437 \u0432\u044B\u0433\u043E\u0434\u044B.
+  ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'feature'
+    CHECK (kind IN ('feature','bug','chore','research'));
   `
 ];
 function backupBeforeMigrate(db, dbPath, from) {
@@ -356,6 +368,7 @@ function listProjects() {
 // src/state.ts
 var STATUSES = ["backlog", "new", "in_progress", "review", "done"];
 var PRIORITIES = ["low", "medium", "high", "urgent"];
+var KINDS = ["feature", "bug", "chore", "research"];
 var TRANSITIONS = {
   backlog: ["new"],
   new: ["backlog", "in_progress"],
@@ -627,9 +640,17 @@ function checkPriority(p) {
     throw new KddError(`invalid priority '${p}'; allowed: ${PRIORITIES.join(", ")}`);
   }
 }
+function checkKind(k) {
+  if (!KINDS.includes(k)) {
+    throw new KddError(`invalid kind '${k}'; allowed: ${KINDS.join(", ")}`);
+  }
+}
+var BUG_BODY_TEMPLATE = "## Steps\n\n## Expected\n\n## Actual\n";
 function addTask(db, input, actor) {
   const priority = input.priority ?? "medium";
   checkPriority(priority);
+  const kind = input.kind ?? "feature";
+  checkKind(kind);
   if (!input.title.trim()) throw new KddError("title must not be empty");
   if (input.criteria?.some((c) => !c.trim())) {
     throw new KddError("criterion text must not be empty");
@@ -638,12 +659,13 @@ function addTask(db, input, actor) {
   return db.transaction(() => {
     const ts = now();
     const r = db.prepare(
-      `INSERT INTO tasks (title, body, priority, area, track_id, position, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO tasks (title, body, priority, kind, area, track_id, position, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       input.title,
       input.body ?? null,
       priority,
+      kind,
       input.area ?? null,
       input.track_id ?? null,
       nextPosition(db, "new"),
@@ -661,6 +683,7 @@ function addTask(db, input, actor) {
 }
 function editTask(db, id, patch, actor) {
   if (patch.priority !== void 0) checkPriority(patch.priority);
+  if (patch.kind !== void 0) checkKind(patch.kind);
   if (patch.track_id != null) mustGetTrack(db, patch.track_id);
   const fields = Object.keys(patch).filter((k) => patch[k] !== void 0);
   if (fields.length === 0) throw new KddError("nothing to edit");
@@ -1063,13 +1086,17 @@ function rebuild(db, decisionsDir) {
 
 // src/queries.ts
 var PRIORITY_ORDER = `CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
-var READY_SQL = `(status = 'new' AND blocked = 0 AND archived_at IS NULL)`;
+var READY_SQL = `(status = 'new' AND blocked = 0 AND archived_at IS NULL AND kind <> 'research')`;
 function boardData(db, f = {}) {
   const where = [f.archived ? "archived_at IS NOT NULL" : "archived_at IS NULL"];
   const params = [];
   if (f.area) {
     where.push("area = ?");
     params.push(f.area);
+  }
+  if (f.kind) {
+    where.push("kind = ?");
+    params.push(f.kind);
   }
   if (f.track_id != null) {
     where.push("track_id = ?");
@@ -1184,6 +1211,7 @@ function assertTtl(ttl) {
   if (!Number.isFinite(ttl) || ttl <= 0) throw new KddError(`invalid ttl '${ttl}' (seconds > 0)`);
 }
 var CLAIMABLE_SQL = `status = 'new' AND blocked = 0 AND archived_at IS NULL AND claimed_by IS NULL
+   AND kind <> 'research'
    AND (SELECT COUNT(*) FROM criteria WHERE criteria.task_id = tasks.id) > 0`;
 var criteriaCount = (db, id) => db.prepare(`SELECT COUNT(*) c FROM criteria WHERE task_id = ?`).get(id).c;
 function killAll(ids, kill) {
@@ -1317,6 +1345,20 @@ function claimTask(db, id, actor, ttl = DEFAULT_TTL, opts = {}) {
   reapExpired(db, opts.kill);
   return db.transaction(() => {
     const t = mustGetTask(db, id);
+    if (t.kind === "research" && actor.type === "ai") {
+      appendEvent(
+        db,
+        id,
+        actor,
+        "claim_rejected",
+        { reason: "research is not agent work" },
+        { type: "claim", level: "warn" }
+      );
+      return {
+        ok: false,
+        error: `cannot claim #${id}: kind=research \u2014 the deliverable is a recorded decision, not code`
+      };
+    }
     if (criteriaCount(db, id) === 0) {
       appendEvent(
         db,
@@ -1695,8 +1737,10 @@ function maxWorkers(db) {
 }
 var maxWorkersEnvLocked = () => process.env.KDD_MAX_WORKERS !== void 0;
 export {
+  BUG_BODY_TEMPLATE,
   CAPS,
   DEFAULT_TTL,
+  KINDS,
   KddError,
   MAX_FAILED_ATTEMPTS,
   MAX_WORKERS_CAP,

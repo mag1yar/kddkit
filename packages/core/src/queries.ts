@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 import { CAPS, capText } from './caps.js';
-import { STATUSES, type Status } from './state.js';
+import { STATUSES, type Kind, type Status } from './state.js';
 import type { Comment, Criterion, EventRow, Task, TaskListRow } from './types.js';
 import { mustGetTask } from './ops.js';
 import { listCriteria } from './criteria.js';
@@ -8,17 +8,22 @@ import { listCriteria } from './criteria.js';
 export const PRIORITY_ORDER =
   `CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
 
-// takeable «прямо сейчас»: new-очередь, не заблокирована, не в архиве.
+// takeable «прямо сейчас»: new-очередь, не заблокирована, не в архиве, и это работа с кодом —
+// kind='research' исключён тем же условием, что CLAIMABLE_SQL (core/claim.ts), иначе ready
+// и claimable расходятся: research отрапортует ready=1, board --ready её покажет, а взять
+// агент её всё равно не может — ready перестаёт значить «takeable».
 // Один источник правды — используется и как колонка, и как фильтр.
-const READY_SQL = `(status = 'new' AND blocked = 0 AND archived_at IS NULL)`;
+const READY_SQL = `(status = 'new' AND blocked = 0 AND archived_at IS NULL AND kind <> 'research')`;
 
 export function boardData(
   db: Database.Database,
-  f: { area?: string; status?: Status; archived?: boolean; track_id?: number; ready?: boolean } = {},
+  f: { area?: string; status?: Status; archived?: boolean; track_id?: number;
+       ready?: boolean; kind?: Kind } = {},
 ): Record<Status, TaskListRow[]> {
   const where: string[] = [f.archived ? 'archived_at IS NOT NULL' : 'archived_at IS NULL'];
   const params: unknown[] = [];
   if (f.area) { where.push('area = ?'); params.push(f.area); }
+  if (f.kind) { where.push('kind = ?'); params.push(f.kind); }
   if (f.track_id != null) { where.push('track_id = ?'); params.push(f.track_id); }
   if (f.status) { where.push('status = ?'); params.push(f.status); }
   if (f.ready != null) where.push(f.ready ? READY_SQL : `NOT ${READY_SQL}`);

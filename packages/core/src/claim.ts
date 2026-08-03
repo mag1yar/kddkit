@@ -46,10 +46,16 @@ function assertTtl(ttl: number): void {
   if (!Number.isFinite(ttl) || ttl <= 0) throw new KddError(`invalid ttl '${ttl}' (seconds > 0)`);
 }
 
-// takeable агентом: ready + есть критерии (definition of done) + не занята.
+// Очередь: ready + есть критерии (definition of done) + не занята + это работа с кодом.
 // status='new' уже исключает занятые (инвариант claimed<=>in_progress); claimed_by IS NULL — гвард окна гонки.
+// kind='research' исключён БЕЗ учёта actor — claimNext его вообще не принимает как параметр:
+// очередной обход никому не отдаёт research, потому что отдавать его тут некому — результат
+// research — записанное решение, а не коммит, и вся механика ниже (критерии → review → тип
+// коммита) под него не заточена. Контраст: claimTask ниже actor знает и гейтит по нему —
+// человеку через явный `kdd claim <id>` research взять можно, агенту нет.
 const CLAIMABLE_SQL =
   `status = 'new' AND blocked = 0 AND archived_at IS NULL AND claimed_by IS NULL
+   AND kind <> 'research'
    AND (SELECT COUNT(*) FROM criteria WHERE criteria.task_id = tasks.id) > 0`;
 
 const criteriaCount = (db: Database.Database, id: number): number =>
@@ -234,6 +240,16 @@ export function claimTask(
   reapExpired(db, opts.kill); // ДО транзакции: внутри неё нельзя убивать
   return db.transaction((): { ok: true; task: Task } | { ok: false; error: string } => {
     const t = mustGetTask(db, id);
+    // Только ai: человеку research брать можно, `kdd claim <id>` для него — «я это взял».
+    // Контраст с CLAIMABLE_SQL выше: там research исключён для ВСЕХ (actor туда не приходит),
+    // здесь actor известен и гейт бьёт только по ai. Гейт защищает не задачу, а агента:
+    // коммита он тут не сделает, а слот займёт.
+    if (t.kind === 'research' && actor.type === 'ai') {
+      appendEvent(db, id, actor, 'claim_rejected',
+        { reason: 'research is not agent work' }, { type: 'claim', level: 'warn' });
+      return { ok: false,
+        error: `cannot claim #${id}: kind=research — the deliverable is a recorded decision, not code` };
+    }
     if (criteriaCount(db, id) === 0) {
       appendEvent(db, id, actor, 'claim_rejected',
         { reason: 'no acceptance criteria' }, { type: 'claim', level: 'warn' });

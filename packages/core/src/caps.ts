@@ -4,6 +4,9 @@ export const CAPS = {
   boardRows: 8,            // строк на колонку в CLI board (контракт ≤4KB, cyrillic ×2 байта)
   listRows: 20,            // строк на колонку в MCP list_tasks (Claude, без байт-бюджета)
   statusRows: 5,           // строк на секцию kdd status
+  statusBytes: 2048,       // бюджет текстовой выдачи kdd status — контракт, structural cap в
+                            // renderStatus (как recallBytes в renderRecall): строк не хватает
+                            // как замера, заголовок/kind-маркер/blocked-reason не bounded by row count
   statusEvents: 5,         // recent-событий в statusDigest
   titleChars: 50,
   blockReasonChars: 40,

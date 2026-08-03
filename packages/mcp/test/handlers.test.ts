@@ -59,7 +59,7 @@ describe('listTasks', () => {
     const board = listTasks(db);
     expect(Object.keys(board.tasks)).toEqual(['backlog', 'new', 'in_progress', 'review', 'done']);
     expect(board.tasks.new).toEqual([
-      { id: 1, title: 'a', status: 'new', priority: 'high', blocked: false,
+      { id: 1, title: 'a', status: 'new', kind: 'feature', priority: 'high', blocked: false,
         ready: true, criteria: { checked: 0, total: 0 } },
     ]);
     expect(JSON.stringify(board)).not.toContain('secret body');

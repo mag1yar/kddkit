@@ -39,9 +39,9 @@ usually enough):
 
 ```
 kdd status                         # digest: counts + in_progress + blocked
-kdd board [--track <id>] [--area <a>] [--status <s>]
+kdd board [--track <id>] [--area <a>] [--status <s>] [--kind <k>]
 kdd show <id>                      # one task with comments + event trail
-kdd recall "<query>" [-k <n>] [--kind decision|task]
+kdd recall "<query>" [-k <n>] [--kind decision|task]   # kind = result type here, not task kind
 kdd track ls [--all]               # --all includes done tracks
 ```
 
@@ -55,7 +55,7 @@ kdd criteria check <taskId> <id>   /   kdd criteria uncheck <taskId> <id>
 kdd criteria rm <taskId> <id>
 kdd decide "<title>" --decision "…" --rationale "…"   # human-gated, see Decisions
 kdd archive <id>            # Iron Law: normally the human
-kdd link <from> <to> [--kind relates_to]
+kdd link <from> <to> [--kind relates_to]   # kind = link type here, not task kind
 kdd track add "<name>" --description "use when: …"
 kdd track edit <id> [--name …] [--description …]
 kdd track done <id>   /   kdd track reopen <id>   /   kdd track rm <id>
@@ -139,6 +139,18 @@ task is done when every criterion holds. Working a task, you own the checkboxes:
   `comments_total` / `events_total` show the real counts. When the trail is
   longer than what you received and the history matters, call
   `get_task { id, full: true }` for the complete, uncapped record.
+
+### Task kind
+
+Every task carries a `kind` from a closed vocabulary — `feature` (default), `bug`,
+`chore`, `research` — set or changed with `update_task { id, edit: { kind } }`.
+`research` is excluded from the claim protocol: the queue walk (`kdd claim` with no
+id, and `kdd tick`) never surfaces a `research` task to anyone — not because it is
+`ai`-only work, but because its deliverable is a recorded decision, not a commit,
+and the queue has no one to hand it to. A human takes one on purpose with an
+explicit `kdd claim <id>`. This is a different `kind` from `kdd recall --kind`
+(result type) and `kdd link --kind` (link type) above — same word, three
+vocabularies.
 
 ## Decisions
 
