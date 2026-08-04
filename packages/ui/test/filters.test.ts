@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
   EMPTY_FILTERS, NO_AREA, applyFilters, isActive, matchTask, orderWithHidden, parseFilters,
-  serializeFilters, stripFilterKeys, type Filters,
+  serializeFilters, stripFilterKeys, trackLabel, trackOptions, type Filters,
 } from '../src/web/filters';
-import { STATUSES, type Board, type Task } from '../src/web/api';
+import { STATUSES, type Board, type Task, type Track } from '../src/web/api';
 
 const parse = (s: string) => parseFilters(new URLSearchParams(s));
 
 describe('parseFilters', () => {
   it('reads every facet from the query string', () => {
-    const f = parse('q=воркер&track=3,4&area=ui,core&kind=bug&priority=high&state=ready');
+    const f = parse('q=воркер&track=3&track=4&area=ui&area=core&kind=bug&priority=high&state=ready');
     expect(f).toEqual({
       q: 'воркер', track: [3, 4], area: ['ui', 'core'],
       kind: ['bug'], priority: ['high'], state: ['ready'],
@@ -24,7 +24,8 @@ describe('parseFilters', () => {
   // Ссылку правят руками и присылают из чата — мусор в параметре обязан сузить фильтр,
   // а не уронить доску.
   it('drops values outside the vocabulary instead of throwing', () => {
-    const f = parse('kind=bug,nonsense&priority=extreme&state=ready,whatever&track=abc,0,-2,5');
+    const f = parse('kind=bug&kind=nonsense&priority=extreme&state=ready&state=whatever'
+      + '&track=abc&track=0&track=-2&track=5');
     expect(f.kind).toEqual(['bug']);
     expect(f.priority).toEqual([]);
     expect(f.state).toEqual(['ready']);
@@ -32,7 +33,7 @@ describe('parseFilters', () => {
   });
 
   it('keeps the no-area sentinel', () => {
-    expect(parse(`area=${NO_AREA},ui`).area).toEqual([NO_AREA, 'ui']);
+    expect(parse(`area=${NO_AREA}&area=ui`).area).toEqual([NO_AREA, 'ui']);
   });
 });
 
@@ -55,7 +56,7 @@ describe('serializeFilters', () => {
 // показывала "0 / N" без причины. Свою фильтрацию каждый проект собирает заново.
 describe('stripFilterKeys', () => {
   it('drops every filter param but keeps project and token', () => {
-    const out = stripFilterKeys('?project=new&token=s3cret&q=воркер&track=1,2&kind=bug');
+    const out = stripFilterKeys('?project=new&token=s3cret&q=воркер&track=1&track=2&kind=bug');
     const q = new URLSearchParams(out);
     expect(q.get('project')).toBe('new');
     expect(q.get('token')).toBe('s3cret');
@@ -185,6 +186,27 @@ describe('applyFilters', () => {
   });
 });
 
+describe('URL contract', () => {
+  // area — свободный текст (ядро пишет input.area дословно), так что запятая в имени легальна.
+  // На CSV такое имя разъезжалось на два значения, ни одно из которых не совпадало ни с чем.
+  it('round-trips an area whose name contains a comma', () => {
+    const f = { ...EMPTY_FILTERS, area: ['ui, web'] };
+    expect(parseFilters(serializeFilters(f)).area).toEqual(['ui, web']);
+  });
+
+  it('reads repeated parameters as one multi-value facet', () => {
+    expect(parseFilters(new URLSearchParams('area=ui&area=core')).area).toEqual(['ui', 'core']);
+    expect(parseFilters(new URLSearchParams('track=3&track=4')).track).toEqual([3, 4]);
+  });
+
+  // Для фасета «ключ отсутствует», «ключ пустой» и «пустой массив» — одно и то же:
+  // нет ограничения. Фильтра «не совпадает ничто» в этом UI нет.
+  it('treats a present-but-empty key as no constraint', () => {
+    expect(parseFilters(new URLSearchParams('area=&kind='))).toEqual(EMPTY_FILTERS);
+    expect(serializeFilters(EMPTY_FILTERS).toString()).toBe('');
+  });
+});
+
 describe('orderWithHidden', () => {
   // Без фильтра видимый список равен полному — старое поведение обязано сохраниться.
   it('reorders inside one column like a plain move', () => {
@@ -213,5 +235,37 @@ describe('orderWithHidden', () => {
   it('clamps a drop index outside the visible list', () => {
     expect(orderWithHidden([1, 2], [1, 2], 9, 99)).toEqual([1, 2, 9]);
     expect(orderWithHidden([1, 2], [1, 2], 9, -3)).toEqual([9, 1, 2]);
+  });
+
+  // Комментарий в функции обещает: опора исчезла между рендером и дропом — карточка уходит
+  // в конец колонки, не наверх. В ветке «за последней видимой» страховка не срабатывала:
+  // indexOf(...) + 1 даёт 0 для отсутствующего id, а ловят там только отрицательное.
+  it('appends when the last visible anchor is gone from the full list', () => {
+    expect(orderWithHidden([1, 2, 3], [9], 3, 5)).toEqual([1, 2, 3]);
+  });
+});
+
+const track = (over: Partial<Track> = {}): Track => ({
+  id: 1, name: 'agent mode', description: null, status: 'active', open_tasks: 2, ...over,
+});
+
+describe('trackOptions', () => {
+  it('drops closed tracks', () => {
+    const rows = trackOptions([track(), track({ id: 2, name: 'релиз 0.6', status: 'done' })], null);
+    expect(rows.map((t) => t.id)).toEqual([1]);
+  });
+
+  // Задача внутри закрытого трека обязана показывать свой трек: иначе Select рисует пустоту
+  // там, где у задачи есть значение, и «нет трека» неотличимо от «трек закрыт».
+  it('keeps a closed track that is the current value', () => {
+    const rows = trackOptions([track(), track({ id: 2, name: 'релиз 0.6', status: 'done' })], 2);
+    expect(rows.map((t) => t.id)).toEqual([1, 2]);
+  });
+});
+
+describe('trackLabel', () => {
+  it('keeps the bare name for an active track, and adds exactly " (done)" for a closed one', () => {
+    expect(trackLabel(track())).toBe('agent mode');
+    expect(trackLabel(track({ name: 'релиз 0.6', status: 'done' }))).toBe('релиз 0.6 (done)');
   });
 });

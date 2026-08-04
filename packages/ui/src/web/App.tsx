@@ -33,7 +33,9 @@ export default function App() {
   const [creating, setCreating] = useState(false);
   const [creatingTrack, setCreatingTrack] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
-  const [tracks, setTracks] = useState<Track[]>([]);
+  // null — ещё не загружено; [] — загружено и треков нет. Разные вещи: пока список не пришёл,
+  // выбранный трек нельзя объявить несуществующим.
+  const [tracks, setTracks] = useState<Track[] | null>(null);
   const [filters, setFilters] = useState<Filters>(
     () => parseFilters(new URLSearchParams(location.search)));
   const current = new URLSearchParams(location.search).get('project') ?? '';
@@ -52,24 +54,34 @@ export default function App() {
 
   // replaceState, а не push: иначе каждая буква в поиске добавляла бы запись в историю
   // и «назад» переставало работать. project/token сохраняются — их пишет не фильтр.
+  // 150 мс дебаунса: браузеры режут частые replaceState, а состояние доски при этом
+  // остаётся синхронным — откладывается только запись адреса.
   useEffect(() => {
-    const p = new URLSearchParams(location.search);
-    for (const key of FILTER_KEYS) p.delete(key);
-    for (const [key, value] of serializeFilters(filters)) p.set(key, value);
-    const qs = p.toString();
-    history.replaceState(null, '', `${location.pathname}${qs ? `?${qs}` : ''}`);
+    const timer = setTimeout(() => {
+      const p = new URLSearchParams(location.search);
+      for (const key of FILTER_KEYS) p.delete(key);
+      // append, а не set: фасет несёт несколько значений одним ключом.
+      for (const [key, value] of serializeFilters(filters)) p.append(key, value);
+      const qs = p.toString();
+      history.replaceState(null, '', `${location.pathname}${qs ? `?${qs}` : ''}`);
+    }, 150);
+    return () => clearTimeout(timer);
   }, [filters]);
 
-  const trackName = new Map(tracks.map((t) => [t.id, t.name]));
+  const trackName = new Map((tracks ?? []).map((t) => [t.id, t.name]));
   const markDone = (id: number) => { // like a gsd milestone complete: задачи остаются, track → done
-    setTrackDone(id).then(() => { setFilters((f) => ({ ...f, track: [] })); return loadTracks(); })
-      .catch((e: Error) => toast.error(e.message));
+    setTrackDone(id).then(() => {
+      setFilters((f) => ({ ...f, track: f.track.filter((x) => x !== id) })); // уходит одно значение, не фасет
+      return loadTracks();
+    }).catch((e: Error) => toast.error(e.message));
   };
   const removeTrack = (id: number) => {
-    const name = tracks.find((t) => t.id === id)?.name;
+    const name = (tracks ?? []).find((t) => t.id === id)?.name;
     if (!window.confirm(`Delete track "${name}"? Tasks stay, only the grouping is removed.`)) return;
-    deleteTrack(id).then(() => { setFilters((f) => ({ ...f, track: [] })); return loadTracks(); })
-      .catch((e: Error) => toast.error(e.message));
+    deleteTrack(id).then(() => {
+      setFilters((f) => ({ ...f, track: f.track.filter((x) => x !== id) }));
+      return loadTracks();
+    }).catch((e: Error) => toast.error(e.message));
   };
   const refetch = useCallback(() => {
     getBoard().then(setBoard)
@@ -159,11 +171,11 @@ export default function App() {
         />
       </main>
       <TaskDialog
-        id={openId} version={version} tracks={tracks}
+        id={openId} version={version} tracks={tracks ?? []}
         onClose={() => setOpenId(null)} onChanged={refetch}
       />
       <NewTaskDialog
-        open={creating} tracks={tracks}
+        open={creating} tracks={tracks ?? []}
         defaultTrack={filters.track.length === 1 ? filters.track[0] : null}
         onClose={() => setCreating(false)} onCreated={refetch}
       />

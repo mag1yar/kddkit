@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
 import {
-  EMPTY_FILTERS, FILTER_STATES, NO_AREA, isActive, type Filters,
+  EMPTY_FILTERS, FILTER_STATES, NO_AREA, isActive, trackLabel, type Filters,
 } from '../filters';
 import { KINDS, PRIORITIES, STATUSES, type Board, type Track } from '../api';
 
@@ -17,16 +17,32 @@ interface Option { value: string; label: string; count?: number }
 const toggle = <T extends string | number>(list: T[], v: T): T[] =>
   list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
 
-function FacetChip({ name, options, selected, onToggle, children }: {
+function FacetChip({
+  name, options, selected, onToggle, loading = false, children, orphanLabel = (v) => v,
+}: {
   name: string;
   options: Option[];
   selected: string[];
   onToggle: (value: string) => void;
+  loading?: boolean; // список ещё не загружен — «нет такого значения» пока неизвестно
   children?: React.ReactNode; // подвал поповера (например «New track…»)
+  // Как назвать значение, для которого нет строки в options (см. ниже). По умолчанию — само
+  // значение; area подставляет свой резолвер, чтобы сирота не рисовала сентинел '~none'.
+  // FacetChip остаётся общим — про области он ничего не знает.
+  orphanLabel?: (value: string) => string;
 }) {
   const label = selected.length
-    ? `${name}: ${selected.map((v) => options.find((o) => o.value === v)?.label ?? v).join(', ')}`
+    ? `${name}: ${selected.map((v) => options.find((o) => o.value === v)?.label ?? orphanLabel(v)).join(', ')}`
     : name;
+  // Выбранное значение может исчезнуть из списка (трек закрыли, у области кончились задачи),
+  // а из фильтра — нет: чип показывает выбор, снять который нечем, и доска молча показывает
+  // 0 / N. Держим строку для каждого такого значения — снять его должно быть можно там же,
+  // где выбрали, а не только через Clear.
+  const rows: Option[] = loading ? options : [
+    ...selected.filter((v) => !options.some((o) => o.value === v))
+      .map((v) => ({ value: v, label: orphanLabel(v) })),
+    ...options,
+  ];
   return (
     <Popover>
       <PopoverTrigger
@@ -40,10 +56,10 @@ function FacetChip({ name, options, selected, onToggle, children }: {
         }
       />
       <PopoverContent align="start" className="w-56 gap-0.5 p-1">
-        {options.length === 0 && (
+        {rows.length === 0 && (
           <span className="px-2 py-1.5 text-xs text-muted-foreground">nothing to filter by</span>
         )}
-        {options.map((o) => (
+        {rows.map((o) => (
           // Не <label>: Base UI Checkbox всегда держит рядом со span[role=checkbox] скрытый
           // нативный <input>, и родной <label> неявно связывает текст с ОБОИМИ — getByLabelText
           // находит два элемента. div + явный aria-label на Checkbox оставляют один.
@@ -91,8 +107,11 @@ function areaOptions(board: Board): Option[] {
   }
   return [...count.entries()]
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([value, n]) => ({ value, label: value === NO_AREA ? '(no area)' : value, count: n }));
+    .map(([value, n]) => ({ value, label: areaLabel(value), count: n }));
 }
+
+// Одно правило подписи area — строка нужна и списку, и осиротевшей строке чипа.
+const areaLabel = (v: string): string => (v === NO_AREA ? '(no area)' : v);
 
 const STATE_LABEL: Record<(typeof FILTER_STATES)[number], string> = {
   ready: 'ready', no_criteria: 'no criteria',
@@ -107,7 +126,7 @@ export function FilterBar({
   board: Board;
   visibleCount: number;
   totalCount: number;
-  tracks: Track[];
+  tracks: Track[] | null;
   onNewTrack: () => void;
   onTrackDone: (id: number) => void;
   onTrackDelete: (id: number) => void;
@@ -120,9 +139,13 @@ export function FilterBar({
   // (поле задачи, диалог): иначе '/' пропадал бы из текста.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // Диалог открыт поверх доски — '/' не должен красть фокус у его полей, а Esc не должен
-      // трогать поиск за модалкой.
-      if (document.querySelector('[role="dialog"]')) return;
+      // Уступаем объявленной модалке, а не угадываем по DOM: Base UI вешает role="dialog"
+      // и на Popover.Popup, так что по роли гвард ловил заодно каждый фасет и поповеры
+      // шапки. data-slot="dialog-content" ставит только DialogContent — все три модалки
+      // идут через него, ни один поповер туда не попадает.
+      if (document.querySelector('[data-slot="dialog-content"]')) return;
+      // Клавишу, которую уже обработал вложенный контрол, забирать нельзя.
+      if (e.defaultPrevented) return;
       const el = e.target as HTMLElement | null;
       const typing = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement
         || el?.isContentEditable === true;
@@ -145,8 +168,16 @@ export function FilterBar({
       </div>
 
       <FacetChip
-        name="Track" selected={filters.track.map(String)}
-        options={tracks.map((t) => ({ value: String(t.id), label: t.name, count: t.open_tasks }))}
+        name="Track" selected={filters.track.map(String)} loading={tracks === null}
+        // Закрытый трек в списке не нужен, но выбранный — обязателен: фильтр должен уметь
+        // назвать то, по чему фильтрует. Суффикс (done) — пометка устаревания, не удаление.
+        options={(tracks ?? [])
+          .filter((t) => t.status === 'active' || filters.track.includes(t.id))
+          .map((t) => ({
+            value: String(t.id),
+            label: trackLabel(t),
+            count: t.open_tasks,
+          }))}
         onToggle={(v) => onChange({ ...filters, track: toggle(filters.track, Number(v)) })}
       >
         <Button size="sm" variant="ghost" className="w-full justify-start" onClick={onNewTrack}>
@@ -176,6 +207,7 @@ export function FilterBar({
 
       <FacetChip
         name="Area" selected={filters.area} options={areaOptions(board)}
+        orphanLabel={areaLabel}
         onToggle={(v) => onChange({ ...filters, area: toggle(filters.area, v) })}
       />
       <FacetChip

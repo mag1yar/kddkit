@@ -1,4 +1,6 @@
-import { KINDS, PRIORITIES, STATUSES, type Board, type Kind, type Priority, type Task } from './api';
+import {
+  KINDS, PRIORITIES, STATUSES, type Board, type Kind, type Priority, type Task, type Track,
+} from './api';
 
 // area IS NULL — тоже значение фильтра (таких задач на доске 9), но пустая строка в CSV
 // неотличима от «параметр пуст». Сентинел с '~' не может быть настоящим area: они slug-и.
@@ -36,8 +38,8 @@ export const EMPTY_FILTERS: Filters = {
   q: '', track: [], area: [], kind: [], priority: [], state: [],
 };
 
-const csv = (p: URLSearchParams, key: string): string[] =>
-  (p.get(key) ?? '').split(',').filter((s) => s.length > 0);
+const values = (p: URLSearchParams, key: string): string[] =>
+  p.getAll(key).filter((s) => s.length > 0);
 
 const only = <T extends string>(vocab: readonly T[], raw: string[]): T[] =>
   raw.filter((s): s is T => (vocab as readonly string[]).includes(s));
@@ -45,22 +47,25 @@ const only = <T extends string>(vocab: readonly T[], raw: string[]): T[] =>
 export function parseFilters(p: URLSearchParams): Filters {
   return {
     q: p.get('q') ?? '',
-    track: csv(p, 'track').map(Number).filter((n) => Number.isInteger(n) && n > 0),
-    area: csv(p, 'area'),
-    kind: only(KINDS, csv(p, 'kind')),
-    priority: only(PRIORITIES, csv(p, 'priority')),
-    state: only(FILTER_STATES, csv(p, 'state')),
+    track: values(p, 'track').map(Number).filter((n) => Number.isInteger(n) && n > 0),
+    area: values(p, 'area'),
+    kind: only(KINDS, values(p, 'kind')),
+    priority: only(PRIORITIES, values(p, 'priority')),
+    state: only(FILTER_STATES, values(p, 'state')),
   };
 }
 
+// Повторяющийся ключ, а не CSV: area — свободный текст, и запятая в имени области
+// на CSV разъезжается в два значения, которых никто не выбирал. getAll/append
+// снимает класс целиком и кода требует меньше, чем split/join.
 export function serializeFilters(f: Filters): URLSearchParams {
   const p = new URLSearchParams();
   if (f.q.trim()) p.set('q', f.q);
-  if (f.track.length) p.set('track', f.track.join(','));
-  if (f.area.length) p.set('area', f.area.join(','));
-  if (f.kind.length) p.set('kind', f.kind.join(','));
-  if (f.priority.length) p.set('priority', f.priority.join(','));
-  if (f.state.length) p.set('state', f.state.join(','));
+  for (const id of f.track) p.append('track', String(id));
+  for (const a of f.area) p.append('area', a);
+  for (const k of f.kind) p.append('kind', k);
+  for (const pr of f.priority) p.append('priority', pr);
+  for (const s of f.state) p.append('state', s);
   return p;
 }
 
@@ -96,6 +101,15 @@ export function matchTask(t: Task, f: Filters): boolean {
   return t.title.toLowerCase().includes(q);
 }
 
+// Треки для выбора значения: закрытый не предлагают, но текущий показывают всегда —
+// иначе у задачи в закрытом треке Select рисует пустоту вместо имени.
+export const trackOptions = (tracks: Track[], keep: number | null): Track[] =>
+  tracks.filter((t) => t.status === 'active' || t.id === keep);
+
+// Суффикс ' (done)' — везде, где трек называют по имени (фасет, оба диалога задачи), одно
+// правило, а не три копии одной строки.
+export const trackLabel = (t: Track): string => (t.status === 'done' ? `${t.name} (done)` : t.name);
+
 export function applyFilters(board: Board, f: Filters): Board {
   if (!isActive(f)) return board; // без фильтра не пересобираем доску: ссылка та же → нет лишних ререндеров
   return Object.fromEntries(
@@ -116,8 +130,10 @@ export function orderWithHidden(
   const i = Math.min(Math.max(overIndex, 0), vis.length);
   let at: number;
   if (i < vis.length) at = rest.indexOf(vis[i]);              // перед видимым соседом
-  else if (vis.length) at = rest.indexOf(vis[vis.length - 1]) + 1; // сразу за последней видимой
-  else at = rest.length;                                      // видимых нет — в конец колонки
+  else if (vis.length) {
+    const last = rest.indexOf(vis[vis.length - 1]);           // сразу за последней видимой
+    at = last < 0 ? -1 : last + 1;                            // -1 → страховка ниже
+  } else at = rest.length;                                    // видимых нет — в конец колонки
   if (at < 0) at = rest.length; // опора исчезла между рендером и дропом — не вставляем вслепую
   const out = [...rest];
   out.splice(at, 0, id);

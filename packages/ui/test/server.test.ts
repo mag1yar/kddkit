@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CAPS, addTask, getAutoTick, openDb, setAutoTick, setLastRun } from '@kddkit/core';
+import { CAPS, addTask, createTrack, editTrack, getAutoTick, openDb, setAutoTick, setLastRun } from '@kddkit/core';
 import { createApp, projectPool } from '../src/server.js';
 
 const user = { type: 'user' } as const;
@@ -603,5 +603,43 @@ describe('file routes', () => {
     expect(res.status).toBeLessThan(500);
     const after = readdirSync(tmpdir()).filter((n) => n.startsWith('kdd-upload-')).length;
     expect(after).toBe(before);
+  });
+});
+
+describe('GET /api/tracks', () => {
+  // Закрытый трек обязан оставаться называемым: его id может лежать в фильтре доски
+  // или на задаче, и без имени поверхность показывает голое число.
+  it('returns done tracks too, and only active ones with ?status=active', async () => {
+    const { db, app } = mk();
+    createTrack(db, { name: 'live' });
+    const closed = createTrack(db, { name: 'closed' });
+    editTrack(db, closed.id, { status: 'done' });
+
+    const all = (await (await app.request('/api/tracks')).json()) as { name: string }[];
+    expect(all.map((t) => t.name).sort()).toEqual(['closed', 'live']);
+
+    const active = (await (await app.request('/api/tracks?status=active')).json()) as
+      { name: string }[];
+    expect(active.map((t) => t.name)).toEqual(['live']);
+  });
+
+  it('?status=done returns only closed tracks', async () => {
+    const { db, app } = mk();
+    createTrack(db, { name: 'live' });
+    const closed = createTrack(db, { name: 'closed' });
+    editTrack(db, closed.id, { status: 'done' });
+
+    const done = (await (await app.request('/api/tracks?status=done')).json()) as { name: string }[];
+    expect(done.map((t) => t.name)).toEqual(['closed']);
+  });
+
+  it('?status=<unknown> returns all tracks — unrecognised values fall through to show everything', async () => {
+    const { db, app } = mk();
+    createTrack(db, { name: 'live' });
+    const closed = createTrack(db, { name: 'closed' });
+    editTrack(db, closed.id, { status: 'done' });
+
+    const all = (await (await app.request('/api/tracks?status=nonsense')).json()) as { name: string }[];
+    expect(all.map((t) => t.name).sort()).toEqual(['closed', 'live']);
   });
 });

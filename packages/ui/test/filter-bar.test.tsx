@@ -2,8 +2,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { FilterBar } from '../src/web/components/FilterBar';
-import { EMPTY_FILTERS, type Filters } from '../src/web/filters';
-import { STATUSES, type Board, type Task } from '../src/web/api';
+import { EMPTY_FILTERS, NO_AREA, type Filters } from '../src/web/filters';
+import { STATUSES, type Board, type Task, type Track } from '../src/web/api';
 
 const task = (over: Partial<Task> = {}): Task => ({
   id: 1, title: 'do a thing', body: null, status: 'new', blocked: 0, block_reason: null,
@@ -17,11 +17,14 @@ const board = (tasks: Task[]): Board => {
   return b;
 };
 
-const show = (filters: Filters, onChange = vi.fn(), visible = 3, total = 22) => {
+const show = (
+  filters: Filters, onChange = vi.fn(), visible = 3, total = 22,
+  tracks: Track[] | null = [],
+) => {
   render(
     <FilterBar
       filters={filters} onChange={onChange} board={board([task({ area: 'ui' }), task({ id: 2, area: 'core' })])}
-      visibleCount={visible} totalCount={total} tracks={[]}
+      visibleCount={visible} totalCount={total} tracks={tracks}
       onNewTrack={vi.fn()} onTrackDone={vi.fn()} onTrackDelete={vi.fn()}
     />,
   );
@@ -110,7 +113,7 @@ describe('FilterBar', () => {
 
   // Диалог поверх доски: '/' не должен красть фокус у его полей, Esc не должен трогать поиск.
   it('ignores / and Esc while a dialog is open', () => {
-    render(<div role="dialog"><input /></div>);
+    render(<div data-slot="dialog-content"><input /></div>);
     const onChange = show({ ...EMPTY_FILTERS, q: 'воркер' });
     const search = screen.getByPlaceholderText('Search…') as HTMLInputElement;
 
@@ -120,6 +123,28 @@ describe('FilterBar', () => {
 
     search.blur();
     fireEvent.keyDown(window, { key: '/' }); // без гварда увёл бы фокус в поиск за модалкой
+    expect(document.activeElement).not.toBe(search);
+  });
+
+  // Ревью: гвард ловил любой [role="dialog"], а Base UI вешает эту роль и на Popover.Popup —
+  // '/' переставал работать, пока открыт любой фасет, ReleasesPopover или AutoTickPopover.
+  it('still focuses the search while a facet popover is open', () => {
+    show(EMPTY_FILTERS);
+    fireEvent.click(screen.getByRole('button', { name: 'Kind' }));
+    const search = screen.getByPlaceholderText('Search…');
+    fireEvent.keyDown(window, { key: '/' });
+    expect(document.activeElement).toBe(search);
+  });
+
+  // Вложенный контрол, который уже обработал клавишу, владеет ею.
+  it('yields the key when something already handled it', () => {
+    show(EMPTY_FILTERS);
+    const search = screen.getByPlaceholderText('Search…');
+    // fireEvent.keyDown({ defaultPrevented: true }) не работает: defaultPrevented — не часть
+    // KeyboardEventInit, конструктор события молча игнорирует лишнее поле. Ставим флаг по-настоящему.
+    const event = new KeyboardEvent('keydown', { key: '/', cancelable: true, bubbles: true });
+    event.preventDefault();
+    fireEvent(window, event);
     expect(document.activeElement).not.toBe(search);
   });
 
@@ -145,5 +170,56 @@ describe('FilterBar', () => {
       />,
     );
     expect(screen.queryByRole('button', { name: 'Track actions' })).toBeNull();
+  });
+
+  // Ревью: агент закрывает трек → /api/tracks его больше не отдаёт → чип показывает «Track: 7»,
+  // строки в поповере нет, доска 0 / N, а снять фильтр можно только Clear, теряя остальные
+  // фасеты. Неразрешимое значение хранится и помечается, а не роняется молча.
+  it('keeps a row for a selected value that left the options list', () => {
+    const onChange = show({ ...EMPTY_FILTERS, track: [7] }, vi.fn(), 0, 22, []);
+    fireEvent.click(screen.getByRole('button', { name: 'Track: 7' }));
+    fireEvent.click(screen.getByText('7'));
+    expect(onChange).toHaveBeenCalledWith(EMPTY_FILTERS);
+  });
+
+  it('names a closed track and marks it done', () => {
+    const tracks: Track[] = [
+      { id: 1, name: 'agent mode', description: null, status: 'active', open_tasks: 2 },
+      { id: 7, name: 'релиз 0.6', description: null, status: 'done', open_tasks: 0 },
+    ];
+    show({ ...EMPTY_FILTERS, track: [7] }, vi.fn(), 0, 22, tracks);
+    expect(screen.getByRole('button', { name: 'Track: релиз 0.6 (done)' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Track: релиз 0.6 (done)' }));
+    expect(screen.getByLabelText('релиз 0.6 (done)')).toBeTruthy();
+    expect(screen.getByLabelText('agent mode')).toBeTruthy(); // активные на месте
+  });
+
+  it('hides a closed track that is not selected', () => {
+    const tracks: Track[] = [
+      { id: 1, name: 'agent mode', description: null, status: 'active', open_tasks: 2 },
+      { id: 7, name: 'релиз 0.6', description: null, status: 'done', open_tasks: 0 },
+    ];
+    show(EMPTY_FILTERS, vi.fn(), 3, 22, tracks);
+    fireEvent.click(screen.getByRole('button', { name: 'Track' }));
+    expect(screen.queryByLabelText('релиз 0.6 (done)')).toBeNull();
+  });
+
+  // «Ещё не загружено» — не «такого трека нет»: до первого ответа /api/tracks сирота
+  // не рисуется, иначе список мигает значением, которое вот-вот получит имя.
+  it('draws no orphan row while the tracks are still loading', () => {
+    show({ ...EMPTY_FILTERS, track: [7] }, vi.fn(), 0, 22, null);
+    fireEvent.click(screen.getByRole('button', { name: 'Track: 7' }));
+    expect(screen.queryByLabelText('7')).toBeNull();
+  });
+
+  // Ревью: орфанная строка Area рисовала сырой сентинел '~none' вместо '(no area)' — тот же
+  // баг, что и с треком, но area раскрывает свой internal-only сентинел, а не id.
+  it('resolves the area orphan sentinel to its label, not the raw value', () => {
+    show({ ...EMPTY_FILTERS, area: [NO_AREA] }, vi.fn(), 0, 22, []);
+    expect(screen.getByRole('button', { name: 'Area: (no area)' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Area: (no area)' }));
+    expect(screen.getByLabelText('(no area)')).toBeTruthy();
+    expect(screen.queryByLabelText(NO_AREA)).toBeNull();
+    expect(screen.queryByText(NO_AREA)).toBeNull();
   });
 });

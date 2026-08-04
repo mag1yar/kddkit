@@ -102,14 +102,38 @@ describe('filter in the URL', () => {
   });
 
   it('mirrors the filter into the address bar and keeps the project there', async () => {
+    vi.useFakeTimers();
     stubFetch();
     await act(async () => { mount(); });
     await act(async () => {
       fireEvent.change(screen.getByPlaceholderText('Search…'), { target: { value: 'воркер' } });
     });
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
     const q = new URLSearchParams(location.search);
     expect(q.get('q')).toBe('воркер');
     expect(q.get('project')).toBe('abc123');
+  });
+
+  // Ревью: replaceState на каждую букву. Firefox и Safari режут примерно на 100 вызовах
+  // за 30 секунд — при быстром наборе браузер начинает глотать обновления, и перезагрузка
+  // воспроизводит устаревший фильтр. Дебаунсится ТОЛЬКО запись в URL: сама доска обязана
+  // фильтроваться на каждой букве, иначе поиск ощущается сломанным.
+  it('writes the URL once for a burst of keystrokes while filtering on every one', async () => {
+    vi.useFakeTimers();
+    stubFetch();
+    await act(async () => { mount(); });
+    const spy = vi.spyOn(history, 'replaceState');
+    const input = screen.getByPlaceholderText('Search…');
+    for (const v of ['l', 'lo', 'log']) {
+      await act(async () => { fireEvent.change(input, { target: { value: v } }); });
+    }
+    expect(screen.queryByText('write docs')).toBeNull(); // отфильтровалось сразу
+    expect(screen.getByText('fix login bug')).toBeTruthy();
+    expect(spy).not.toHaveBeenCalled();                  // а запись отложена
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(new URLSearchParams(location.search).get('q')).toBe('log');
   });
 
   // Ревью: ничего не падает, если fullBoard[to] и board[to] в Board.tsx перепутаны местами —

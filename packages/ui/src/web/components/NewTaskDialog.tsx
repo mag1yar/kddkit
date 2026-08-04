@@ -9,6 +9,7 @@ import {
 import {
   BUG_BODY_TEMPLATE, KINDS, PRIORITIES, createTask, type Kind, type Priority, type Track,
 } from '../api';
+import { trackLabel, trackOptions } from '../filters';
 import { MarkdownEditor } from './MarkdownEditor';
 
 export function NewTaskDialog({ open, tracks, defaultTrack, onClose, onCreated }: {
@@ -41,6 +42,8 @@ export function NewTaskDialog({ open, tracks, defaultTrack, onClose, onCreated }
       .catch((e: Error) => toast.error(e.message));
   };
 
+  const options = trackOptions(tracks, defaultTrack);
+
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent className="sm:max-w-lg">
@@ -71,21 +74,24 @@ export function NewTaskDialog({ open, tracks, defaultTrack, onClose, onCreated }
                 </SelectGroup>
               </SelectContent>
             </Select>
-            {tracks.length > 0 && (
+            {options.length > 0 && (
               <Select
                 value={track === null ? 'none' : String(track)}
                 onValueChange={(v) => setTrack(v === 'none' ? null : Number(v))}
               >
                 <SelectTrigger className="w-48">
                   <SelectValue placeholder="No track">
-                    {(v) => (v === 'none' ? 'No track'
-                      : tracks.find((t) => t.id === Number(v))?.name ?? '')}
+                    {(v) => {
+                      if (v === 'none') return 'No track';
+                      const t = options.find((o) => o.id === Number(v));
+                      return t ? trackLabel(t) : '';
+                    }}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">No track</SelectItem>
-                  {tracks.map((t) => (
-                    <SelectItem key={t.id} value={String(t.id)}>{t.name}</SelectItem>
+                  {options.map((t) => (
+                    <SelectItem key={t.id} value={String(t.id)}>{trackLabel(t)}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>

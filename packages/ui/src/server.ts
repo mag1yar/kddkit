@@ -167,7 +167,13 @@ export function createApp(
       .map((p) => ({ id: hashOf(p.dbPath), path: p.projectPath })),
   ));
 
-  app.get('/api/tracks', (c) => c.json(listTracks(getDb(c), { status: 'active' })));
+  // Без параметра — все треки: закрытый трек может стоять в фильтре доски или на задаче,
+  // и его имя нужно, чтобы поверхность не показывала голый id. Что скрывать — решает
+  // потребитель, а не выборка.
+  app.get('/api/tracks', (c) => {
+    const s = c.req.query('status');
+    return c.json(listTracks(getDb(c), s === 'active' || s === 'done' ? { status: s } : {}));
+  });
 
   app.post('/api/tracks', async (c) => {
     const b = await jsonBody(c);

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { agentId, checkMove, STATUSES, type Status } from '../src/state.js';
+import { agentId, checkMove, STATUSES, type Actor, type Status } from '../src/state.js';
 
 const ADJACENT: Record<Status, Status[]> = {
   backlog: ['new'],
@@ -58,7 +58,7 @@ describe('checkMove', () => {
 
   // #117: review имеет смысл, только если принимает не тот, кто сдавал.
   describe('review → done', () => {
-    const ai = { type: 'ai', id: 's1' } as const;
+    const ai: Actor = { type: 'ai', id: 's1' };
     const done = (submittedBy: string | null, actor = ai, reason?: string) =>
       checkMove('review', 'done', actor, reason, 0, null, submittedBy);
 

@@ -6,6 +6,7 @@ import {
   blockTask, unblockTask, linkTasks, archiveTask, unarchiveTask,
 } from '../src/ops.js';
 import { boardData } from '../src/queries.js';
+import type { Actor } from '../src/state.js';
 
 let db: Database.Database;
 const user = { type: 'user' as const };
@@ -22,7 +23,7 @@ describe('moveTask', () => {
 
   // #117: «кто сдал» берётся из журнала — проверяем сам вывод, а не только правило в checkMove.
   describe('self-accept', () => {
-    const submit = (actor = ai) => {
+    const submit = (actor: Actor = ai) => {
       moveTask(db, 1, 'in_progress', actor);
       moveTask(db, 1, 'review', actor);
     };

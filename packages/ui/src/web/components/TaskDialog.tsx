@@ -22,6 +22,7 @@ import {
   type Criterion, type Kind, type Priority, type Status, type Task, type TaskDetail,
   type Track,
 } from '../api';
+import { trackLabel, trackOptions } from '../filters';
 
 const STATUS_LABEL: Record<Status, string> = {
   backlog: 'Backlog', new: 'New', in_progress: 'In Progress', review: 'Review', done: 'Done',
@@ -242,29 +243,35 @@ export function TaskDialog({ id, version, tracks, onClose, onChanged }: {
 
             <BlockedField task={task} onChanged={after} />
 
-            {tracks.length > 0 && (
-              <Field label="Track">
-                <Select
-                  value={task.track_id === null ? 'none' : String(task.track_id)}
-                  onValueChange={(v) =>
-                    editTask(task.id, { track_id: v === 'none' ? null : Number(v) })
-                      .then(after).catch((e: Error) => toast.error(e.message))}
-                >
-                  <SelectTrigger className="h-8 w-full">
-                    <SelectValue placeholder="No track">
-                      {(v) => (v === 'none' ? 'No track'
-                        : tracks.find((t) => t.id === Number(v))?.name ?? '')}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">No track</SelectItem>
-                    {tracks.map((t) => (
-                      <SelectItem key={t.id} value={String(t.id)}>{t.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-            )}
+            {(() => {
+              const options = trackOptions(tracks, task.track_id);
+              return options.length > 0 && (
+                <Field label="Track">
+                  <Select
+                    value={task.track_id === null ? 'none' : String(task.track_id)}
+                    onValueChange={(v) =>
+                      editTask(task.id, { track_id: v === 'none' ? null : Number(v) })
+                        .then(after).catch((e: Error) => toast.error(e.message))}
+                  >
+                    <SelectTrigger className="h-8 w-full">
+                      <SelectValue placeholder="No track">
+                        {(v) => {
+                          if (v === 'none') return 'No track';
+                          const t = options.find((o) => o.id === Number(v));
+                          return t ? trackLabel(t) : '';
+                        }}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">No track</SelectItem>
+                      {options.map((t) => (
+                        <SelectItem key={t.id} value={String(t.id)}>{trackLabel(t)}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+              );
+            })()}
 
             {task.area && <Field label="Area"><span>{task.area}</span></Field>}
 
