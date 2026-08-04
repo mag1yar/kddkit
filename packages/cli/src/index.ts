@@ -8,9 +8,10 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import lockfile from 'proper-lockfile';
 import {
-  KddError, addCriterion, addDecision, addTask, appendAgentEvent, archiveTask, authorOf, blockTask, closeDb,
-  boardData, BUG_BODY_TEMPLATE, claimNext, claimTask, commentTask, createTrack, deleteTrack, DEFAULT_TTL, editTask,
-  editTrack, ensureWorktree, exportBoard, headCommit, kddVersion, KINDS, linkTasks, listAgentEvents, listCriteria, listProjects, taskBranchHead,
+  KddError, addCriterion, addDecision, addTask, appendAgentEvent, archiveTask, attachFile, authorOf, blockTask,
+  closeDb, boardData, BUG_BODY_TEMPLATE, claimNext, claimTask, commentTask, createTrack, deleteTrack, DEFAULT_TTL,
+  detachFile, editTask, editTrack, ensureWorktree, exportBoard, filesDir, headCommit, kddVersion, KINDS, linkTasks,
+  listAgentEvents, listCriteria, listProjects, taskBranchHead,
   listTracks, maxWorkers, moveTask, mustGetTask, openDb, parseClaudeStreamLine, rebuild, recall, removeCriterion,
   renewClaim, resolveDbPath, resolveDecisionsDir, resolveToplevel, setAutoTick, setCriterionChecked,
   setProjectToplevel, statusDigest, stopWorkers,
@@ -440,8 +441,12 @@ program.command('worker')
         ?? (holdsLease ? workerTag(taskId, dbPath) : `kdd-worker-manual-${taskId}-${process.pid}`);
       // Свой промпт настраивает ИНСТРУКЦИИ, а не lifecycle: маркер дописывается к любому.
       const prompt = (process.env.KDD_WORKER_PROMPT ?? workerPrompt(task.kind, task.area)) + runMarker(marker);
+      // --add-dir на стор вложений: файл лежит рядом с базой, то есть ВНЕ worktree, и в
+      // headless-режиме (`-p`) запрос разрешения на чтение подтвердить некому — Read просто
+      // провалился бы. Один флаг вместо копирования файлов в каждый worktree.
       const args = [...pre, '-p', prompt,
-        '--output-format', 'stream-json', '--verbose', '--allowedTools', allowed];
+        '--output-format', 'stream-json', '--verbose', '--allowedTools', allowed,
+        '--add-dir', filesDir(dbPath)];
 
       await new Promise<void>((resolve) => {
         appendAgentEvent(db!, taskId, workerId, 'run_start', { detail: { head: headCommit(workdir) } });
@@ -594,6 +599,26 @@ program.command('comment')
   .action((id, text, o) => run(o.json, () => {
     const c = withDb((db) => commentTask(db, parseId(id), text, getActor()));
     out(o.json, c, () => `#${parseId(id)} commented`);
+  }));
+
+program.command('attach')
+  .argument('<taskId>').argument('<path>')
+  .option('--desc <text>', 'what is in the file — read by whoever has no picture')
+  .option('--json')
+  .action((taskId, path, o) => run(o.json, () => {
+    const { dbPath, projectPath } = resolveDbPath();
+    const f = withDbAt(dbPath, projectPath, (db) =>
+      attachFile(db, dbPath, parseId(taskId), path, { description: o.desc }, getActor()));
+    out(o.json, f, () => `#${f.task_id} file ${f.id} ${f.original_name}`);
+  }));
+
+program.command('detach')
+  .argument('<fileId>')
+  .option('--json')
+  .action((fileId, o) => run(o.json, () => {
+    const { dbPath, projectPath } = resolveDbPath();
+    withDbAt(dbPath, projectPath, (db) => detachFile(db, dbPath, parseId(fileId), getActor()));
+    out(o.json, { ok: true }, () => `file ${parseId(fileId)} detached`);
   }));
 
 program.command('block')

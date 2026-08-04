@@ -17,10 +17,11 @@ a flag to be yourself.
 
 - **MCP tools — your default for everything task-shaped.** Reads: `list_tasks`,
   `get_task`, `recall`, `list_tracks`. The one write: `update_task` (edit / move /
-  comment ONE task).
+  comment / attach / detach a file, ONE task).
 - **`kdd` CLI — the human's surface** (it also runs the web board, `kdd ui`), and
-  yours for the ops MCP doesn't expose (below). For move / comment / edit prefer
-  `update_task`: same effect, and the MCP tool is the stable contract.
+  yours for the ops MCP doesn't expose (below). For move / comment / edit /
+  attach / detach prefer `update_task`: same effect, and the MCP tool is the
+  stable contract.
 - **Never set `KDD_ACTOR=user`.** It does not merely relabel the author — it
   turns off every rule that keys on `ai` at once: the acceptance-criteria gate,
   the lease fence, the transition matrix. A refused move is answered with
@@ -47,6 +48,8 @@ Writes — only on an explicit user request (see Iron Law):
 
 ```
 kdd block <id> "<reason>"   /   kdd unblock <id>
+kdd attach <taskId> <path> [--desc "<text>"]   # local path only, 20 MB cap
+kdd detach <fileId>
 kdd criteria ls <taskId>
 kdd criteria add <taskId> "<text>"
 kdd criteria check <taskId> <id>   /   kdd criteria uncheck <taskId> <id>
@@ -143,6 +146,16 @@ task is done when every criterion holds. Working a task, you own the checkboxes:
   `comments_total` / `events_total` show the real counts. When the trail is
   longer than what you received and the history matters, call
   `get_task { id, full: true }` for the complete, uncapped record.
+
+### Attachments
+
+`get_task` includes `files[]` — id, name, mime, size, description, and an
+absolute `path` on disk. `Read <path>` to see a screenshot or open a log
+instead of relying on the description someone else wrote. Attach one with
+`update_task { id, attach: { path, description? } }` (or `kdd attach <taskId>
+<path> [--desc "<text>"]`); `path` is local to this machine — download the
+file first if it lives elsewhere. Detach with `update_task { id, detach:
+<fileId> }` (or `kdd detach <fileId>`).
 
 ### Task kind
 

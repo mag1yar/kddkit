@@ -14,6 +14,9 @@ export const CAPS = {
   comments: 20,            // последних комментов в show/get_task
   commentChars: 500,
   events: 10,              // последних событий в show/get_task
+  files: 20,               // вложений в show/get_task
+  fileDescChars: 200,      // описание вложения в show/get_task
+  fileNameChars: 100,      // original_name — с клиентского multipart-имени, режем на записи
   recallK: 10,             // дефолтный top-k
   recallKMax: 50,          // потолок k — больше не отдаём никому
   recallSnippetTokens: 12,
@@ -23,6 +26,7 @@ export const CAPS = {
   // Единственные капы на ЗАПИСЬ. Всё выше режет выдачу — эти режут то, что вообще ложится в базу:
   // фид воркера принимает сырой ввод/вывод инструментов, и один `Read` большого файла кладёт
   // сотни КБ одной строкой в базу, которую шарят все worktree проекта.
+  fileBytes: 20 * 1024 * 1024, // потолок вложения: доска личная, но 20 MB картинки хватает всем
   agentFieldChars: 4096,   // строковый лист в detail (вывод тула, аргумент, текст ответа)
   agentDetailItems: 64,    // элементов массива в detail — content-блоков у тула бывает много
   agentDetailBytes: 65536, // весь detail после капа листьев; выше — пишем только размер

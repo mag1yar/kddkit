@@ -12,12 +12,13 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
 import { AgentFeed } from './AgentFeed';
+import { FilesTab } from './FilesTab';
 import { History } from './History';
 import { MarkdownEditor } from './MarkdownEditor';
 import { Prose } from './Prose';
 import {
-  KINDS, PRIORITIES, STATUSES, addComment, addCriterion, blockTask, editTask, getTask, moveTask,
-  removeCriterion, setCriterionChecked, unblockTask,
+  KINDS, PRIORITIES, STATUSES, addComment, addCriterion, blockTask, editTask, getTask,
+  isInlineImage, moveTask, removeCriterion, setCriterionChecked, unblockTask, uploadFile,
   type Criterion, type Kind, type Priority, type Status, type Task, type TaskDetail,
   type Track,
 } from '../api';
@@ -26,6 +27,20 @@ const STATUS_LABEL: Record<Status, string> = {
   backlog: 'Backlog', new: 'New', in_progress: 'In Progress', review: 'Review', done: 'Done',
 };
 const fmtDate = (ts: number) => new Date(ts * 1000).toLocaleString();
+
+// Инлайн ![]() годится только растровой картинке — Prose рендерит её в <img>, и PDF за таким
+// тегом пришёл бы битым octet-stream (Content-Type: octet-stream под <img src>). Всё прочее
+// вставляем обычной [name](href) ссылкой, ту же самую, что и в FilesTab. Своя функция ради
+// теста без рендера всего диалога.
+// Скобки в подписи экранируем: `screenshot [1].png` — обычное имя (так их плодят и macOS,
+// и загрузки браузера), а незаэкранированная `[` обрывает подпись, и вместо картинки
+// в Prose встаёт голый текст разметки. URL не трогаем — он всегда /api/files/<число>.
+const mdLabel = (s: string): string => s.replace(/[[\]]/g, '\\$&');
+
+export const attachmentSnippet = (f: { id: number; original_name: string; mime_type: string | null }): string =>
+  isInlineImage(f.mime_type)
+    ? `![${mdLabel(f.original_name)}](/api/files/${f.id})`
+    : `[${mdLabel(f.original_name)}](/api/files/${f.id})`;
 
 export function TaskDialog({ id, version, tracks, onClose, onChanged }: {
   id: number | null; version: number; tracks: Track[];
@@ -37,7 +52,7 @@ export function TaskDialog({ id, version, tracks, onClose, onChanged }: {
   // черновик критерия живёт здесь, а не в CriteriaList: закрытие диалога обязано о нём знать
   const [criterion, setCriterion] = useState('');
   const [discard, setDiscard] = useState(false);
-  const [tab, setTab] = useState<'comments' | 'history' | 'activity'>('comments');
+  const [tab, setTab] = useState<'comments' | 'files' | 'history' | 'activity'>('comments');
 
   const reload = () => getTask(id!).then(setDetail).catch((e: Error) => toast.error(e.message));
   useEffect(() => {
@@ -54,8 +69,15 @@ export function TaskDialog({ id, version, tracks, onClose, onChanged }: {
   useEffect(() => { setDiscard(false); }, [comment, criterion]);
 
   if (id === null || !detail) return null;
-  const { task, criteria, comments, events, links, agent_runs_total } = detail;
+  const { task, criteria, comments, events, links, files, agent_runs_total } = detail;
   const after = () => { onChanged(); return reload(); };
+
+  // Загрузка из редактора возвращает готовый markdown: alt — описание, а его при вставке
+  // картинки ещё нет, поэтому туда идёт имя файла. Описание дописывают во вкладке Files.
+  const uploadInline = (file: File): Promise<string> =>
+    uploadFile(task.id, file)
+      .then((f) => { void after(); return attachmentSnippet(f); })
+      .catch((e: Error) => { toast.error(e.message); throw e; });
 
   const submitComment = () => {
     if (!comment.trim()) return;
@@ -97,6 +119,7 @@ export function TaskDialog({ id, version, tracks, onClose, onChanged }: {
                 task={task}
                 onSaved={() => { setEditing(false); return after(); }}
                 onCancel={() => setEditing(false)}
+                onUpload={uploadInline}
               />
             ) : (
               <div className="flex flex-col gap-2">
@@ -116,11 +139,12 @@ export function TaskDialog({ id, version, tracks, onClose, onChanged }: {
 
             <Tabs
               value={tab}
-              onValueChange={(v) => setTab(v as 'comments' | 'history' | 'activity')}
+              onValueChange={(v) => setTab(v as 'comments' | 'files' | 'history' | 'activity')}
               className="border-t pt-3"
             >
               <TabsList variant="line">
                 <TabsTrigger value="comments">Comments <span className="text-muted-foreground">{comments.length}</span></TabsTrigger>
+                <TabsTrigger value="files">Files <span className="text-muted-foreground">{files.length}</span></TabsTrigger>
                 <TabsTrigger value="history">History <span className="text-muted-foreground">{events.length}</span></TabsTrigger>
                 <TabsTrigger value="activity">Activity <span className="text-muted-foreground">{agent_runs_total}</span></TabsTrigger>
               </TabsList>
@@ -144,6 +168,7 @@ export function TaskDialog({ id, version, tracks, onClose, onChanged }: {
                     value={comment}
                     onChange={setComment}
                     onEnterSubmit={submitComment}
+                    onUpload={uploadInline}
                     placeholder="Comment... (Enter to send, Shift+Enter newline)"
                     minHeight="40px"
                     maxHeight="192px"
@@ -152,6 +177,10 @@ export function TaskDialog({ id, version, tracks, onClose, onChanged }: {
                     <Button size="sm" onClick={submitComment}><Send /> Send</Button>
                   </div>
                 </div>
+              </TabsContent>
+
+              <TabsContent value="files" className="pt-2">
+                <FilesTab taskId={task.id} files={files} onChanged={after} />
               </TabsContent>
 
               <TabsContent value="history" className="pt-2">
@@ -387,8 +416,9 @@ function BlockedField({ task, onChanged }: { task: Task; onChanged: () => void }
   );
 }
 
-function EditForm({ task, onSaved, onCancel }: {
+function EditForm({ task, onSaved, onCancel, onUpload }: {
   task: Task; onSaved: () => void; onCancel: () => void;
+  onUpload: (file: File) => Promise<string>;
 }) {
   const [title, setTitle] = useState(task.title);
   const [body, setBody] = useState(task.body ?? '');
@@ -403,6 +433,7 @@ function EditForm({ task, onSaved, onCancel }: {
       <MarkdownEditor
         value={body} placeholder="markdown body" minHeight="192px" maxHeight="384px" autoFocus
         onChange={setBody}
+        onUpload={onUpload}
         className="overflow-hidden rounded-md border focus-within:ring-1 focus-within:ring-ring"
       />
       <div className="flex gap-2">

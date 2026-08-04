@@ -16,6 +16,7 @@ import {
   addTask,
   appendAgentEvent,
   archiveTask,
+  attachFile,
   authorOf,
   blockTask,
   closeDb,
@@ -27,10 +28,12 @@ import {
   createTrack,
   deleteTrack,
   DEFAULT_TTL,
+  detachFile,
   editTask,
   editTrack,
   ensureWorktree,
   exportBoard,
+  filesDir,
   headCommit,
   kddVersion,
   KINDS,
@@ -222,6 +225,16 @@ function renderShow(d) {
     `#${t.id} ${t.title}`,
     `status: ${t.status}${t.blocked ? ` (BLOCKED: ${t.block_reason})` : ""}  kind: ${t.kind}  priority: ${t.priority}${t.area ? `  area: ${t.area}` : ""}${t.archived_at ? "  ARCHIVED" : ""}`
   ];
+  if (d.files_total) {
+    lines.push("", `files (${d.files_total}):`);
+    if (d.files.length < d.files_total) {
+      lines.push(`  (${d.files_total - d.files.length} more omitted)`);
+    }
+    for (const f of d.files) {
+      lines.push(`  [${f.id}] ${f.original_name} ${f.mime_type ?? "unknown"} ${f.size_bytes}B  ${f.path}`);
+      if (f.description) lines.push(`      ${f.description}`);
+    }
+  }
   if (t.body) lines.push("", t.body);
   if (d.criteria.length) {
     lines.push("", "criteria:", renderCriteria(d.criteria));
@@ -717,7 +730,9 @@ program.command("worker").argument("<id>").option("--tag <tag>", "ps-visible run
       "stream-json",
       "--verbose",
       "--allowedTools",
-      allowed
+      allowed,
+      "--add-dir",
+      filesDir(dbPath)
     ];
     await new Promise((resolve) => {
       appendAgentEvent(db, taskId, workerId, "run_start", { detail: { head: headCommit(workdir) } });
@@ -851,6 +866,16 @@ program.command("edit").argument("<id>").option("--title <t>").option("--body <m
 program.command("comment").argument("<id>").argument("<text>").option("--json").action((id, text, o) => run(o.json, () => {
   const c = withDb((db) => commentTask(db, parseId(id), text, getActor()));
   out(o.json, c, () => `#${parseId(id)} commented`);
+}));
+program.command("attach").argument("<taskId>").argument("<path>").option("--desc <text>", "what is in the file \u2014 read by whoever has no picture").option("--json").action((taskId, path, o) => run(o.json, () => {
+  const { dbPath, projectPath } = resolveDbPath2();
+  const f = withDbAt(dbPath, projectPath, (db) => attachFile(db, dbPath, parseId(taskId), path, { description: o.desc }, getActor()));
+  out(o.json, f, () => `#${f.task_id} file ${f.id} ${f.original_name}`);
+}));
+program.command("detach").argument("<fileId>").option("--json").action((fileId, o) => run(o.json, () => {
+  const { dbPath, projectPath } = resolveDbPath2();
+  withDbAt(dbPath, projectPath, (db) => detachFile(db, dbPath, parseId(fileId), getActor()));
+  out(o.json, { ok: true }, () => `file ${parseId(fileId)} detached`);
 }));
 program.command("block").argument("<id>").argument("<reason>").option("--json").action((id, reason, o) => run(o.json, () => {
   const t = withDb((db) => blockTask(db, parseId(id), reason, getActor()));

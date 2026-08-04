@@ -6,6 +6,7 @@ export * from './state.js';
 export * from './types.js';
 export * from './ops.js';
 export * from './criteria.js';
+export * from './files.js';
 export * from './tracks.js';
 export * from './decisions.js';
 export * from './recall.js';

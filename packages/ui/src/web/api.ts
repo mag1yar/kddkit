@@ -33,6 +33,11 @@ export interface EventRow {
   type: string | null; level: 'info' | 'warn' | 'error';
 }
 export interface Link { id: number; title: string; kind: string; }
+export interface FileRow {
+  id: number; task_id: number; sha256: string; ext: string;
+  original_name: string; mime_type: string | null; size_bytes: number;
+  description: string | null; created_at: number;
+}
 export interface AgentEvent {
   id: number; task_id: number; worker_id: string;
   kind: 'run_start' | 'text' | 'tool_start' | 'tool_finish' | 'error' | 'run_end';
@@ -41,6 +46,7 @@ export interface AgentEvent {
 export type Board = Record<Status, Task[]>;
 export interface TaskDetail {
   task: Task; criteria: Criterion[]; comments: Comment[]; events: EventRow[]; links: Link[];
+  files: FileRow[];
   agent_runs_total: number;
 }
 
@@ -48,7 +54,7 @@ export interface TaskDetail {
 // ?token — тем же способом: он есть только когда сервер сознательно выставлен наружу
 // (`kdd ui --host`), и ссылку с ним печатает сам сервер. Перезагрузка страницы токен не теряет,
 // потому что он лежит в адресной строке, а не в памяти вкладки.
-function withProject(path: string): string {
+export function withProject(path: string): string {
   const from = new URLSearchParams(location.search);
   const add = new URLSearchParams();
   for (const key of ['project', 'token']) {
@@ -133,3 +139,36 @@ export const unblockTask = (id: number) =>
   req<Task>(`/api/tasks/${id}/unblock`, { method: 'POST' });
 export const getFeed = (id: number, since = 0) =>
   req<AgentEvent[]>(`/api/tasks/${id}/feed?since=${since}`);
+
+// Ссылка на файл, годная в src/href: ?project и ?token в неё обязаны попасть — <img> идёт
+// в сеть сам, мимо req(), и без них получил бы чужую доску или 401.
+export const fileHref = (id: number): string => withProject(`/api/files/${id}`);
+
+// Тот же список, что allowlist инлайн-отдачи в core/files.ts (INLINE). Всё, чего в нём нет,
+// сервер отдаёт как octet-stream + Content-Disposition: attachment, и <img src> на такой файл
+// это гарантированно битая картинка. Поэтому и превью, и markdown-сниппет спрашивают именно
+// его, а не mime.startsWith('image/'): под 'image/' попадает и svg, которого тут намеренно
+// нет (он исполняет скрипт с нашего origin — см. комментарий в core/files.ts).
+const INLINE_IMAGES = new Set([
+  'image/png', 'image/jpeg', 'image/gif', 'image/webp',
+  'image/bmp', 'image/x-icon', 'image/tiff',
+]);
+export const isInlineImage = (mime: string | null): boolean =>
+  mime !== null && INLINE_IMAGES.has(mime);
+
+// Своя обёртка вместо req(): тот жёстко ставит content-type: application/json, а multipart
+// обязан выставлять сам браузер — только он знает boundary.
+export async function uploadFile(
+  taskId: number, file: File, description?: string,
+): Promise<FileRow> {
+  const fd = new FormData();
+  fd.set('file', file);
+  if (description) fd.set('description', description);
+  const res = await fetch(withProject(`/api/tasks/${taskId}/files`), { method: 'POST', body: fd });
+  const data = (await res.json()) as FileRow & { error?: string };
+  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+  return data;
+}
+
+export const deleteFile = (id: number) =>
+  req<{ ok: true }>(`/api/files/${id}`, { method: 'DELETE' });

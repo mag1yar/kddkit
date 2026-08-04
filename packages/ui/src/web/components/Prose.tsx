@@ -1,5 +1,6 @@
 import Markdown from 'react-markdown';
 import { cn } from '@/lib/utils';
+import { withProject } from '../api';
 
 export function Prose({ children }: { children: string }) {
   // prose даёт светло-серый body по умолчанию — принудительно foreground + видимый inline-code
@@ -21,8 +22,25 @@ export function Prose({ children }: { children: string }) {
           терял бы это состояние и утекал бы хэш проекта в Referer. */}
       <Markdown
         components={{
-          a: ({ node: _node, ...props }) => (
-            <a {...props} target="_blank" rel="noreferrer" />
+          // Не-картиночное вложение (TaskDialog вставляет его как обычную ссылку) — тот же
+          // /api/files/<id>, что и у img ниже, и без ?project/?token открылась бы чужая доска
+          // или 401 на выставленном наружу сервере — та же дыра, что была у img.
+          a: ({ node: _node, href, ...props }) => (
+            <a
+              {...props}
+              href={typeof href === 'string' && href.startsWith('/api/files/') ? withProject(href) : href}
+              target="_blank" rel="noreferrer"
+            />
+          ),
+          // В теле задачи вложение стоит как /api/files/<id> — без хвоста запроса. <img>
+          // ходит в сеть сам, мимо req(), поэтому ?project и ?token дописываем здесь: иначе
+          // картинка тянулась бы из чужой доски, а на выставленном наружу сервере — из 401.
+          // Хранить их в самом markdown нельзя: токен утёк бы в базу и в git-экспорт.
+          img: ({ node: _node, src, ...props }) => (
+            <img
+              {...props}
+              src={typeof src === 'string' && src.startsWith('/api/files/') ? withProject(src) : src}
+            />
           ),
         }}
       >

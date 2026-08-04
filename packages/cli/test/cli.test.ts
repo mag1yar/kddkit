@@ -1,3 +1,5 @@
+import { existsSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { openDb } from '@kddkit/core';
 import { makeEnv, kdd, kddFail } from './run.js';
@@ -106,5 +108,40 @@ describe('kdd ui --host', () => {
     const r = kddFail({ ...env, KDD_UI_TOKEN: undefined }, 'ui', '--host', '0.0.0.0');
     expect(r.code).toBe(1);
     expect(r.stderr).toMatch(/--host 0\.0\.0\.0 exposes the board .*--token/);
+  });
+});
+
+// #122: вложения. Стор — dirname(KDD_DB)/files, то есть внутри временного каталога теста.
+describe('attach / detach', () => {
+  it('прикладывает файл, показывает его в show с абсолютным путём, снимает', () => {
+    const env = makeEnv();
+    const dir = dirname(env.KDD_DB as string);
+    const src = join(dir, 'shot.png');
+    writeFileSync(src, 'PNGDATA');
+    kdd(env, 'add', 'с картинкой');
+    const out = kdd(env, 'attach', '1', src, '--desc', 'красная кнопка');
+    expect(out).toMatch(/file 1 shot\.png/);
+
+    const show = kdd(env, 'show', '1');
+    expect(show).toMatch(/files \(1\)/);
+    expect(show).toMatch(/shot\.png/);
+    expect(show).toMatch(/красная кнопка/);
+    // путь в выводе абсолютный и по нему действительно лежит файл — ради этой строки
+    // всё и делается: агент читает её и открывает файл
+    const path = show.split('\n').find((l) => l.includes('shot.png'))!.trim().split(/\s+/).pop()!;
+    expect(path.startsWith('/')).toBe(true);
+    expect(existsSync(path)).toBe(true);
+
+    kdd(env, 'detach', '1');
+    expect(kdd(env, 'show', '1')).not.toMatch(/files \(/);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it('отбивает несуществующий исходник понятной ошибкой', () => {
+    const env = makeEnv();
+    kdd(env, 'add', 'пустая');
+    const r = kddFail(env, 'attach', '1', join(dirname(env.KDD_DB as string), 'нет.png'));
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/cannot read/);
   });
 });

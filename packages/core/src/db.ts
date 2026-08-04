@@ -149,6 +149,25 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'feature'
     CHECK (kind IN ('feature','bug','chore','research'));
   `,
+  `
+  -- Вложения. Строка на СВЯЗКУ задача+файл, а не на файл: описание принадлежит связке —
+  -- одна и та же схема на двух задачах описывается по-разному. Дедуп при этом остаётся,
+  -- он на уровне байтов: имя файла на диске — sha256 содержимого.
+  CREATE TABLE files (
+    id INTEGER PRIMARY KEY,
+    task_id INTEGER NOT NULL REFERENCES tasks(id),
+    sha256 TEXT NOT NULL,
+    ext TEXT NOT NULL,
+    original_name TEXT NOT NULL,
+    mime_type TEXT,
+    size_bytes INTEGER NOT NULL,
+    description TEXT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(task_id, sha256)
+  );
+  CREATE INDEX idx_files_task_id ON files(task_id);
+  CREATE INDEX idx_files_sha256 ON files(sha256);
+  `,
 ];
 
 // Копия базы перед миграцией. VACUUM INTO, а не copyFile: она пишет один консистентный файл,

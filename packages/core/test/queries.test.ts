@@ -1,10 +1,15 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type Database from 'better-sqlite3';
 import { openDb } from '../src/db.js';
 import { addTask, moveTask, blockTask, archiveTask } from '../src/ops.js';
-import { boardData, taskDetail, statusDigest, exportBoard, unsubmitted } from '../src/queries.js';
+import { boardData, taskDetail, taskDetailCapped, statusDigest, exportBoard, unsubmitted } from '../src/queries.js';
 import { linkTasks } from '../src/ops.js';
 import { addCriterion, setCriterionChecked } from '../src/criteria.js';
+import { attachFile } from '../src/files.js';
+import { CAPS } from '../src/caps.js';
 
 let db: Database.Database;
 const user = { type: 'user' as const };
@@ -150,5 +155,31 @@ describe('unsubmitted', () => {
     archiveTask(db, 1, user);
     expect(unsubmitted(db, 'ai:s1')).toEqual([]);
     expect(c.checked_at).not.toBeNull(); // галка всё это время стоит
+  });
+});
+
+// #122: вложения видны обоим читателям детали — полному (kdd show --json) и капнутому.
+describe('files in task detail', () => {
+  it('taskDetail отдаёт вложения, capped режет список и описание с честным total', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kdd-qfiles-'));
+    const dbPath = join(dir, 'kdd.db');
+    const fdb = openDb(dbPath, dir);
+    addTask(fdb, { title: 'со вложениями' }, user); // #1
+    const src = join(dir, 'shot.png');
+    let first: number | undefined;
+    for (let i = 0; i <= CAPS.files; i++) {
+      writeFileSync(src, `bytes-${i}`);
+      const f = attachFile(fdb, dbPath, 1, src, { description: 'о'.repeat(CAPS.fileDescChars + 50) }, user);
+      first ??= f.id;
+    }
+    expect(taskDetail(fdb, 1).files).toHaveLength(CAPS.files + 1);
+    const capped = taskDetailCapped(fdb, 1);
+    expect(capped.files).toHaveLength(CAPS.files);
+    expect(capped.files_total).toBe(CAPS.files + 1);
+    expect(capped.files[0].description!.length).toBeLessThan(CAPS.fileDescChars + 50);
+    // режем список с НАЧАЛА (id-порядок = время прикрепления): первый вернувшийся файл — это
+    // первый приложенный, а не последний. Одинаковые description на всех файлах раньше не
+    // отличали head-slice от tail-slice — эта проверка отличает.
+    expect(capped.files[0].id).toBe(first);
   });
 });

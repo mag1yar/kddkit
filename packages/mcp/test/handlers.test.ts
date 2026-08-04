@@ -3,7 +3,7 @@ import {
   addTask, openDb, mustGetTask, CAPS, moveTask, addCriterion, setCriterionChecked,
 } from '@kddkit/core';
 import { getTask, listTasks, recallTool, updateTask } from '../src/handlers.js';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -29,9 +29,9 @@ describe('getTask', () => {
     const db = mk();
     const t = addTask(db, { title: 'whale', body: 'x'.repeat(9000) }, user);
     for (let i = 0; i < 25; i++) updateTask(db, { id: t.id, comment: `c${i} ${'y'.repeat(600)}` }, ai);
-    const d = getTask(db, t.id) as ReturnType<typeof getTask> & {
-      comments_total: number; events_total: number;
-    };
+    // getTask(db, id) без third arg сужается к TaskDetailCapped перегрузкой — comments_total
+    // и events_total уже в типе, каст не нужен.
+    const d = getTask(db, t.id);
     expect(d.comments.length).toBe(20);
     expect(d.comments_total).toBe(25);
     expect(d.comments.at(-1)!.body).toMatch(/^c24 /); // последние, не первые
@@ -177,5 +177,88 @@ describe('updateTask', () => {
     expect(() => updateTask(db,
       { id: t.id, edit: { title: 'changed' }, move: { to: 'done' } }, ai)).toThrow(/invalid transition/);
     expect(mustGetTask(db, t.id).title).toBe('orig');
+  });
+});
+
+// #122: агент прикладывает файл тем же инструментом, которым правит задачу. Новых
+// инструментов не заводим — пять это заявленная граница пакета.
+describe('updateTask attach/detach', () => {
+  const store = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kdd-mcp-files-'));
+    const dbPath = join(dir, 'kdd.db');
+    return { dir, dbPath, db: openDb(dbPath, dir) };
+  };
+
+  it('прикладывает файл и отдаёт его в get_task', () => {
+    const { dir, db } = store();
+    const t = addTask(db, { title: 'с картинкой' }, user);
+    const src = join(dir, 'shot.png');
+    writeFileSync(src, 'PNGDATA');
+    updateTask(db, { id: t.id, attach: { path: src, description: 'красная кнопка' } }, user);
+    const d = getTask(db, t.id);
+    expect(d.files).toHaveLength(1);
+    expect(d.files[0].original_name).toBe('shot.png');
+    expect(d.files[0].description).toBe('красная кнопка');
+    expect(d.files_total).toBe(1);
+    // #122 C1: get_task теперь тоже отдаёт абсолютный путь, не только kdd show — иначе
+    // агенту нечем открыть вложение, которое он видит через MCP.
+    expect(d.files[0].path.startsWith('/')).toBe(true);
+    expect(existsSync(d.files[0].path)).toBe(true);
+  });
+
+  it('снимает вложение по id', () => {
+    const { dir, db } = store();
+    const t = addTask(db, { title: 'снять' }, user);
+    const src = join(dir, 'a.png');
+    writeFileSync(src, 'X');
+    updateTask(db, { id: t.id, attach: { path: src } }, user);
+    const fileId = getTask(db, t.id).files[0].id;
+    updateTask(db, { id: t.id, detach: fileId }, user);
+    expect(getTask(db, t.id).files).toEqual([]);
+  });
+
+  it('пустой апдейт по-прежнему отбивается', () => {
+    const { db } = store();
+    const t = addTask(db, { title: 'ничего' }, user);
+    expect(() => updateTask(db, { id: t.id }, user)).toThrow(/nothing to update/);
+  });
+
+  // move гейтится (переходы, критерии, self-accept), и отказ гейта отменяет весь вызов.
+  // Раньше attach шёл ПЕРЕД транзакцией: вызывающий получал ошибку про move, а файл всё
+  // равно оставался прикреплённым — и узнать об этом было неоткуда.
+  it('отказ move откатывает и attach: файл не прикрепляется', () => {
+    const { dir, db } = store();
+    const t = addTask(db, { title: 'гейт' }, user);
+    const src = join(dir, 'a.png');
+    writeFileSync(src, 'X');
+    expect(() => updateTask(
+      db, { id: t.id, attach: { path: src }, move: { to: 'nonsense' } }, user)).toThrow();
+    expect(getTask(db, t.id).files).toEqual([]);
+  });
+
+  // Обратная половина той же гарантии: attach отбивается ДО транзакции, иначе move уже
+  // закоммичен, а вызывающий видит только ошибку про файл.
+  it('нечитаемый attach отменяет и move: задача остаётся на месте', () => {
+    const { dir, db } = store();
+    const t = addTask(db, { title: 'гейт-2' }, user);
+    expect(() => updateTask(
+      db,
+      { id: t.id, attach: { path: join(dir, 'нет-такого.png') }, move: { to: 'in_progress' } },
+      user,
+    )).toThrow(/cannot read/);
+    expect(getTask(db, t.id).task.status).toBe('new');
+    expect(getTask(db, t.id).files).toEqual([]);
+  });
+
+  it('detach отказывает, если файл прикреплён к другой задаче', () => {
+    const { dir, db } = store();
+    const a = addTask(db, { title: 'A' }, user);
+    const b = addTask(db, { title: 'B' }, user);
+    const src = join(dir, 'a.png');
+    writeFileSync(src, 'X');
+    updateTask(db, { id: a.id, attach: { path: src } }, user);
+    const fileId = getTask(db, a.id).files[0].id;
+    expect(() => updateTask(db, { id: b.id, detach: fileId }, user)).toThrow(/not attached/);
+    expect(getTask(db, a.id).files).toHaveLength(1);
   });
 });

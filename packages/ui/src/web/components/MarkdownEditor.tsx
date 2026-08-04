@@ -27,7 +27,8 @@ const KDD_THEME: Theme = {
 };
 
 export function MarkdownEditor({
-  value, onChange, placeholder, minHeight = '64px', maxHeight, autoFocus, onEnterSubmit, className,
+  value, onChange, placeholder, minHeight = '64px', maxHeight, autoFocus, onEnterSubmit,
+  onUpload, className,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -38,12 +39,14 @@ export function MarkdownEditor({
   autoFocus?: boolean;
   /** Enter отправляет, Shift+Enter — перенос строки */
   onEnterSubmit?: () => void;
+  /** вставка/drop файла — резолвится в markdown-сниппет, который дописывается в конец */
+  onUpload?: (file: File) => Promise<string>;
   className?: string;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const editor = useRef<OverTypeInstance | null>(null);
-  const cb = useRef({ onChange, onEnterSubmit });
-  cb.current = { onChange, onEnterSubmit };
+  const cb = useRef({ onChange, onEnterSubmit, onUpload });
+  cb.current = { onChange, onEnterSubmit, onUpload };
 
   useEffect(() => {
     const [ed] = new OverType(host.current!, {
@@ -76,6 +79,48 @@ export function MarkdownEditor({
     const ed = editor.current;
     if (ed && ed.getValue() !== value) ed.setValue(value);
   }, [value]);
+
+  // Вставка картинки из буфера и перетаскивание файла. overtype своих хуков на это не даёт,
+  // поэтому слушаем сам контейнер в фазе всплытия — редактор уже обработал событие, и мы
+  // дописываем результат к тому, что в нём лежит.
+  useEffect(() => {
+    const el = host.current;
+    if (!el) return;
+    const take = (files: FileList | null, e: Event): void => {
+      const list = [...(files ?? [])];
+      if (!list.length || !cb.current.onUpload) return;
+      e.preventDefault();
+      const upload = cb.current.onUpload;
+      // allSettled, не all: при пачке из двух картинок, где одна мимо капа, Promise.all
+      // выбрасывал бы и снипет уцелевшей — файл прикреплён и виден во вкладке Files, а в тексте
+      // ссылки на него нет и никакого признака этого тоже нет. Отказ озвучивает onUpload
+      // вызывающего (он тостит и пробрасывает), нам остаётся вставить то, что доехало.
+      Promise.allSettled(list.map(upload)).then((results) => {
+        const snippets = results
+          .filter((r): r is PromiseFulfilledResult<string> => r.status === 'fulfilled')
+          .map((r) => r.value);
+        const ed = editor.current;
+        if (!ed || !snippets.length) return;
+        // Пустой редактор — не пустая строка: `${''}\n\n...` вставлял бы два пустых абзаца
+        // ПЕРЕД первым же вложением.
+        const body = ed.getValue();
+        const next = `${body ? `${body}\n\n` : ''}${snippets.join('\n\n')}\n`;
+        ed.setValue(next);
+        cb.current.onChange(next);
+      });
+    };
+    const onPaste = (e: ClipboardEvent): void => take(e.clipboardData?.files ?? null, e);
+    const onDrop = (e: DragEvent): void => take(e.dataTransfer?.files ?? null, e);
+    const onDragOver = (e: DragEvent): void => { if (cb.current.onUpload) e.preventDefault(); };
+    el.addEventListener('paste', onPaste);
+    el.addEventListener('drop', onDrop);
+    el.addEventListener('dragover', onDragOver);
+    return () => {
+      el.removeEventListener('paste', onPaste);
+      el.removeEventListener('drop', onDrop);
+      el.removeEventListener('dragover', onDragOver);
+    };
+  }, []);
 
   return <div ref={host} className={className} />;
 }

@@ -21,6 +21,12 @@ var CAPS = {
   commentChars: 500,
   events: 10,
   // последних событий в show/get_task
+  files: 20,
+  // вложений в show/get_task
+  fileDescChars: 200,
+  // описание вложения в show/get_task
+  fileNameChars: 100,
+  // original_name — с клиентского multipart-имени, режем на записи
   recallK: 10,
   // дефолтный top-k
   recallKMax: 50,
@@ -33,6 +39,8 @@ var CAPS = {
   // Единственные капы на ЗАПИСЬ. Всё выше режет выдачу — эти режут то, что вообще ложится в базу:
   // фид воркера принимает сырой ввод/вывод инструментов, и один `Read` большого файла кладёт
   // сотни КБ одной строкой в базу, которую шарят все worktree проекта.
+  fileBytes: 20 * 1024 * 1024,
+  // потолок вложения: доска личная, но 20 MB картинки хватает всем
   agentFieldChars: 4096,
   // строковый лист в detail (вывод тула, аргумент, текст ответа)
   agentDetailItems: 64,
@@ -207,6 +215,25 @@ var MIGRATIONS = [
   -- \u043F\u043E\u0442\u0440\u0435\u0431\u0438\u0442\u0435\u043B\u0435 \u0431\u044B\u043B\u0430 \u0431\u044B \u0446\u0435\u043D\u043E\u0439 \u0431\u0435\u0437 \u0432\u044B\u0433\u043E\u0434\u044B.
   ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'feature'
     CHECK (kind IN ('feature','bug','chore','research'));
+  `,
+  `
+  -- \u0412\u043B\u043E\u0436\u0435\u043D\u0438\u044F. \u0421\u0442\u0440\u043E\u043A\u0430 \u043D\u0430 \u0421\u0412\u042F\u0417\u041A\u0423 \u0437\u0430\u0434\u0430\u0447\u0430+\u0444\u0430\u0439\u043B, \u0430 \u043D\u0435 \u043D\u0430 \u0444\u0430\u0439\u043B: \u043E\u043F\u0438\u0441\u0430\u043D\u0438\u0435 \u043F\u0440\u0438\u043D\u0430\u0434\u043B\u0435\u0436\u0438\u0442 \u0441\u0432\u044F\u0437\u043A\u0435 \u2014
+  -- \u043E\u0434\u043D\u0430 \u0438 \u0442\u0430 \u0436\u0435 \u0441\u0445\u0435\u043C\u0430 \u043D\u0430 \u0434\u0432\u0443\u0445 \u0437\u0430\u0434\u0430\u0447\u0430\u0445 \u043E\u043F\u0438\u0441\u044B\u0432\u0430\u0435\u0442\u0441\u044F \u043F\u043E-\u0440\u0430\u0437\u043D\u043E\u043C\u0443. \u0414\u0435\u0434\u0443\u043F \u043F\u0440\u0438 \u044D\u0442\u043E\u043C \u043E\u0441\u0442\u0430\u0451\u0442\u0441\u044F,
+  -- \u043E\u043D \u043D\u0430 \u0443\u0440\u043E\u0432\u043D\u0435 \u0431\u0430\u0439\u0442\u043E\u0432: \u0438\u043C\u044F \u0444\u0430\u0439\u043B\u0430 \u043D\u0430 \u0434\u0438\u0441\u043A\u0435 \u2014 sha256 \u0441\u043E\u0434\u0435\u0440\u0436\u0438\u043C\u043E\u0433\u043E.
+  CREATE TABLE files (
+    id INTEGER PRIMARY KEY,
+    task_id INTEGER NOT NULL REFERENCES tasks(id),
+    sha256 TEXT NOT NULL,
+    ext TEXT NOT NULL,
+    original_name TEXT NOT NULL,
+    mime_type TEXT,
+    size_bytes INTEGER NOT NULL,
+    description TEXT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(task_id, sha256)
+  );
+  CREATE INDEX idx_files_task_id ON files(task_id);
+  CREATE INDEX idx_files_sha256 ON files(sha256);
   `
 ];
 function backupBeforeMigrate(db, dbPath, from) {
@@ -897,17 +924,136 @@ function removeCriterion(db, taskId, id, actor) {
   })();
 }
 
-// src/decisions.ts
+// src/files.ts
 import { createHash as createHash2 } from "crypto";
-import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync, writeFileSync } from "fs";
-import { join as join2 } from "path";
+import {
+  existsSync as existsSync2,
+  mkdirSync as mkdirSync2,
+  readFileSync,
+  renameSync as renameSync2,
+  rmSync as rmSync2,
+  statSync,
+  writeFileSync
+} from "fs";
+import { basename, dirname as dirname2, extname, join as join2 } from "path";
+var MIME = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  bmp: "image/bmp",
+  ico: "image/x-icon",
+  tif: "image/tiff",
+  tiff: "image/tiff",
+  svg: "image/svg+xml",
+  pdf: "application/pdf",
+  zip: "application/zip",
+  json: "application/json",
+  csv: "text/csv",
+  md: "text/markdown",
+  txt: "text/plain",
+  log: "text/plain"
+};
+var INLINE = /* @__PURE__ */ new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/bmp",
+  "image/x-icon",
+  "image/tiff"
+]);
+var isInlineMime = (m) => m !== null && INLINE.has(m);
+var filesDir = (dbPath) => {
+  if (dbPath === ":memory:") throw new KddError("attachments need a real board file, not :memory:");
+  return join2(dirname2(dbPath), "files");
+};
+var filePath = (dbPath, f) => join2(filesDir(dbPath), `${f.sha256}.${f.ext}`);
+function listFiles(db, taskId) {
+  return db.prepare(`SELECT * FROM files WHERE task_id = ? ORDER BY id`).all(taskId);
+}
+function getFile(db, id) {
+  return db.prepare(`SELECT * FROM files WHERE id = ?`).get(id);
+}
+function attachFile(db, dbPath, taskId, srcPath, opts, actor) {
+  let data;
+  try {
+    const stat = statSync(srcPath);
+    if (stat.isDirectory()) throw new KddError(`${srcPath} is a directory`);
+    if (stat.size > CAPS.fileBytes) {
+      throw new KddError(`file is ${stat.size} bytes, the limit is ${CAPS.fileBytes}`);
+    }
+    data = readFileSync(srcPath);
+  } catch (e) {
+    if (e instanceof KddError) throw e;
+    throw new KddError(`cannot read ${srcPath}: ${e.message}`);
+  }
+  mustGetTask(db, taskId);
+  const sha256 = createHash2("sha256").update(data).digest("hex");
+  const ext = (extname(srcPath).slice(1) || "bin").toLowerCase();
+  const target = join2(filesDir(dbPath), `${sha256}.${ext}`);
+  return db.transaction(() => {
+    if (!existsSync2(target)) {
+      mkdirSync2(filesDir(dbPath), { recursive: true });
+      const tmp = `${target}.${process.pid}.tmp`;
+      writeFileSync(tmp, data);
+      renameSync2(tmp, target);
+    }
+    const name = capText(basename(srcPath), CAPS.fileNameChars);
+    const r = db.prepare(
+      `INSERT INTO files (task_id, sha256, ext, original_name, mime_type, size_bytes,
+                          description, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(task_id, sha256) DO NOTHING`
+    ).run(
+      taskId,
+      sha256,
+      ext,
+      name,
+      MIME[ext] ?? null,
+      data.length,
+      opts.description ?? null,
+      now()
+    );
+    const row = db.prepare(`SELECT * FROM files WHERE task_id = ? AND sha256 = ?`).get(taskId, sha256);
+    if (r.changes === 0) {
+      if (opts.description && opts.description !== row.description) {
+        db.prepare(`UPDATE files SET description = ? WHERE id = ?`).run(opts.description, row.id);
+        appendEvent(db, taskId, actor, "file_attached", { id: row.id, name, described: true });
+        db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
+        return { ...row, description: opts.description };
+      }
+      return row;
+    }
+    appendEvent(db, taskId, actor, "file_attached", { id: row.id, name });
+    db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
+    return row;
+  }).immediate();
+}
+function detachFile(db, dbPath, fileId, actor) {
+  const f = getFile(db, fileId);
+  if (!f) throw new KddError(`file #${fileId} not found`);
+  db.transaction(() => {
+    db.prepare(`DELETE FROM files WHERE id = ?`).run(fileId);
+    appendEvent(db, f.task_id, actor, "file_detached", { id: fileId, name: f.original_name });
+    db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), f.task_id);
+    const left = db.prepare(`SELECT COUNT(*) AS c FROM files WHERE sha256 = ? AND ext = ?`).get(f.sha256, f.ext).c;
+    if (left === 0) rmSync2(filePath(dbPath, f), { force: true });
+  })();
+}
+
+// src/decisions.ts
+import { createHash as createHash3 } from "crypto";
+import { existsSync as existsSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "fs";
+import { join as join3 } from "path";
 function slugify(title) {
   const s = title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 60).replace(/-+$/, "");
   return s || "untitled";
 }
 var normalize = (s) => s.replace(/\r\n/g, "\n").trim();
 function contentHash(title, body) {
-  return createHash2("sha256").update(`${normalize(title)}
+  return createHash3("sha256").update(`${normalize(title)}
 ${normalize(body)}`).digest("hex");
 }
 function renderDecisionBody(input) {
@@ -960,9 +1106,9 @@ function parseDecisionMd(raw) {
   };
 }
 function supersede(db, dir, oldSlug, newSlug) {
-  const p = join2(dir, `${oldSlug}.md`);
-  if (!existsSync2(p)) throw new KddError(`decision '${oldSlug}' not found`);
-  let raw = readFileSync(p, "utf8").replace(/\r\n/g, "\n");
+  const p = join3(dir, `${oldSlug}.md`);
+  if (!existsSync3(p)) throw new KddError(`decision '${oldSlug}' not found`);
+  let raw = readFileSync2(p, "utf8").replace(/\r\n/g, "\n");
   if (raw.startsWith("---\n") && /^status:/m.test(raw)) {
     raw = raw.replace(/^status:.*$/m, "status: superseded").replace(/^superseded_by:.*$/m, `superseded_by: ${newSlug}`);
   } else {
@@ -974,7 +1120,7 @@ superseded_by: ${newSlug}
 ---
 ${raw}`;
   }
-  writeFileSync(p, raw);
+  writeFileSync2(p, raw);
   db.prepare(`UPDATE decisions SET superseded_by = ? WHERE slug = ?`).run(newSlug, oldSlug);
 }
 function addDecision(db, decisionsDir, input) {
@@ -989,13 +1135,13 @@ function addDecision(db, decisionsDir, input) {
   const date = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
   const base = `${date}-${slugify(input.title)}`;
   let slug = base;
-  const taken = (s) => existsSync2(join2(decisionsDir, `${s}.md`)) || !!db.prepare(`SELECT 1 FROM decisions WHERE slug = ?`).get(s);
+  const taken = (s) => existsSync3(join3(decisionsDir, `${s}.md`)) || !!db.prepare(`SELECT 1 FROM decisions WHERE slug = ?`).get(s);
   for (let i = 2; taken(slug); i++) slug = `${base}-${i}`;
-  const path = join2(decisionsDir, `${slug}.md`);
+  const path = join3(decisionsDir, `${slug}.md`);
   return db.transaction(() => {
     if (input.supersedes) supersede(db, decisionsDir, input.supersedes, slug);
-    mkdirSync2(decisionsDir, { recursive: true });
-    writeFileSync(path, renderDecisionMd(input, date));
+    mkdirSync3(decisionsDir, { recursive: true });
+    writeFileSync2(path, renderDecisionMd(input, date));
     db.prepare(
       `INSERT INTO decisions (slug, title, path, content_hash, created, superseded_by)
        VALUES (?, ?, ?, ?, ?, NULL)`
@@ -1008,11 +1154,11 @@ function addDecision(db, decisionsDir, input) {
 }
 
 // src/recall.ts
-import { existsSync as existsSync3, readFileSync as readFileSync2, readdirSync as readdirSync2 } from "fs";
-import { join as join3 } from "path";
+import { existsSync as existsSync4, readFileSync as readFileSync3, readdirSync as readdirSync2 } from "fs";
+import { join as join4 } from "path";
 function syncIndex(db, decisionsDir) {
   db.transaction(() => {
-    const files = existsSync3(decisionsDir) ? readdirSync2(decisionsDir).filter((f) => f.endsWith(".md")) : [];
+    const files = existsSync4(decisionsDir) ? readdirSync2(decisionsDir).filter((f) => f.endsWith(".md")) : [];
     const inDb = new Map(
       db.prepare(`SELECT slug, content_hash, superseded_by FROM decisions`).all().map((r) => [r.slug, r])
     );
@@ -1020,8 +1166,8 @@ function syncIndex(db, decisionsDir) {
     for (const f of files) {
       const slug = f.slice(0, -3);
       seen.add(slug);
-      const path = join3(decisionsDir, f);
-      const doc = parseDecisionMd(readFileSync2(path, "utf8"));
+      const path = join4(decisionsDir, f);
+      const doc = parseDecisionMd(readFileSync3(path, "utf8"));
       const title = doc.title || slug;
       const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
       const row = inDb.get(slug);
@@ -1165,7 +1311,8 @@ function taskDetail(db, id) {
   const agent_runs_total = db.prepare(
     `SELECT COUNT(*) c FROM agent_events WHERE task_id = ? AND kind = 'run_start'`
   ).get(id).c;
-  return { task, criteria, comments, events, links, agent_runs_total };
+  const files = listFiles(db, id).map((f) => ({ ...f, path: filePath(db.name, f) }));
+  return { task, criteria, comments, events, links, files, agent_runs_total };
 }
 function taskDetailCapped(db, id) {
   const d = taskDetail(db, id);
@@ -1180,7 +1327,14 @@ function taskDetailCapped(db, id) {
     comments_total: d.comments.length,
     events: d.events.slice(-CAPS.events),
     events_total: d.events.length,
-    links: d.links
+    links: d.links,
+    // Вложения режем с НАЧАЛА списка (он упорядочен по id, то есть по времени): первым
+    // приложили — первым и показываем. У комментариев обратная политика — там свежий важнее.
+    files: d.files.slice(0, CAPS.files).map((f) => ({
+      ...f,
+      description: f.description === null ? null : capText(f.description, CAPS.fileDescChars)
+    })),
+    files_total: d.files.length
   };
 }
 function statusDigest(db) {
@@ -1509,8 +1663,8 @@ function tick(db, opts) {
 
 // src/worktree.ts
 import { execFileSync as execFileSync2 } from "child_process";
-import { existsSync as existsSync4, realpathSync, rmSync as rmSync2 } from "fs";
-import { dirname as dirname2, join as join4 } from "path";
+import { existsSync as existsSync5, realpathSync, rmSync as rmSync3 } from "fs";
+import { dirname as dirname3, join as join5 } from "path";
 var branchName = (taskId) => `kdd/task-${taskId}`;
 var BRANCH_RE = /^refs\/heads\/kdd\/task-(\d+)$/;
 function git(repoRoot, args) {
@@ -1533,9 +1687,9 @@ function gitTry(repoRoot, args) {
   }
 }
 function worktreePath(dbPath, taskId, title) {
-  const root = dirname2(dbPath);
-  const realRoot = existsSync4(root) ? realpathSync(root) : root;
-  return join4(realRoot, "worktrees", `task-${taskId}-${slugify(title)}`);
+  const root = dirname3(dbPath);
+  const realRoot = existsSync5(root) ? realpathSync(root) : root;
+  return join5(realRoot, "worktrees", `task-${taskId}-${slugify(title)}`);
 }
 function headCommit(repoRoot) {
   return git(repoRoot, ["rev-parse", "HEAD"]);
@@ -1574,11 +1728,11 @@ function ensureWorktree(repoRoot, dbPath, taskId, title) {
   const branch = branchName(taskId);
   const ref = `refs/heads/${branch}`;
   const existing = listWorktrees(repoRoot).find((e) => e.branch === ref);
-  if (existing && existsSync4(existing.path)) return existing.path;
+  if (existing && existsSync5(existing.path)) return existing.path;
   if (existing) gitTry(repoRoot, ["worktree", "remove", "--force", existing.path]);
   const path = worktreePath(dbPath, taskId, title);
   gitTry(repoRoot, ["worktree", "prune"]);
-  rmSync2(path, { recursive: true, force: true });
+  rmSync3(path, { recursive: true, force: true });
   const tail = branchExists(repoRoot, branch) ? [path, branch] : [path, "-b", branch];
   git(repoRoot, ["worktree", "add", ...tail]);
   return path;
@@ -1601,14 +1755,14 @@ function sweepWorktrees(db, repoRoot, isBusy) {
 }
 
 // src/release.ts
-import { readFileSync as readFileSync3 } from "fs";
-import { join as join5 } from "path";
+import { readFileSync as readFileSync4 } from "fs";
+import { join as join6 } from "path";
 var pkgCache = null;
 function pkg() {
   if (pkgCache) return pkgCache;
   try {
     pkgCache = JSON.parse(
-      readFileSync3(join5(import.meta.dirname, "../package.json"), "utf8")
+      readFileSync4(join6(import.meta.dirname, "../package.json"), "utf8")
     );
   } catch {
     pkgCache = {};
@@ -1829,6 +1983,7 @@ export {
   appendAgentEvent,
   appendEvent,
   archiveTask,
+  attachFile,
   authorOf,
   blockTask,
   boardData,
@@ -1844,21 +1999,27 @@ export {
   contentHash,
   createTrack,
   deleteTrack,
+  detachFile,
   editTask,
   editTrack,
   ensureWorktree,
   expiredLeases,
   exportBoard,
+  filePath,
+  filesDir,
   getAutoTick,
+  getFile,
   getLastRun,
   getReminded,
   headCommit,
+  isInlineMime,
   kddHome,
   kddVersion,
   lastAgentEventKind,
   linkTasks,
   listAgentEvents,
   listCriteria,
+  listFiles,
   listProjects,
   listTracks,
   logError,

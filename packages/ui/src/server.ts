@@ -1,13 +1,15 @@
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type Database from 'better-sqlite3';
 import { serve } from '@hono/node-server';
 import { Hono, type Context } from 'hono';
 import {
-  KddError, addCriterion, addTask, blockTask, boardData, closeDb, commentTask, createTrack, deleteTrack,
-  editTask, editTrack, getAutoTick, getLastRun, kddHome, listAgentEvents, listProjects, listTracks,
+  CAPS, KddError, addCriterion, addTask, attachFile, blockTask, boardData, closeDb, commentTask,
+  createTrack, deleteTrack, detachFile, editTask, editTrack, filePath, getFile, getAutoTick,
+  getLastRun, isInlineMime, kddHome, listAgentEvents, listProjects, listTracks, logError,
   maxWorkers, maxWorkersEnvLocked, moveTask, openDb, placeTask, releaseInfo, removeCriterion,
   setAutoTick, setCriterionChecked, taskDetail, unblockTask, type Kind, type Priority,
 } from '@kddkit/core';
@@ -106,6 +108,22 @@ export function createApp(
     if (e instanceof KddError) return c.json({ error: e.message }, 400);
     console.error(e);
     return c.json({ error: 'internal error' }, 500);
+  });
+
+  // CSRF. Обе проверки ниже (токен в URL, Host на loopback) чужую ВКЛАДКУ не отбивают:
+  // multipart/form-data — CORS-«простой» тип, кросс-доменный POST с ним уходит вообще без
+  // preflight, а Host в нём остаётся нашим. Origin браузер проставляет сам, и страница его
+  // подделать не может, — сверяем с собственным. Не-браузерные клиенты (cli, curl, тесты
+  // через app.request) Origin не шлют вовсе, для них проверки нет. GET не трогаем: ответ
+  // кросс-доменно всё равно не прочитать, а ссылки на /api/files/:id должны работать.
+  app.use('/api/*', async (c, next) => {
+    const origin = c.req.header('origin');
+    if (origin && c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+      let self = '';
+      try { self = new URL(c.req.url).origin; } catch { /* мусорный url — не совпадёт */ }
+      if (origin !== self) return c.json({ error: 'cross-origin request rejected' }, 403);
+    }
+    await next();
   });
 
   // Токен появляется РОВНО тогда, когда сервер сознательно выставлен за loopback
@@ -241,7 +259,14 @@ export function createApp(
     return c.json(autoTickState(c));
   });
 
-  app.get('/api/tasks/:id', (c) => c.json(taskDetail(getDb(c), taskId(c))));
+  app.get('/api/tasks/:id', (c) => {
+    const d = taskDetail(getDb(c), taskId(c));
+    // files[].path — абсолютный путь в сторе НА ЭТОЙ машине; он заведён ради агента
+    // (`kdd show` / `get_task` открывают вложение через Read) и вкладке не нужен вовсе:
+    // картинку она берёт по /api/files/<id>. Выставленному наружу серверу (`kdd ui --host`)
+    // незачем рассказывать держателю токена раскладку ~/.kdd и hash доски.
+    return c.json({ ...d, files: d.files.map(({ path: _path, ...f }) => f) });
+  });
 
   // Tier1 agent feed: события воркера для таска, инкрементально по since=<id>.
   app.get('/api/tasks/:id/feed', (c) => c.json(
@@ -308,6 +333,78 @@ export function createApp(
     return c.json({ ok: true });
   });
 
+  // Загрузка принимает ТОЛЬКО байты. Путь на файловой системе роут не принимает ни в каком
+  // виде: `kdd attach <path>` читает локальный файл законно (актор уже за клавиатурой этой
+  // машины), а вкладка браузера через тот же приём получила бы чтение любого файла.
+  app.post('/api/tasks/:id/files', async (c) => {
+    // ponytail: content-length — это то, что ЗАЯВИЛ клиент, а не то, что он реально пришлёт;
+    // лгущий клиент этот заслон обходит. Но именно c.req.parseBody() ниже буферизует ВЕСЬ
+    // multipart-body в память ДО того, как attachFile успеет отбить его по CAPS.fileBytes —
+    // так что без этой проверки честный запрос на несколько гигабайт уже уронил бы процесс
+    // до всякой валидации. Снимает только тривиально достижимый случай, не весь класс атаки.
+    const len = Number(c.req.header('content-length') ?? NaN);
+    // +64 KiB — щедрый запас на multipart-обвязку (boundary, заголовки полей), не точная граница.
+    if (Number.isFinite(len) && len > CAPS.fileBytes + 64 * 1024) {
+      return c.json({ error: `upload is ${len} bytes, limit is ${CAPS.fileBytes}` }, 413);
+    }
+    const body = await c.req.parseBody();
+    const f = body.file;
+    if (!(f instanceof File)) return c.json({ error: 'file field is required' }, 400);
+    const buf = Buffer.from(await f.arrayBuffer());
+    // mkdtemp/write и их cleanup живут в ОДНОМ try/finally: имя файла — это body от клиента
+    // (basename не вычищает NUL), writeFileSync на таком имени бросает ДО того, как мы успели
+    // бы завести отдельный finally, и temp-каталог осиротел бы в os.tmpdir() на каждый такой запрос.
+    let tmpDir: string | undefined;
+    try {
+      tmpDir = mkdtempSync(join(tmpdir(), 'kdd-upload-'));
+      // core.attachFile читает исходник с диска — кладём принятые байты во временный файл
+      // с оригинальным именем: из него берутся и расширение, и original_name.
+      const tmp = join(tmpDir, basename(f.name) || 'file.bin');
+      try {
+        writeFileSync(tmp, buf);
+      } catch (e) {
+        // Имя, которое отверг сам fs (например NUL-байт) — это плохой ввод, а не наш сбой:
+        // KddError уходит через onError как 400, а не как непойманный throw → 500.
+        throw new KddError(`cannot save upload: ${(e as Error).message}`);
+      }
+      const db = getDb(c);
+      const desc = typeof body.description === 'string' && body.description
+        ? body.description : undefined;
+      return c.json(attachFile(db, db.name, taskId(c), tmp, { description: desc }, USER));
+    } finally {
+      if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  app.get('/api/files/:id', (c) => {
+    const db = getDb(c);
+    const f = getFile(db, intParam(c, 'id'));
+    if (!f) return c.notFound();
+    let data: Buffer;
+    try { data = readFileSync(filePath(db.name, f)); } catch {
+      // Строка есть, байтов нет: стор чистили руками. Это 404 для вкладки и запись в журнал
+      // ошибок для человека — но не пятисотка, доска из-за одного файла падать не должна.
+      logError(db, 'ui', `file #${f.id} has no bytes at ${filePath(db.name, f)}`);
+      return c.notFound();
+    }
+    // nosniff обязателен на ЛЮБОЙ отдаче: без него браузер угадывает тип по содержимому и
+    // может исполнить как html то, что мы отдали как octet-stream.
+    const headers: Record<string, string> = { 'x-content-type-options': 'nosniff' };
+    if (isInlineMime(f.mime_type)) {
+      headers['content-type'] = f.mime_type!;
+    } else {
+      headers['content-type'] = 'application/octet-stream';
+      headers['content-disposition'] = `attachment; filename="${safeName(f.original_name, f.ext)}"`;
+    }
+    return c.body(new Uint8Array(data), 200, headers);
+  });
+
+  app.delete('/api/files/:id', (c) => {
+    const db = getDb(c);
+    detachFile(db, db.name, intParam(c, 'id'), USER);
+    return c.json({ ok: true });
+  });
+
   return app;
 }
 
@@ -315,6 +412,21 @@ const MIME: Record<string, string> = {
   '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
   '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.map': 'application/json',
   '.woff2': 'font/woff2',
+};
+
+// Имя уходит в заголовок, а не на файловую систему: кавычка закрыла бы значение, перевод
+// строки — весь заголовок. Всё, что не буква/цифра/точка/дефис/подчёркивание, схлопываем.
+// Срез на 100 символов — на СТЕМЕ, а не на всей строке: резать вместе с точкой-расширением
+// оставляло бы скачанный файл без подсказки типа (report.pdf → report.p при длинном имени).
+const safeName = (name: string, ext: string): string => {
+  const suffix = ext ? `.${ext}` : '';
+  const stemRaw = suffix && name.toLowerCase().endsWith(suffix.toLowerCase())
+    ? name.slice(0, -suffix.length) : name;
+  const stem = stemRaw.slice(0, Math.max(1, 100 - suffix.length));
+  // Чистим ВСЮ собранную строку, включая расширение: ext взят из клиентского имени, а multipart
+  // раскрывает в нём %0A/%0D/%22 — перевод строки в ext сделал бы заголовок невалидным, и
+  // Headers.set бросил бы TypeError. То есть 500 на отдаче и файл, который уже не скачать.
+  return ((stem || 'file') + suffix).replace(/[^A-Za-z0-9._-]/g, '_');
 };
 
 // ponytail: свой static-хендлер ~20 строк — serveStatic из @hono/node-server

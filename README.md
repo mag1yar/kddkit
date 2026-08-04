@@ -86,9 +86,14 @@ kdd recall "recall ranking"   # search decisions + tasks
 ```
 
 Full command set: `add`, `board`, `show`, `move`, `edit`, `comment`,
-`block` / `unblock`, `link`, `archive` / `unarchive`, `decide`, `recall`,
-`status`, `rebuild`, `projects`, `export`, `ui`. Add `--json` to most for
-machine-readable output.
+`block` / `unblock`, `attach` / `detach`, `link`, `archive` / `unarchive`,
+`decide`, `recall`, `status`, `rebuild`, `projects`, `export`, `ui`. Add
+`--json` to most for machine-readable output.
+
+On the board itself, a task's dialog has a **Files** tab: drop a file, or
+paste/drop an image straight into the body's markdown editor to attach it and
+insert `![…](…)` inline. `kdd attach <taskId> <path> [--desc "<text>"]` does
+the same from the CLI (20 MB cap per file, `kdd detach <fileId>` to remove).
 
 ### Task kinds
 

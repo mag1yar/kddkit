@@ -620,6 +620,34 @@ describe('the run marker in claude own argv', () => {
   }, 30_000);
 });
 
+// фикстура-claude: эхает свой argv — им проверяется, что воркер выдал доступ к стору вложений.
+function stubClaudeArgvEcho(dir: string): string {
+  const p = join(dir, 'stub-claude-argv-echo.mjs');
+  writeFileSync(p, `#!/usr/bin/env node
+const text = process.argv.slice(2).join(' ');
+console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } }));
+process.exit(0);
+`);
+  chmodSync(p, 0o755);
+  return p;
+}
+
+// #122: без --add-dir агент в headless-режиме не прочитал бы вложение — стор лежит вне
+// worktree, а подтвердить запрос разрешения там некому.
+it('даёт агенту доступ к стору вложений через --add-dir', () => {
+  const { env, dir } = repo();
+  env.KDD_CLAUDE_CMD = stubClaudeArgvEcho(dir);
+  kdd(env, 'add', 'с вложением');
+  kdd(env, 'worker', '1');
+  const db = openDb(env.KDD_DB as string);
+  const texts = db.prepare(
+    `SELECT detail FROM agent_events WHERE task_id = 1 AND kind = 'text'`,
+  ).all() as { detail: string }[];
+  const argv = texts.map((r) => r.detail).join(' ');
+  expect(argv).toContain('--add-dir');
+  expect(argv).toContain(join(dir, 'files'));
+});
+
 // #112: тумблер авто-тика гасил только планировщик. `kdd stop` — точка, куда он теперь бьёт:
 // живой агент должен УМЕРЕТЬ, а его задача — вернуться в очередь, а не остаться in_progress
 // под claim'ом мертвеца (тогда её не возьмёт ни человек, ни следующий tick до конца TTL).

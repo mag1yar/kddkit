@@ -27,6 +27,11 @@ export interface Criterion {
 export interface Comment {
   id: number; task_id: number; author: string; body: string; created_at: number;
 }
+export interface FileRow {
+  id: number; task_id: number; sha256: string; ext: string;
+  original_name: string; mime_type: string | null; size_bytes: number;
+  description: string | null; created_at: number;
+}
 export interface EventRow {
   id: number; task_id: number | null; actor_type: 'user' | 'ai';
   actor_id: string | null; action: string; detail: string | null; created_at: number;

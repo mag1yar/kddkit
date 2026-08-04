@@ -1,9 +1,10 @@
 import type Database from 'better-sqlite3';
 import { CAPS, capText } from './caps.js';
 import { authorOf, STATUSES, type Kind, type Status } from './state.js';
-import type { Comment, Criterion, EventRow, Task, TaskListRow } from './types.js';
+import type { Comment, Criterion, EventRow, FileRow, Task, TaskListRow } from './types.js';
 import { mustGetTask } from './ops.js';
 import { listCriteria } from './criteria.js';
+import { filePath, listFiles } from './files.js';
 
 export const PRIORITY_ORDER =
   `CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
@@ -44,6 +45,9 @@ export function boardData(
 export function taskDetail(db: Database.Database, id: number): {
   task: Task; criteria: Criterion[]; comments: Comment[]; events: EventRow[];
   links: { id: number; title: string; kind: string }[];
+  // path — абсолютный, вычислен здесь (db.name уже под рукой), а не в клиентах: агент открывает
+  // вложение через MCP get_task так же, как человек через kdd show — один источник пути.
+  files: (FileRow & { path: string })[];
   // Не события агента, а число его прогонов: лента едет отдельной ручкой (инкрементально,
   // по since=<id>), а вкладке нужно лишь знать, будили ли по задаче агента и сколько раз.
   // Сырые события считать бесполезно — «30» не соответствует ничему, что видно глазами.
@@ -63,7 +67,8 @@ export function taskDetail(db: Database.Database, id: number): {
   const agent_runs_total = (db.prepare(
     `SELECT COUNT(*) c FROM agent_events WHERE task_id = ? AND kind = 'run_start'`,
   ).get(id) as { c: number }).c;
-  return { task, criteria, comments, events, links, agent_runs_total };
+  const files = listFiles(db, id).map((f) => ({ ...f, path: filePath(db.name, f) }));
+  return { task, criteria, comments, events, links, files, agent_runs_total };
 }
 
 export interface TaskDetailCapped {
@@ -74,6 +79,8 @@ export interface TaskDetailCapped {
   events: EventRow[];
   events_total: number;
   links: { id: number; title: string; kind: string }[];
+  files: (FileRow & { path: string })[];
+  files_total: number;
 }
 
 // Единственный источник trim-политики show/get_task: последние N с честными totals.
@@ -92,6 +99,13 @@ export function taskDetailCapped(db: Database.Database, id: number): TaskDetailC
     events: d.events.slice(-CAPS.events),
     events_total: d.events.length,
     links: d.links,
+    // Вложения режем с НАЧАЛА списка (он упорядочен по id, то есть по времени): первым
+    // приложили — первым и показываем. У комментариев обратная политика — там свежий важнее.
+    files: d.files.slice(0, CAPS.files).map((f) => ({
+      ...f,
+      description: f.description === null ? null : capText(f.description, CAPS.fileDescChars),
+    })),
+    files_total: d.files.length,
   };
 }
 

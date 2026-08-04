@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { addTask, getAutoTick, openDb, setAutoTick, setLastRun } from '@kddkit/core';
+import { CAPS, addTask, getAutoTick, openDb, setAutoTick, setLastRun } from '@kddkit/core';
 import { createApp, projectPool } from '../src/server.js';
 
 const user = { type: 'user' } as const;
@@ -425,5 +425,183 @@ describe('exposed mode ignores ?project', () => {
       Record<string, { title: string }[]>;
     expect(b.new.map((t) => t.title)).toEqual(['theirs']);
     pool.closeAll();
+  });
+});
+
+// #122: файловые роуты. База должна быть НАСТОЯЩИМ файлом (стор вложений = dirname(db.name)),
+// поэтому у этого блока свой mk, не общий ':memory:'.
+describe('file routes', () => {
+  const mkFiles = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kdd-ui-files-'));
+    const db = openDb(join(dir, 'kdd.db'), dir);
+    return { dir, db, app: createApp(() => db) };
+  };
+  const upload = (name: string, type: string, body: string, description?: string) => {
+    const fd = new FormData();
+    fd.set('file', new File([body], name, { type }));
+    if (description !== undefined) fd.set('description', description);
+    return fd;
+  };
+
+  it('загружает файл и отдаёт картинку инлайн', async () => {
+    const { db, app } = mkFiles();
+    const t = addTask(db, { title: 'с картинкой' }, user);
+    const res = await app.request(`/api/tasks/${t.id}/files`,
+      { method: 'POST', body: upload('shot.png', 'image/png', 'PNGDATA', 'красная кнопка') });
+    expect(res.status).toBe(200);
+    const f = (await res.json()) as { id: number; original_name: string; description: string };
+    expect(f.original_name).toBe('shot.png');
+    expect(f.description).toBe('красная кнопка');
+
+    const got = await app.request(`/api/files/${f.id}`);
+    expect(got.status).toBe(200);
+    expect(got.headers.get('content-type')).toBe('image/png');
+    expect(got.headers.get('content-disposition')).toBeNull();
+    expect(got.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(await got.text()).toBe('PNGDATA');
+  });
+
+  it('svg и pdf отдаются вложением, а не инлайн: SVG исполняет скрипт с нашего origin', async () => {
+    const { db, app } = mkFiles();
+    const t = addTask(db, { title: 'опасное' }, user);
+    for (const [name, type] of [['x.svg', 'image/svg+xml'], ['x.pdf', 'application/pdf']]) {
+      const res = await app.request(`/api/tasks/${t.id}/files`,
+        { method: 'POST', body: upload(name, type, `body-${name}`) });
+      const f = (await res.json()) as { id: number };
+      const got = await app.request(`/api/files/${f.id}`);
+      expect(got.headers.get('content-type')).toBe('application/octet-stream');
+      expect(got.headers.get('content-disposition')).toMatch(/^attachment/);
+    }
+  });
+
+  it('имя в content-disposition санитайзится: кавычка и перевод строки не ломают заголовок', async () => {
+    const { db, app } = mkFiles();
+    const t = addTask(db, { title: 'кривое имя' }, user);
+    const res = await app.request(`/api/tasks/${t.id}/files`,
+      { method: 'POST', body: upload('a"b\nc.bin', 'application/octet-stream', 'X') });
+    const f = (await res.json()) as { id: number };
+    const cd = (await app.request(`/api/files/${f.id}`)).headers.get('content-disposition')!;
+    expect(cd).toBe('attachment; filename="a_b_c.bin"');
+  });
+
+  // Санитайзинг только стема оставлял дыру: ext берётся из того же клиентского имени, а
+  // multipart раскрывает в нём %0A. Перевод строки в ext → невалидный заголовок → Headers.set
+  // бросает TypeError → 500, и файл нельзя скачать уже никогда.
+  it('мусор ПОСЛЕ последней точки тоже санитайзится: отдача не падает', async () => {
+    const { db, app } = mkFiles();
+    const t = addTask(db, { title: 'кривое расширение' }, user);
+    const res = await app.request(`/api/tasks/${t.id}/files`,
+      { method: 'POST', body: upload('a.b\nc', 'application/octet-stream', 'X') });
+    const f = (await res.json()) as { id: number };
+    const got = await app.request(`/api/files/${f.id}`);
+    expect(got.status).toBe(200);
+    expect(got.headers.get('content-disposition')).toBe('attachment; filename="a.b_c"');
+  });
+
+  // M7: раньше .slice(0, 100) резала уже собранную "имя.расширение" строку целиком — длинное
+  // имя срезало и точку с расширением, и скачанный файл терял подсказку типа.
+  it('длинное имя режется на стеме, расширение переживает срез', async () => {
+    const { db, app } = mkFiles();
+    const t = addTask(db, { title: 'длинное имя' }, user);
+    const longName = `${'x'.repeat(150)}.bin`;
+    const res = await app.request(`/api/tasks/${t.id}/files`,
+      { method: 'POST', body: upload(longName, 'application/octet-stream', 'X') });
+    const f = (await res.json()) as { id: number };
+    const cd = (await app.request(`/api/files/${f.id}`)).headers.get('content-disposition')!;
+    expect(cd).toMatch(/\.bin"$/);
+  });
+
+  // path заведён ради агента (kdd show / get_task открывают вложение через Read). Вкладке он
+  // не нужен — она ходит по /api/files/<id>, — а выставленному наружу серверу незачем отдавать
+  // держателю токена раскладку ~/.kdd и hash доски.
+  it('детали задачи не отдают абсолютный путь вложения', async () => {
+    const { db, app } = mkFiles();
+    const t = addTask(db, { title: 'путь наружу' }, user);
+    await app.request(`/api/tasks/${t.id}/files`,
+      { method: 'POST', body: upload('a.png', 'image/png', 'X') });
+    const d = (await (await app.request(`/api/tasks/${t.id}`)).json()) as
+      { files: Record<string, unknown>[] };
+    expect(d.files).toHaveLength(1);
+    expect(d.files[0]!.path).toBeUndefined();
+    expect(d.files[0]!.id).toBeDefined(); // остальное на месте
+  });
+
+  it('удаляет вложение', async () => {
+    const { db, app } = mkFiles();
+    const t = addTask(db, { title: 'снять' }, user);
+    const res = await app.request(`/api/tasks/${t.id}/files`,
+      { method: 'POST', body: upload('a.png', 'image/png', 'X') });
+    const f = (await res.json()) as { id: number };
+    expect((await app.request(`/api/files/${f.id}`, { method: 'DELETE' })).status).toBe(200);
+    expect((await app.request(`/api/files/${f.id}`)).status).toBe(404);
+  });
+
+  // I4: заявленный (не обязательно честный) content-length больше капа отбивается ДО
+  // c.req.parseBody() — она буферизует всё тело в память, и без этой проверки честный клиент
+  // на гигабайты уронил бы процесс до того, как attachFile успел бы его отбить по CAPS.fileBytes.
+  it('content-length больше капа — 413, тело не буферизуется', async () => {
+    const { db, app } = mkFiles();
+    const t = addTask(db, { title: 'великан' }, user);
+    const res = await app.request(`/api/tasks/${t.id}/files`, {
+      method: 'POST',
+      headers: { 'content-length': String(CAPS.fileBytes + 1024 * 1024) },
+      body: 'irrelevant, guard fires before this is read',
+    });
+    expect(res.status).toBe(413);
+  });
+
+  it('загрузка без поля file — 400, а не пятисотка', async () => {
+    const { db, app } = mkFiles();
+    const t = addTask(db, { title: 'пусто' }, user);
+    const fd = new FormData();
+    fd.set('description', 'без файла');
+    const res = await app.request(`/api/tasks/${t.id}/files`, { method: 'POST', body: fd });
+    expect(res.status).toBe(400);
+  });
+
+  it('строка есть, а байтов нет — 404, не пятисотка', async () => {
+    const { dir, db, app } = mkFiles();
+    const t = addTask(db, { title: 'потерянный blob' }, user);
+    const res = await app.request(`/api/tasks/${t.id}/files`,
+      { method: 'POST', body: upload('a.png', 'image/png', 'X') });
+    const f = (await res.json()) as { id: number; sha256: string; ext: string };
+    rmSync(join(dir, 'files', `${f.sha256}.${f.ext}`));
+    expect((await app.request(`/api/files/${f.id}`)).status).toBe(404);
+  });
+
+  // NUL в имени переживает basename() и доходит до writeFileSync, которая на нём бросает
+  // ERR_INVALID_ARG_VALUE. Без finally, покрывающего mkdtemp+write вместе, каждый такой
+  // запрос оставлял бы пустой каталог в os.tmpdir() навсегда.
+  // CSRF: multipart — CORS-простой тип, кросс-доменный POST уходит без preflight, а Host
+  // (единственное, на что смотрит loopback-проверка) в нём остаётся нашим. Отбивает Origin.
+  it('кросс-доменный POST отбивается по Origin, свой — проходит', async () => {
+    const { db, app } = mkFiles();
+    const t = addTask(db, { title: 'csrf' }, user);
+    const evil = await app.request(`/api/tasks/${t.id}/files`, {
+      method: 'POST', headers: { origin: 'https://evil.example' },
+      body: upload('a.png', 'image/png', 'X'),
+    });
+    expect(evil.status).toBe(403);
+    const own = await app.request(`/api/tasks/${t.id}/files`, {
+      method: 'POST', headers: { origin: 'http://localhost' },
+      body: upload('a.png', 'image/png', 'X'),
+    });
+    expect(own.status).toBe(200);
+    // GET не трогаем: ответ кросс-доменно не прочитать, а <img src="/api/files/..."> должен жить.
+    const f = (await own.json()) as { id: number };
+    const read = await app.request(`/api/files/${f.id}`, { headers: { origin: 'https://evil.example' } });
+    expect(read.status).toBe(200);
+  });
+
+  it('имя с NUL-байтом — 4xx, а не 500, и temp-каталог не остаётся', async () => {
+    const { db, app } = mkFiles();
+    const t = addTask(db, { title: 'nul' }, user);
+    const before = readdirSync(tmpdir()).filter((n) => n.startsWith('kdd-upload-')).length;
+    const res = await app.request(`/api/tasks/${t.id}/files`,
+      { method: 'POST', body: upload('a\0b.png', 'image/png', 'X') });
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBeLessThan(500);
+    const after = readdirSync(tmpdir()).filter((n) => n.startsWith('kdd-upload-')).length;
+    expect(after).toBe(before);
   });
 });

@@ -50,6 +50,19 @@ export function renderShow(d: TaskDetailCapped): string {
       `  priority: ${t.priority}${t.area ? `  area: ${t.area}` : ''}` +
       `${t.archived_at ? '  ARCHIVED' : ''}`,
   ];
+  // Вложения ДО тела: в теле картинка стоит браузерной ссылкой (/api/files/7), и мостик
+  // к ней — id из этого списка. Список, прочитанный первым, объясняет ссылку, а не наоборот.
+  if (d.files_total) {
+    lines.push('', `files (${d.files_total}):`);
+    if (d.files.length < d.files_total) {
+      lines.push(`  (${d.files_total - d.files.length} more omitted)`);
+    }
+    for (const f of d.files) {
+      lines.push(`  [${f.id}] ${f.original_name} ${f.mime_type ?? 'unknown'} ` +
+        `${f.size_bytes}B  ${f.path}`);
+      if (f.description) lines.push(`      ${f.description}`);
+    }
+  }
   if (t.body) lines.push('', t.body);
   if (d.criteria.length) {
     lines.push('', 'criteria:', renderCriteria(d.criteria));

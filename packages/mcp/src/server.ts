@@ -91,9 +91,10 @@ export function createServer(getCtx: CtxFn, actor: Actor): McpServer {
 
   server.registerTool('update_task',
     {
-      description: 'Edit, move and/or comment a single task (actor=ai). '
+      description: 'Edit, move, comment and/or attach a file to a single task (actor=ai). '
         + 'A move may be refused (unchecked criteria, a task you submitted for review yourself) — '
-        + 'the way through is move.reason, and only once the user has asked for it',
+        + 'the way through is move.reason, and only once the user has asked for it. '
+        + 'attach.path is a path on this machine — download the file first if it lives elsewhere',
       inputSchema: {
         id: z.number().int().positive(),
         edit: z.object({
@@ -104,6 +105,13 @@ export function createServer(getCtx: CtxFn, actor: Actor): McpServer {
         }).optional(),
         move: z.object({ to: statusEnum, reason: z.string().optional() }).optional(),
         comment: z.string().optional(),
+        attach: z.object({
+          path: z.string(),
+          description: z.string().optional()
+            .describe('what is in the file — read by whoever has no picture'),
+        }).optional(),
+        detach: z.number().int().positive().optional()
+          .describe('file id from get_task files[]'),
       },
     },
     async (a) => guard(getCtx, (c) => h.updateTask(c.db, a as h.UpdateInput, actor)));
