@@ -35,4 +35,31 @@ describe('plugin files', () => {
     expect(skill).toMatch(/^name:\s*kdd/m);
     expect(skill).toMatch(/Iron Law/i);
   });
+
+  it('ships a native Codex adapter without Claude path variables', () => {
+    const plugin = 'integrations/codex-plugin';
+    const manifest = JSON.parse(read(`${plugin}/.codex-plugin/plugin.json`));
+    expect(manifest.hooks).toBe('./hooks/hooks.json');
+    expect(manifest.mcpServers).toBe('./.mcp.json');
+    expect(manifest.skills).toBe('./skills/');
+    const mcp = JSON.parse(read(`${plugin}/.mcp.json`)).mcpServers.kdd;
+    expect(mcp).toMatchObject({ type: 'stdio', command: 'node', args: ['./runtime/mcp.js'], cwd: '.' });
+    const hooks = read(`${plugin}/hooks/hooks.json`);
+    expect(hooks).toContain('${PLUGIN_ROOT}');
+    expect(hooks).not.toContain('CLAUDE_PLUGIN_ROOT');
+  });
+
+  it('keeps the documented Codex selector aligned with both marketplaces', () => {
+    const selector = read('README.md').match(/codex plugin add kddkit@([^\s`]+)/)?.[1];
+    expect(selector).toBeTruthy();
+    for (const path of ['.agents/plugins/marketplace.json', '.codex-plugin/marketplace.json']) {
+      expect(JSON.parse(read(path)).name).toBe(selector);
+    }
+  });
+
+  it('uses ComSpec for the Windows npm fallback', () => {
+    const installer = read('integrations/codex-plugin/hooks/smart-install.mjs');
+    expect(installer).toContain("process.env.ComSpec || 'cmd.exe'");
+    expect(installer).toContain("['/d', '/s', '/c', 'npm.cmd ci --omit=dev']");
+  });
 });

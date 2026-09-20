@@ -78,7 +78,7 @@ import { agentId, KddError, openDb, resolveDbPath } from "@kddkit/core";
 function getActor() {
   const explicit = process.env.KDD_ACTOR;
   if (explicit === "user") return { type: "user" };
-  if (explicit !== "ai" && process.env.CLAUDECODE !== "1") return { type: "user" };
+  if (explicit !== "ai" && process.env.CLAUDECODE !== "1" && !process.env.CODEX_SESSION_ID && !process.env.CODEX_THREAD_ID) return { type: "user" };
   return { type: "ai", id: agentId() };
 }
 function withDbAt(dbPath, projectPath, fn) {

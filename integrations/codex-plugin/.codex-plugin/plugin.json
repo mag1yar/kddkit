@@ -1,0 +1,13 @@
+{
+  "name": "kddkit",
+  "version": "0.6.0",
+  "description": "Kanban and decision memory substrate for Codex.",
+  "author": { "name": "kddkit", "url": "https://github.com/mag1yar" },
+  "homepage": "https://github.com/mag1yar/kddkit",
+  "repository": "https://github.com/mag1yar/kddkit",
+  "license": "MIT",
+  "keywords": ["kanban", "memory", "tasks", "decisions", "mcp"],
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./.mcp.json",
+  "skills": "./skills/"
+}

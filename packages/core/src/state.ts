@@ -32,7 +32,9 @@ export const authorOf = (a: Actor): string => (a.type === 'ai' ? `ai:${a.id ?? '
 export function agentId(): string | undefined {
   const e = process.env;
   const cc = e.CLAUDE_CODE_SESSION_ID ? `cc:${e.CLAUDE_CODE_SESSION_ID.slice(0, 8)}` : undefined;
-  return e.KDD_SESSION || cc || (e.CLAUDE_PID ? `cc:pid-${e.CLAUDE_PID}` : undefined);
+  const codex = e.CODEX_SESSION_ID || e.CODEX_THREAD_ID;
+  return e.KDD_SESSION || cc || (e.CLAUDE_PID ? `cc:pid-${e.CLAUDE_PID}` : undefined)
+    || (codex ? `codex:${codex}` : undefined);
 }
 
 /**

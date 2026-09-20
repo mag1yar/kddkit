@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "kdd": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["./runtime/mcp.js"],
+      "cwd": "."
+    }
+  }
+}

@@ -1,8 +1,8 @@
 # kddkit
 
-**A kanban + memory substrate for humans and Claude.** Task board, decisions
+**A kanban + memory substrate for humans, Claude and Codex.** Task board, decisions
 and project context that survive sessions, branches and worktrees. You drive the
-board by hand through a small web UI; Claude reads and writes it through MCP. It
+board by hand through a small web UI; Claude and Codex read and write it through MCP. It
 is the state layer *under* whatever runs on top — bare Claude Code, Superpowers,
 GSD — not a workflow engine and not an orchestrator.
 
@@ -21,13 +21,15 @@ kddkit keeps two kinds of memory, deliberately separated:
   we decided / how this is built / why." It outlives any task.
 
 The store is keyed by your git repository, so the board is identical whether you
-open the main checkout or a worktree. Claude reaches it over an MCP server
-(4 read/point-write tools, every write attributed to `ai`); you reach it with a
+open the main checkout or a worktree. Claude and Codex reach it over an MCP server
+(5 read/point-write tools, every write attributed to `ai`); you reach it with a
 CLI and a local web board.
 
 ## Install
 
-Two steps, sent as **two separate prompts** in Claude Code:
+### Claude Code
+
+Send these as **two separate prompts** in Claude Code:
 
 ```
 /plugin marketplace add mag1yar/kddkit
@@ -40,20 +42,37 @@ Then restart Claude Code. On the first session the plugin fetches its one native
 dependency (`better-sqlite3`) into the plugin directory and prints a one-line
 pointer confirming the substrate is active.
 
+### Codex
+
+Run these in your terminal:
+
+```bash
+codex plugin marketplace add mag1yar/kddkit
+codex plugin add kddkit@kddkit
+codex plugin list
+```
+
+The last command should show `kddkit@kddkit` as `installed, enabled`. Then start or
+restart Codex **from inside the project you want to use kddkit with**. On the first
+session the plugin verifies and, if needed, downloads its native `better-sqlite3`.
+MCP writes and Stop reminders use the same full Codex session identity. `kdd tick`
+remains Claude-backed.
+
 ## Requirements
 
 - **Node.js ≥ 22** on your `PATH` — the SessionStart hook and the MCP server run
   on it. Without it the plugin loads but stays quiet.
-- **Claude Code** with plugin support.
+- **Claude Code or Codex** with plugin support.
 - **git** — kddkit resolves its store from the repo you are in, so use it inside a
   git repository.
-- **better-sqlite3** — native, *auto-installed* into the plugin on first session.
+- **Internet access on the first plugin session** — it downloads the native
+  `better-sqlite3` dependency automatically.
 - macOS, Linux or Windows.
 
 ## Using the board (human side)
 
-Claude uses kddkit automatically once the plugin is active. To *see* and edit the
-board yourself you need the `kdd` CLI + web UI:
+Claude and Codex use kddkit automatically once the plugin is active. To *see* and
+edit the board yourself you need the `kdd` CLI + web UI:
 
 ```bash
 npm i -g @kddkit/cli   # puts `kdd` on your PATH
@@ -120,15 +139,15 @@ path of every board on the machine. To reach it from another device, opt in expl
 secret: `kdd ui --host 0.0.0.0 --token <secret>` (or `KDD_UI_TOKEN`). Exposed that way, every
 `/api` call needs the token, and the project list narrows to the one board you served.
 
-## What Claude does with it
+## What Claude and Codex do with it
 
-The bundled skill teaches a **pull** protocol: at the start of a task Claude
+The bundled skill teaches a **pull** protocol: at the start of a task the agent
 pulls what it needs (`list_tasks`, `recall "<topic>"`) instead of holding the
 whole board in context, records progress as it goes (`update_task`), and never
 makes mass or destructive board edits without you asking. Recording a decision
-is human-gated — Claude proposes it; it lands via `kdd decide`.
+is human-gated — the agent proposes it; it lands via `kdd decide`.
 
-MCP tools: `get_task`, `list_tasks`, `recall`, `update_task`. Creating,
+MCP tools: `get_task`, `list_tasks`, `list_tracks`, `recall`, `update_task`. Creating,
 archiving, linking and deciding are intentionally CLI-only, so those stay with
 you.
 
@@ -209,8 +228,9 @@ last checkpoint. kdd itself already does this wherever it copies the board.
 ## Layout
 
 ```
-.claude-plugin/    plugin + marketplace manifests (MCP server wired here)
-hooks/             SessionStart: smart-install + pointer
+.claude-plugin/    Claude plugin manifest
+integrations/codex-plugin/  self-contained Codex plugin + native runtime
+hooks/             Claude SessionStart: smart-install + pointer
 skills/kdd/        the pull-protocol contract
 scripts/           smart-install.mjs, session-start.mjs
 packages/

@@ -1,16 +1,17 @@
 import { describe, it, expect } from 'vitest';
-import { addTask, agentId, openDb } from '@kddkit/core';
+import { addTask, agentId, openDb, resolveDbPath } from '@kddkit/core';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { mkdtempSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, lazyCtx, mcpActor } from '../src/server.js';
 
 const ai = { type: 'ai', id: 'smoke' } as const;
 
-async function connectTo(getCtx: Parameters<typeof createServer>[0]) {
-  const server = createServer(getCtx, ai);
+async function connectTo(getCtx: Parameters<typeof createServer>[0], actor?: typeof ai) {
+  const server = createServer(getCtx, actor);
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();
   await server.connect(serverT);
   const client = new Client({ name: 'test', version: '0' });
@@ -75,6 +76,38 @@ describe('actor identity', () => {
       else process.env.CLAUDE_CODE_SESSION_ID = prev;
     }
   });
+
+  it('uses Codex turn metadata per request, accepting object and JSON forms', () => {
+    expect(mcpActor({ 'x-codex-turn-metadata': { session_id: 'full-session' } }))
+      .toEqual({ type: 'ai', id: 'codex:full-session' });
+    expect(mcpActor({ 'x-codex-turn-metadata': '{"threadId":"full-thread"}' }))
+      .toEqual({ type: 'ai', id: 'codex:full-thread' });
+  });
+
+  it('falls back safely for malformed Codex metadata', () => {
+    const previous = process.env.CODEX_SESSION_ID;
+    process.env.CODEX_SESSION_ID = 'env-session';
+    try {
+      expect(mcpActor({ 'x-codex-turn-metadata': '{bad json' }))
+        .toEqual({ type: 'ai', id: 'codex:env-session' });
+    } finally {
+      if (previous === undefined) delete process.env.CODEX_SESSION_ID;
+      else process.env.CODEX_SESSION_ID = previous;
+    }
+  });
+
+  it('attributes a mutation from turn metadata when no actor was injected', async () => {
+    const db = openDb(':memory:', 'x');
+    const task = addTask(db, { title: 'metadata' }, { type: 'user' });
+    const client = await connectTo(() => ({ db, dir: mkdtempSync(join(tmpdir(), 'kdd-mcp-')) }), undefined);
+    await client.callTool({
+      name: 'update_task',
+      arguments: { id: task.id, move: { to: 'in_progress' } },
+      _meta: { 'x-codex-turn-metadata': { session_id: 'request-session' } },
+    });
+    expect(db.prepare("SELECT actor_id FROM events WHERE action = 'moved' ORDER BY id DESC LIMIT 1").get())
+      .toEqual({ actor_id: 'codex:request-session' });
+  });
 });
 
 // #116: раньше базу открывал startServer, и любая её проблема убивала процесс ДО хендшейка —
@@ -112,6 +145,26 @@ describe('a broken store', () => {
         expect(rawText(res)).toMatch(/not in a git repository/);
         expect((res as { isError?: boolean }).isError).toBe(true);
       } finally { process.chdir(cwd); }
+    });
+  });
+
+  it('opens the board for the Codex workspace instead of the plugin cwd', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'kdd-mcp-workspace-'));
+    const repo = join(root, 'repo');
+    mkdirSync(repo);
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    await withEnv({ KDD_HOME: join(root, 'home'), KDD_DB: undefined, KDD_DECISIONS_DIR: undefined }, async () => {
+      const { dbPath, projectPath } = resolveDbPath(repo);
+      const db = openDb(dbPath, projectPath);
+      addTask(db, { title: 'workspace task' }, { type: 'user' });
+      db.close();
+
+      const res = await (await connectLazy()).callTool({
+        name: 'list_tasks',
+        arguments: {},
+        _meta: { 'x-codex-turn-metadata': { workspaces: { [repo]: { has_changes: false } } } },
+      });
+      expect(textOf(res).tasks.new[0].title).toBe('workspace task');
     });
   });
 

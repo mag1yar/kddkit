@@ -88,7 +88,7 @@ describe('checkMove', () => {
 // Один агент — один автор, каким бы путём он ни писал (CLI, MCP). Разъехавшиеся id ломают сразу
 // два правила: гейт самоприёмки обходится сменой транспорта, а fence по lease путает сессии.
 describe('agentId', () => {
-  const KEYS = ['KDD_SESSION', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_PID'] as const;
+  const KEYS = ['KDD_SESSION', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_PID', 'CODEX_SESSION_ID', 'CODEX_THREAD_ID'] as const;
   const saved = {} as Record<string, string | undefined>;
   beforeEach(() => {
     for (const k of KEYS) { saved[k] = process.env[k]; delete process.env[k]; }
@@ -113,6 +113,15 @@ describe('agentId', () => {
   it('без id сессии — pid: безымянный ai:? неотличим от другого такого же', () => {
     process.env.CLAUDE_PID = '41557';
     expect(agentId()).toBe('cc:pid-41557');
+  });
+
+  it('uses the full Codex session id after Claude identity', () => {
+    process.env.CODEX_SESSION_ID = '01a09dd1-555b-7a12-980f-2008d4eb281a';
+    expect(agentId()).toBe('codex:01a09dd1-555b-7a12-980f-2008d4eb281a');
+    process.env.CODEX_THREAD_ID = 'thread-fallback';
+    expect(agentId()).toBe('codex:01a09dd1-555b-7a12-980f-2008d4eb281a');
+    delete process.env.CODEX_SESSION_ID;
+    expect(agentId()).toBe('codex:thread-fallback');
   });
 
   it('вне сессии — undefined', () => {

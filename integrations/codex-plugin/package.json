@@ -1,0 +1,7 @@
+{
+  "name": "kddkit-codex-plugin",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "dependencies": { "better-sqlite3": "12.11.1" }
+}

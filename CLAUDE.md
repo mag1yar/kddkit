@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-kddkit — a kanban + memory substrate for humans and Claude. Two deliberately separated kinds of state:
+kddkit — a kanban + memory substrate for humans, Claude and Codex. Two deliberately separated kinds of state:
 
 - **Tasks** — mutable, in SQLite *outside* the repo (`~/.kdd/<git-hash>/kdd.db`), keyed by git repository so the board is identical from any worktree.
 - **Knowledge** — decisions/conventions as durable markdown *in* the repo under `.planning/decisions/`, indexed into FTS5 on demand for `recall`.
 
-It is a state layer, not a workflow engine. Distributed as a Claude Code plugin (MCP over stdio) plus a `kdd` CLI and a local web board.
+It is a state layer, not a workflow engine. Claude and Codex each have thin plugin adapters over the same MCP/core runtime, plus a `kdd` CLI and local web board.
 
 ## Commands
 
@@ -36,7 +36,7 @@ Release in two steps: `pnpm release` (bumpp + build + test + tag + changelog pre
 Single core library, three stateless clients, one SQLite ground truth.
 
 ```
-CLI  ·  Web UI (React)  ·  MCP (Claude)     ← clients, no business logic
+CLI  ·  Web UI (React)  ·  MCP (Claude/Codex)     ← clients, no business logic
               │
       packages/core/src/                    ← ALL logic lives here
    (ops · queries · state · db · recall)
@@ -74,4 +74,4 @@ Adding a task-related feature usually touches core (`ops.ts`/`queries.ts`) **plu
 
 ## Env vars
 
-`KDD_HOME` (data root, default `~/.kdd`), `KDD_DB`, `KDD_DECISIONS_DIR` (path overrides), `KDD_ACTOR`/`KDD_SESSION` (actor identity — по умолчанию CLI определяет агента по `CLAUDECODE=1`, то есть вызовы из сессии Claude Code это `ai`; `KDD_ACTOR=user` — обратный обход). Store path resolves via `git rev-parse` — commands must run inside a git repo.
+`KDD_HOME` (data root, default `~/.kdd`), `KDD_DB`, `KDD_DECISIONS_DIR` (path overrides), `KDD_ACTOR`/`KDD_SESSION` (actor identity — CLI recognises Claude Code and `CODEX_SESSION_ID`/`CODEX_THREAD_ID`; `KDD_ACTOR=user` is the explicit override). Store path resolves via `git rev-parse` — commands must run inside a git repo.

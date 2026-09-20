@@ -12,19 +12,20 @@ type Result = { content: { type: 'text'; text: string }[]; isError?: boolean };
 
 /** База и каталог решений. Добывается лениво: см. startServer. */
 export interface Ctx { db: Database.Database; dir: string }
-type CtxFn = () => Ctx;
+type Meta = Record<string, unknown> | undefined;
+type CtxFn = (meta?: Meta) => Ctx;
 
 const ok = (data: unknown): Result => ({ content: [{ type: 'text', text: JSON.stringify(data) }] });
 
 const fail = (text: string): Result => ({ content: [{ type: 'text', text }], isError: true });
 
-function guard(getCtx: CtxFn, fn: (c: Ctx) => unknown): Result {
+function guard(getCtx: CtxFn, meta: Meta, fn: (c: Ctx) => unknown): Result {
   // Раньше базу открывал startServer, и любая её проблема (не git-репо, чужая схема,
   // битый нативный модуль) убивала процесс ДО хендшейка: клиент показывал «disconnected»
   // и ни строчки причины — объяснить можно только то, что успело подключиться.
   let c: Ctx;
   try {
-    c = getCtx();
+    c = getCtx(meta);
   } catch (e) {
     return fail(e instanceof KddError ? e.message : String(e));
   }
@@ -42,7 +43,7 @@ const statusEnum = z.enum(STATUSES as [Status, ...Status[]]);
 const priorityEnum = z.enum(PRIORITIES as [string, ...string[]]);
 const kindEnum = z.enum(KINDS as [Kind, ...Kind[]]);
 
-export function createServer(getCtx: CtxFn, actor: Actor): McpServer {
+export function createServer(getCtx: CtxFn, actor?: Actor): McpServer {
   const server = new McpServer({ name: 'kdd', version: '0.1.0' });
 
   server.registerTool('get_task',
@@ -52,7 +53,7 @@ export function createServer(getCtx: CtxFn, actor: Actor): McpServer {
         + 'full=true returns the complete uncapped history',
       inputSchema: { id: z.number().int().positive(), full: z.boolean().optional() },
     },
-    async ({ id, full }) => guard(getCtx, (c) => h.getTask(c.db, id, full)));
+    async ({ id, full }, extra) => guard(getCtx, extra._meta, (c) => h.getTask(c.db, id, full)));
 
   server.registerTool('list_tasks',
     {
@@ -67,7 +68,7 @@ export function createServer(getCtx: CtxFn, actor: Actor): McpServer {
         ready: z.boolean().optional(),
       },
     },
-    async (a) => guard(getCtx, (c) => h.listTasks(c.db, a)));
+    async (a, extra) => guard(getCtx, extra._meta, (c) => h.listTasks(c.db, a)));
 
   server.registerTool('list_tracks',
     {
@@ -76,7 +77,7 @@ export function createServer(getCtx: CtxFn, actor: Actor): McpServer {
         + 'finished body of work (kept for context, not a routing target)',
       inputSchema: {},
     },
-    async () => guard(getCtx, (c) => h.listTracksTool(c.db)));
+    async (_a, extra) => guard(getCtx, extra._meta, (c) => h.listTracksTool(c.db)));
 
   server.registerTool('recall',
     {
@@ -87,7 +88,9 @@ export function createServer(getCtx: CtxFn, actor: Actor): McpServer {
         kind: z.enum(['decision', 'task']).optional(),
       },
     },
-    async ({ query, k, kind }) => guard(getCtx, (c) => h.recallTool(c.db, c.dir, query, { k, kind })));
+    async ({ query, k, kind }, extra) => guard(
+      getCtx, extra._meta, (c) => h.recallTool(c.db, c.dir, query, { k, kind }),
+    ));
 
   server.registerTool('update_task',
     {
@@ -114,7 +117,9 @@ export function createServer(getCtx: CtxFn, actor: Actor): McpServer {
           .describe('file id from get_task files[]'),
       },
     },
-    async (a) => guard(getCtx, (c) => h.updateTask(c.db, a as h.UpdateInput, actor)));
+    async (a, extra) => guard(getCtx, extra._meta, (c) => h.updateTask(
+      c.db, a as h.UpdateInput, actor ?? mcpActor(extra._meta),
+    )));
 
   return server;
 }
@@ -124,25 +129,50 @@ export function createServer(getCtx: CtxFn, actor: Actor): McpServer {
  * или нативный модуль пересоберут, следующий вызов инструмента поднимется сам, без реконнекта.
  */
 export function lazyCtx(): CtxFn {
-  let ctx: Ctx | null = null;
-  return () => {
-    if (ctx) return ctx;
+  const contexts = new Map<string, Ctx>();
+  return (meta) => {
+    const cwd = mcpWorkspace(meta) ?? process.cwd();
+    const cached = contexts.get(cwd);
+    if (cached) return cached;
     // Сначала всё, что может бросить, не заняв ресурс: иначе упавший resolveDecisionsDir
     // оставлял бы открытое соединение, которое некому закрыть — и так на каждый вызов.
-    const dir = resolveDecisionsDir();
-    const { dbPath, projectPath } = resolveDbPath();
-    ctx = { db: openDb(dbPath, projectPath), dir };
+    const dir = resolveDecisionsDir(cwd);
+    const { dbPath, projectPath } = resolveDbPath(cwd);
+    const ctx = { db: openDb(dbPath, projectPath), dir };
+    contexts.set(cwd, ctx);
     return ctx;
   };
 }
+
+const codexTurn = (meta?: Meta): Record<string, unknown> | undefined => {
+  const raw = meta?.['x-codex-turn-metadata'];
+  let turn: unknown = raw;
+  if (typeof raw === 'string') {
+    try { turn = JSON.parse(raw); } catch { turn = undefined; }
+  }
+  return turn && typeof turn === 'object' ? turn as Record<string, unknown> : undefined;
+};
+
+const mcpWorkspace = (meta?: Meta): string | undefined => {
+  const workspaces = codexTurn(meta)?.workspaces;
+  if (!workspaces || typeof workspaces !== 'object' || Array.isArray(workspaces)) return undefined;
+  return Object.keys(workspaces).find(Boolean);
+};
 
 /**
  * Тот же id, что у CLI (`agentId`): один агент в одной сессии обязан писаться одним автором,
  * иначе «сдал через kdd — принял через MCP» проходит мимо гейта на самоприёмку. Экспортируется
  * ради теста — расхождение с CLI уже было баг.
  */
-export const mcpActor = (): Actor => ({ type: 'ai', id: agentId() ?? 'mcp' });
+export const mcpActor = (meta?: Record<string, unknown>): Actor => {
+  const values = codexTurn(meta);
+  if (values) {
+    const id = values.session_id ?? values.thread_id ?? values.threadId;
+    if (typeof id === 'string' && id) return { type: 'ai', id: `codex:${id}` };
+  }
+  return { type: 'ai', id: agentId() ?? 'mcp' };
+};
 
 export async function startServer(): Promise<void> {
-  await createServer(lazyCtx(), mcpActor()).connect(new StdioServerTransport());
+  await createServer(lazyCtx()).connect(new StdioServerTransport());
 }
