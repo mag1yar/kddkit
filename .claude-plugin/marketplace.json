@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "kddkit",
-  "description": "Kanban + memory substrate for humans and Claude.",
+  "description": "Cross-client continuity for Claude and Codex.",
   "owner": {
     "name": "kddkit",
     "url": "https://github.com/mag1yar"
@@ -10,7 +10,7 @@
     {
       "name": "kddkit",
       "source": "./",
-      "description": "Task board, decisions and project context that survive sessions, branches and worktrees. Claude reads and writes via MCP; you drive the board via CLI + web UI.",
+      "description": "One task contract and durable decisions across Claude and Codex sessions, branches and worktrees, with separate submitter and acceptor roles.",
       "category": "productivity"
     }
   ]

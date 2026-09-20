@@ -1,13 +1,15 @@
 # kddkit
 
-**A kanban + memory substrate for humans, Claude and Codex.** Task board, decisions
-and project context that survive sessions, branches and worktrees. You drive the
-board by hand through a small web UI; Claude and Codex read and write it through MCP. It
-is the state layer *under* whatever runs on top — bare Claude Code, Superpowers,
-GSD — not a workflow engine and not an orchestrator.
+**Keep the work contract between you and whichever Claude or Codex session is open
+today.** Every session sees the same task board, acceptance criteria, decisions and
+project context across branches and worktrees. Models can pull context, update progress
+and submit work for review. The submitting AI session cannot accept its own work unless
+you explicitly tell it to; a different actor handles acceptance.
 
-Nothing gets forgotten or overwritten: tasks, decisions and context live outside
-the context window, are pulled on demand, and look the same from every worktree.
+Tasks stay fast and local in SQLite; decisions stay durable and reviewable in Git.
+Start in Claude Code, continue in Codex, or switch worktrees without retelling the
+project history. kddkit is the state layer under those sessions — not a workflow
+engine and not an orchestrator.
 
 ## How it works
 
@@ -151,11 +153,12 @@ MCP tools: `get_task`, `list_tasks`, `list_tracks`, `recall`, `update_task`. Cre
 archiving, linking and deciding are intentionally CLI-only, so those stay with
 you.
 
-## Agent mode (experimental)
+## Optional advanced capability: agent mode (experimental)
 
-kdd can drive ephemeral agent workers off the board. `kdd tick` is a thin dispatcher —
-it reclaims expired leases, claims ready tasks, and fire-and-forget spawns one worker per
-task up to a cap. It runs no LLM itself; schedule it from cron.
+The core continuity workflow does not require kddkit to launch agents. If you explicitly
+want automated execution, kdd can also drive ephemeral workers off the board. `kdd tick`
+is a thin dispatcher — it reclaims expired leases, claims ready tasks, and fire-and-forget
+spawns one worker per task up to a cap. It runs no LLM itself; schedule it from cron.
 
 ```cron
 # every 2 minutes, dispatch workers for this repo

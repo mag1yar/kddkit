@@ -1,7 +1,7 @@
 {
   "name": "kddkit",
   "version": "0.7.0",
-  "description": "Kanban and decision memory substrate for Codex.",
+  "description": "Cross-client continuity for Claude and Codex: one task contract, durable decisions and separate submitter/acceptor roles across sessions and worktrees.",
   "author": { "name": "kddkit", "url": "https://github.com/mag1yar" },
   "homepage": "https://github.com/mag1yar/kddkit",
   "repository": "https://github.com/mag1yar/kddkit",
