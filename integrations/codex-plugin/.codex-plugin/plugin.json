@@ -1,6 +1,6 @@
 {
   "name": "kddkit",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Kanban and decision memory substrate for Codex.",
   "author": { "name": "kddkit", "url": "https://github.com/mag1yar" },
   "homepage": "https://github.com/mag1yar/kddkit",
