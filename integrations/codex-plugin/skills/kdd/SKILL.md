@@ -52,7 +52,8 @@ kdd attach <taskId> <path> [--desc "<text>"]   # local path only, 20 MB cap
 kdd detach <fileId>
 kdd criteria ls <taskId>
 kdd criteria add <taskId> "<text>"
-kdd criteria check <taskId> <id>   /   kdd criteria uncheck <taskId> <id>
+kdd criteria check <taskId> <id> [--evidence "<command|URL|commit|attachment|note>"]
+kdd criteria uncheck <taskId> <id>
 kdd criteria rm <taskId> <id>
 kdd decide "<title>" --decision "…" --rationale "…"   # human-gated, see Decisions
 kdd archive <id>            # Iron Law: normally the human
@@ -132,9 +133,11 @@ task is done when every criterion holds. Working a task, you own the checkboxes:
   holds (test ran, behavior observed), not when you merely wrote the code:
 
   ```
-  kdd criteria check <taskId> <id>
+  kdd criteria check <taskId> <id> --evidence "<what verified it>"
   ```
 
+  Evidence is optional for legacy/manual checks. A repeated check with explicit evidence records
+  a fresh verification even when the text is unchanged; without evidence it is a no-op.
   (`kdd criteria ls <taskId>` shows ids; criteria writes are CLI-only.)
 - **Move to review only when every criterion is checked.** An unchecked
   criterion means the task is not ready — finish it or say why you cannot.

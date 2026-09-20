@@ -168,6 +168,12 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX idx_files_task_id ON files(task_id);
   CREATE INDEX idx_files_sha256 ON files(sha256);
   `,
+  `
+  -- Текущий verification snapshot критерия. История остаётся в events; эти nullable-поля
+  -- нужны только для быстрого чтения актуального evidence и автора. Старые criteria валидны.
+  ALTER TABLE criteria ADD COLUMN evidence TEXT;
+  ALTER TABLE criteria ADD COLUMN checked_by TEXT;
+  `,
 ];
 
 // Копия базы перед миграцией. VACUUM INTO, а не copyFile: она пишет один консистентный файл,

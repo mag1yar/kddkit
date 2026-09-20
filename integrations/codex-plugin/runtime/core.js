@@ -234,6 +234,12 @@ var MIGRATIONS = [
   );
   CREATE INDEX idx_files_task_id ON files(task_id);
   CREATE INDEX idx_files_sha256 ON files(sha256);
+  `,
+  `
+  -- \u0422\u0435\u043A\u0443\u0449\u0438\u0439 verification snapshot \u043A\u0440\u0438\u0442\u0435\u0440\u0438\u044F. \u0418\u0441\u0442\u043E\u0440\u0438\u044F \u043E\u0441\u0442\u0430\u0451\u0442\u0441\u044F \u0432 events; \u044D\u0442\u0438 nullable-\u043F\u043E\u043B\u044F
+  -- \u043D\u0443\u0436\u043D\u044B \u0442\u043E\u043B\u044C\u043A\u043E \u0434\u043B\u044F \u0431\u044B\u0441\u0442\u0440\u043E\u0433\u043E \u0447\u0442\u0435\u043D\u0438\u044F \u0430\u043A\u0442\u0443\u0430\u043B\u044C\u043D\u043E\u0433\u043E evidence \u0438 \u0430\u0432\u0442\u043E\u0440\u0430. \u0421\u0442\u0430\u0440\u044B\u0435 criteria \u0432\u0430\u043B\u0438\u0434\u043D\u044B.
+  ALTER TABLE criteria ADD COLUMN evidence TEXT;
+  ALTER TABLE criteria ADD COLUMN checked_by TEXT;
   `
 ];
 function backupBeforeMigrate(db, dbPath, from) {
@@ -900,17 +906,26 @@ function addCriterion(db, taskId, text, actor) {
     return mustGetCriterion(db, taskId, id);
   })();
 }
-function setCriterionChecked(db, taskId, id, checked, actor) {
+function setCriterionChecked(db, taskId, id, checked, actor, evidence) {
   return db.transaction(() => {
     const c = mustGetCriterion(db, taskId, id);
-    if (c.checked_at !== null === checked) return c;
-    db.prepare(`UPDATE criteria SET checked_at = ? WHERE id = ?`).run(checked ? now() : null, id);
+    const proof = evidence?.trim();
+    if (c.checked_at !== null === checked && (!checked || !proof)) return c;
+    const stored = proof ? actor.type === "ai" ? redact(proof) : proof : null;
+    db.prepare(
+      `UPDATE criteria SET checked_at = ?, evidence = ?, checked_by = ? WHERE id = ?`
+    ).run(
+      checked ? now() : null,
+      checked ? stored : null,
+      checked ? authorOf(actor) : null,
+      id
+    );
     appendEvent(
       db,
       taskId,
       actor,
       checked ? "criterion_checked" : "criterion_unchecked",
-      { id, text: c.text }
+      { id, text: c.text, ...checked && stored ? { evidence: stored } : {} }
     );
     touchTask(db, taskId);
     return mustGetCriterion(db, taskId, id);

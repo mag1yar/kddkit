@@ -38,6 +38,26 @@ describe('kdd add / board / show', () => {
   });
 });
 
+describe('criteria evidence', () => {
+  it('checks with evidence and reads the verification snapshot back', () => {
+    kdd(env, 'add', 'verified');
+    kdd(env, 'criteria', 'add', '1', 'tests green');
+
+    kdd(
+      { ...env, KDD_ACTOR: 'ai', KDD_SESSION: 's7' },
+      'criteria', 'check', '1', '1', '--evidence', 'pnpm test',
+    );
+
+    const detail = JSON.parse(kdd(env, 'show', '1', '--json'));
+    expect(detail.criteria[0]).toMatchObject({
+      evidence: 'pnpm test', checked_by: 'ai:s7',
+    });
+    const plain = kdd(env, 'criteria', 'ls', '1');
+    expect(plain).toContain('evidence: pnpm test');
+    expect(plain).toContain('checked by ai:s7');
+  });
+});
+
 // #117: агент, дёргающий kdd из Bash без экспортированного KDD_ACTOR, писался в лог человеком
 // и проскакивал мимо ai-гейтов checkMove. Личность берём из окружения самой сессии Claude Code.
 describe('actor detection', () => {

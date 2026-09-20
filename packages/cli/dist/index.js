@@ -260,7 +260,14 @@ function renderShow(d) {
 }
 function renderCriteria(cs) {
   if (cs.length === 0) return "no criteria";
-  return cs.map((c) => `  [${c.checked_at ? "x" : " "}] ${c.id}. ${c.text}`).join("\n");
+  return cs.flatMap((c) => {
+    const lines = [`  [${c.checked_at ? "x" : " "}] ${c.id}. ${c.text}`];
+    if (c.evidence) lines.push(`      evidence: ${c.evidence}`);
+    if (c.checked_at && c.checked_by) {
+      lines.push(`      checked by ${c.checked_by} ${renderAge(c.checked_at)} ago`);
+    }
+    return lines;
+  }).join("\n");
 }
 function renderRecall(hits) {
   if (hits.length === 0) return "no results";
@@ -455,7 +462,7 @@ var BODY = {
 };
 var scopeOf = (area) => area && /^[a-z0-9._-]+$/i.test(area) ? `(${area})` : "";
 function workerPrompt(kind, area) {
-  return `You are a kdd agent worker. Read your task: run \`kdd show $KDD_TASK_ID\`. Do the work in this repository. ${BODY[kind]} Commit your work as \`${COMMIT_TYPE[kind]}${scopeOf(area)}: <subject>\` \u2014 the changelog is generated from commit subjects, and a non-conventional subject is silently dropped. When done, leave ONE concise summary comment (\`kdd comment $KDD_TASK_ID "<what you changed and why; caveats or follow-ups>"\`) \u2014 this is the durable note humans and future sessions read, so keep it tight, not a log. Then check acceptance criteria (\`kdd criteria ls $KDD_TASK_ID\`, then \`kdd criteria check $KDD_TASK_ID <criterionId>\` for each one) and \`kdd move $KDD_TASK_ID review\`. If you get blocked or must stop early, comment the reason first.`;
+  return `You are a kdd agent worker. Read your task: run \`kdd show $KDD_TASK_ID\`. Do the work in this repository. ${BODY[kind]} Commit your work as \`${COMMIT_TYPE[kind]}${scopeOf(area)}: <subject>\` \u2014 the changelog is generated from commit subjects, and a non-conventional subject is silently dropped. When done, leave ONE concise summary comment (\`kdd comment $KDD_TASK_ID "<what you changed and why; caveats or follow-ups>"\`) \u2014 this is the durable note humans and future sessions read, so keep it tight, not a log. Then check acceptance criteria (\`kdd criteria ls $KDD_TASK_ID\`, then \`kdd criteria check $KDD_TASK_ID <criterionId> --evidence "<test command, URL, commit, attachment, or note>"\` when evidence is available) and \`kdd move $KDD_TASK_ID review\`. If you get blocked or must stop early, comment the reason first.`;
 }
 
 // src/index.ts
@@ -979,8 +986,8 @@ criteria.command("add").argument("<taskId>").argument("<text>").option("--json")
   const c = withDb((db) => addCriterion(db, parseId(taskId), text, getActor()));
   out(o.json, c, () => `#${c.task_id} criterion ${c.id} added`);
 }));
-criteria.command("check").argument("<taskId>").argument("<id>").option("--json").action((taskId, id, o) => run(o.json, () => {
-  const c = withDb((db) => setCriterionChecked(db, parseId(taskId), parseId(id), true, getActor()));
+criteria.command("check").argument("<taskId>").argument("<id>").option("--evidence <text>", "verification command, URL, commit, attachment or note").option("--json").action((taskId, id, o) => run(o.json, () => {
+  const c = withDb((db) => setCriterionChecked(db, parseId(taskId), parseId(id), true, getActor(), o.evidence));
   out(o.json, c, () => `#${c.task_id} criterion ${c.id} checked`);
 }));
 criteria.command("uncheck").argument("<taskId>").argument("<id>").option("--json").action((taskId, id, o) => run(o.json, () => {

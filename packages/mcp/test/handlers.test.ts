@@ -50,6 +50,17 @@ describe('getTask', () => {
     expect(d.comments.length).toBe(25);
     expect(d.task.body!.length).toBe(9000);
   });
+
+  it('returns the current criterion verification snapshot', () => {
+    const db = mk();
+    const t = addTask(db, { title: 'verified' }, user);
+    const c = addCriterion(db, t.id, 'tests green', user);
+    setCriterionChecked(db, t.id, c.id, true, ai, 'pnpm test');
+
+    expect(getTask(db, t.id).criteria[0]).toMatchObject({
+      evidence: 'pnpm test', checked_by: 'ai:sess-1',
+    });
+  });
 });
 
 describe('listTasks', () => {

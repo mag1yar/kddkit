@@ -23,6 +23,12 @@ describe('fmtEvent', () => {
       .toBe('edited title, priority');
     expect(fmtEvent(ev({ id: 2, action: 'edited' }))).toBe('edited');
   });
+  it('shows criterion evidence from the audit event', () => {
+    expect(fmtEvent(ev({
+      id: 1, action: 'criterion_checked',
+      detail: '{"id":7,"text":"tests green","evidence":"pnpm test"}',
+    }))).toBe('checked: tests green — pnpm test');
+  });
   it('a self-accepted move says so — the mark exists to be seen on the board', () => {
     expect(fmtEvent(ev({ id: 1, action: 'moved', actor_type: 'ai',
       detail: '{"from":"review","to":"done","reason":"user asked","self_accepted":true}' })))

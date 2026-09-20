@@ -42,7 +42,7 @@ export function fmtEvent(e: RawEvent): string {
     case 'archived': return 'archived';
     case 'unarchived': return 'unarchived';
     case 'criterion_added': return `added criterion: ${d?.text}`;
-    case 'criterion_checked': return `checked: ${d?.text}`;
+    case 'criterion_checked': return `checked: ${d?.text}${d?.evidence ? ` — ${d.evidence}` : ''}`;
     case 'criterion_unchecked': return `unchecked: ${d?.text}`;
     case 'criterion_removed': return `removed criterion: ${d?.text}`;
     case 'claim': case 'claimed': return 'claimed';

@@ -123,6 +123,8 @@ interface Criterion {
     task_id: number;
     text: string;
     checked_at: number | null;
+    evidence: string | null;
+    checked_by: string | null;
     position: number;
     created_at: number;
 }
@@ -192,7 +194,7 @@ declare function unarchiveTask(db: Database.Database, id: number, actor: Actor):
 
 declare function listCriteria(db: Database.Database, taskId: number): Criterion[];
 declare function addCriterion(db: Database.Database, taskId: number, text: string, actor: Actor): Criterion;
-declare function setCriterionChecked(db: Database.Database, taskId: number, id: number, checked: boolean, actor: Actor): Criterion;
+declare function setCriterionChecked(db: Database.Database, taskId: number, id: number, checked: boolean, actor: Actor, evidence?: string): Criterion;
 declare function removeCriterion(db: Database.Database, taskId: number, id: number, actor: Actor): void;
 
 declare const isInlineMime: (m: string | null) => boolean;

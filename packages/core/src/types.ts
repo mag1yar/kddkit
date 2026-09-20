@@ -22,7 +22,8 @@ export interface Track {
 }
 export interface Criterion {
   id: number; task_id: number; text: string;
-  checked_at: number | null; position: number; created_at: number;
+  checked_at: number | null; evidence: string | null; checked_by: string | null;
+  position: number; created_at: number;
 }
 export interface Comment {
   id: number; task_id: number; author: string; body: string; created_at: number;

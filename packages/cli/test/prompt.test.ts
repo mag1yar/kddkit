@@ -52,6 +52,7 @@ describe('workerPrompt instruction body', () => {
       expect(workerPrompt(k, null)).toContain('kdd comment $KDD_TASK_ID');
       expect(workerPrompt(k, null)).toContain('kdd move $KDD_TASK_ID review');
       expect(workerPrompt(k, null)).toContain('kdd criteria check $KDD_TASK_ID');
+      expect(workerPrompt(k, null)).toContain('--evidence');
     }
   });
 });

@@ -74,6 +74,29 @@ describe('openDb', () => {
     db.close();
   });
 
+  it('adds an empty verification snapshot without changing legacy criteria', () => {
+    const p = join(mkdtempSync(join(tmpdir(), 'kdd-criteria-mig-')), 'kdd.db');
+    const raw = new Database(p);
+    for (let i = 0; i < MIGRATIONS.length - 1; i++) raw.exec(MIGRATIONS[i]);
+    raw.pragma(`user_version = ${MIGRATIONS.length - 1}`);
+    raw.prepare(
+      `INSERT INTO tasks (title, created_at, updated_at) VALUES ('legacy', 1, 1)`,
+    ).run();
+    raw.prepare(
+      `INSERT INTO criteria (task_id, text, checked_at, position, created_at)
+       VALUES (1, 'still verified', 7, 0, 1)`,
+    ).run();
+    raw.close();
+
+    const db = openDb(p);
+    expect(db.prepare(
+      `SELECT text, checked_at, evidence, checked_by FROM criteria WHERE id = 1`,
+    ).get()).toEqual({
+      text: 'still verified', checked_at: 7, evidence: null, checked_by: null,
+    });
+    db.close();
+  });
+
   it('projectPathOf reads back what openDb wrote, and null when the row is missing', () => {
     const db = openDb(':memory:', 'C:/proj');
     expect(projectPathOf(db)).toBe('C:/proj');
@@ -120,13 +143,11 @@ describe('schema version guard', () => {
 
   it('backs the board up before migrating it, keeping the pre-migration copy readable', () => {
     const p = fileDb();
-    const db = openDb(p, 'x');
-    db.prepare(`INSERT INTO tasks (title, created_at, updated_at) VALUES ('keep me', 1, 1)`).run();
-    // откатываем базу на версию назад вместе с артефактами последней миграции
-    // drop-таргет — артефакт ПОСЛЕДНЕЙ миграции; добавили новую миграцию — меняйте вместе с ней
-    db.exec(`DROP TABLE files`);
-    db.pragma(`user_version = ${MIGRATIONS.length - 1}`);
-    db.close();
+    const raw = new Database(p);
+    for (let i = 0; i < MIGRATIONS.length - 1; i++) raw.exec(MIGRATIONS[i]);
+    raw.prepare(`INSERT INTO tasks (title, created_at, updated_at) VALUES ('keep me', 1, 1)`).run();
+    raw.pragma(`user_version = ${MIGRATIONS.length - 1}`);
+    raw.close();
 
     openDb(p).close(); // миграция накатывается заново
     const backup = new Database(`${p}.v${MIGRATIONS.length - 1}.bak`);

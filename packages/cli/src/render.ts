@@ -91,7 +91,14 @@ export function renderShow(d: TaskDetailCapped): string {
 export function renderCriteria(cs: Criterion[]): string {
   if (cs.length === 0) return 'no criteria';
   // id в строке — чтобы агент мог check/uncheck без --json
-  return cs.map((c) => `  [${c.checked_at ? 'x' : ' '}] ${c.id}. ${c.text}`).join('\n');
+  return cs.flatMap((c) => {
+    const lines = [`  [${c.checked_at ? 'x' : ' '}] ${c.id}. ${c.text}`];
+    if (c.evidence) lines.push(`      evidence: ${c.evidence}`);
+    if (c.checked_at && c.checked_by) {
+      lines.push(`      checked by ${c.checked_by} ${renderAge(c.checked_at)} ago`);
+    }
+    return lines;
+  }).join('\n');
 }
 
 export function renderRecall(hits: RecallHit[]): string {

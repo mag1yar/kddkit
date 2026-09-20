@@ -45,7 +45,8 @@ export function workerPrompt(kind: Kind, area: string | null): string {
     + `durable note humans and future sessions read, so keep it tight, not a log. Then check acceptance `
     // Сигнатура полностью, с обоими аргументами: на «kdd criteria check» без них агент тратит
     // ходы на missing required argument и --help, прежде чем добирается до нужной формы.
-    + `criteria (\`kdd criteria ls $KDD_TASK_ID\`, then \`kdd criteria check $KDD_TASK_ID <criterionId>\` `
-    + `for each one) and \`kdd move $KDD_TASK_ID review\`. `
+    + `criteria (\`kdd criteria ls $KDD_TASK_ID\`, then `
+    + `\`kdd criteria check $KDD_TASK_ID <criterionId> --evidence "<test command, URL, commit, attachment, or note>"\` `
+    + `when evidence is available) and \`kdd move $KDD_TASK_ID review\`. `
     + `If you get blocked or must stop early, comment the reason first.`;
 }

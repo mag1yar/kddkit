@@ -23,6 +23,7 @@ export interface Track {
 }
 export interface Criterion {
   id: number; task_id: number; text: string; checked_at: number | null; position: number;
+  evidence: string | null; checked_by: string | null;
 }
 export interface Comment { id: number; author: string; body: string; created_at: number; }
 export interface EventRow {

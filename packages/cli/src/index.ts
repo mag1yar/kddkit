@@ -778,10 +778,11 @@ criteria.command('add')
 
 criteria.command('check')
   .argument('<taskId>').argument('<id>')
+  .option('--evidence <text>', 'verification command, URL, commit, attachment or note')
   .option('--json')
   .action((taskId, id, o) => run(o.json, () => {
     const c = withDb((db) =>
-      setCriterionChecked(db, parseId(taskId), parseId(id), true, getActor()));
+      setCriterionChecked(db, parseId(taskId), parseId(id), true, getActor(), o.evidence));
     out(o.json, c, () => `#${c.task_id} criterion ${c.id} checked`);
   }));
 

@@ -203,8 +203,8 @@ the verbose part of its feed; the run skeleton (`run_start`, `run_end`, errors) 
    directory of the node running `kdd worker`, so a bare `kdd` resolves to the install whose
    native modules match — under nvm/fnm the shell's own first node usually does not.
 2. Do the work in the repo (cwd is the repo root).
-3. When done: leave one summary comment (`kdd comment`), check acceptance criteria
-   (`kdd criteria check`), then `kdd move $KDD_TASK_ID review`.
+3. When done: leave one summary comment (`kdd comment`), check acceptance criteria with optional
+   evidence (`kdd criteria check … --evidence "pnpm test"`), then `kdd move $KDD_TASK_ID review`.
 
 The lease is renewed by the supervisor, not by the agent: the built-in `kdd worker` renews every
 `ttl/3` for as long as its process lives, and stops the agent the moment a renewal is refused

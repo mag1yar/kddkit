@@ -1,7 +1,8 @@
 import type Database from 'better-sqlite3';
+import { redact } from './agent_events.js';
 import { now } from './db.js';
 import { KddError } from './errors.js';
-import type { Actor } from './state.js';
+import { authorOf, type Actor } from './state.js';
 import type { Criterion } from './types.js';
 import { appendEvent, mustGetTask } from './ops.js';
 
@@ -43,14 +44,19 @@ export function addCriterion(
 
 export function setCriterionChecked(
   db: Database.Database, taskId: number, id: number, checked: boolean, actor: Actor,
+  evidence?: string,
 ): Criterion {
   return db.transaction(() => {
     const c = mustGetCriterion(db, taskId, id);
-    if ((c.checked_at !== null) === checked) return c; // идемпотентно, без события-дубля
-    db.prepare(`UPDATE criteria SET checked_at = ? WHERE id = ?`)
-      .run(checked ? now() : null, id);
-    appendEvent(db, taskId, actor,
-      checked ? 'criterion_checked' : 'criterion_unchecked', { id, text: c.text });
+    const proof = evidence?.trim();
+    if ((c.checked_at !== null) === checked && (!checked || !proof)) return c;
+    const stored = proof ? (actor.type === 'ai' ? redact(proof) : proof) : null;
+    db.prepare(
+      `UPDATE criteria SET checked_at = ?, evidence = ?, checked_by = ? WHERE id = ?`,
+    ).run(checked ? now() : null, checked ? stored : null,
+      checked ? authorOf(actor) : null, id);
+    appendEvent(db, taskId, actor, checked ? 'criterion_checked' : 'criterion_unchecked',
+      { id, text: c.text, ...(checked && stored ? { evidence: stored } : {}) });
     touchTask(db, taskId);
     return mustGetCriterion(db, taskId, id);
   })();

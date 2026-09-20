@@ -37,6 +37,69 @@ describe('criteria', () => {
     expect(listCriteria(db, 1)).toEqual([]);
   });
 
+  it('stores evidence and the checking actor in the current snapshot and event', () => {
+    addTask(db, { title: 't' }, user);
+    const c = addCriterion(db, 1, 'tests green', user);
+
+    const checked = setCriterionChecked(db, 1, c.id, true, ai, 'pnpm test');
+
+    expect(checked).toMatchObject({
+      evidence: 'pnpm test', checked_by: 'ai:s1',
+    });
+    const event = db.prepare(
+      `SELECT detail FROM events WHERE action = 'criterion_checked'`,
+    ).get() as { detail: string };
+    expect(JSON.parse(event.detail)).toEqual({ id: c.id, text: 'tests green', evidence: 'pnpm test' });
+  });
+
+  it('rechecking with explicit evidence refreshes snapshot and audit even when text is unchanged', () => {
+    addTask(db, { title: 't' }, user);
+    const c = addCriterion(db, 1, 'tests green', user);
+    setCriterionChecked(db, 1, c.id, true, ai, 'pnpm test');
+    db.prepare(`UPDATE criteria SET checked_at = 1 WHERE id = ?`).run(c.id);
+
+    const refreshed = setCriterionChecked(
+      db, 1, c.id, true, { type: 'ai', id: 's2' }, 'pnpm test',
+    );
+
+    expect(refreshed).toMatchObject({ evidence: 'pnpm test', checked_by: 'ai:s2' });
+    expect(refreshed.checked_at).toBeGreaterThan(1);
+    expect(db.prepare(
+      `SELECT COUNT(*) AS count FROM events WHERE action = 'criterion_checked'`,
+    ).get()).toEqual({ count: 2 });
+  });
+
+  it('rechecking without non-empty evidence is a complete no-op', () => {
+    addTask(db, { title: 't' }, user);
+    const c = addCriterion(db, 1, 'tests green', user);
+    const before = setCriterionChecked(db, 1, c.id, true, ai, 'pnpm test');
+
+    expect(setCriterionChecked(db, 1, c.id, true, user)).toEqual(before);
+    expect(setCriterionChecked(db, 1, c.id, true, user, '   ')).toEqual(before);
+    expect(db.prepare(
+      `SELECT COUNT(*) AS count FROM events WHERE action = 'criterion_checked'`,
+    ).get()).toEqual({ count: 1 });
+  });
+
+  it('uncheck clears the current snapshot but keeps prior verification events', () => {
+    addTask(db, { title: 't' }, user);
+    const c = addCriterion(db, 1, 'tests green', user);
+    setCriterionChecked(db, 1, c.id, true, ai, 'pnpm test');
+
+    const unchecked = setCriterionChecked(db, 1, c.id, false, user);
+
+    expect(unchecked).toMatchObject({ checked_at: null, evidence: null, checked_by: null });
+    expect(db.prepare(
+      `SELECT action, detail FROM events WHERE action LIKE 'criterion_%' ORDER BY id`,
+    ).all()).toEqual([
+      { action: 'criterion_added', detail: JSON.stringify({ id: c.id, text: 'tests green' }) },
+      { action: 'criterion_checked', detail: JSON.stringify({
+        id: c.id, text: 'tests green', evidence: 'pnpm test',
+      }) },
+      { action: 'criterion_unchecked', detail: JSON.stringify({ id: c.id, text: 'tests green' }) },
+    ]);
+  });
+
   it('addTask creates criteria in order without per-criterion events', () => {
     addTask(db, { title: 't', criteria: ['a', 'b'] }, user);
     expect(listCriteria(db, 1).map((c) => c.text)).toEqual(['a', 'b']);
