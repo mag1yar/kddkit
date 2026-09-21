@@ -1,10 +1,12 @@
 import { statSync } from 'node:fs';
 import type Database from 'better-sqlite3';
 import {
-  CAPS, capText, boardData, taskDetail, taskDetailCapped, recall, editTask, moveTask,
+  CAPS, capText, boardData, recall, editTask, moveTask,
   commentTask, mustGetTask, listTracks, attachFile, detachFile, listFiles, KddError,
-  type Actor, type Priority, type Status, type Kind, type TaskDetailCapped,
+  type Actor, type Priority, type Status, type Kind,
 } from '@kddkit/core';
+
+export { syncedTaskDetail as getTask } from '@kddkit/core';
 
 export interface TaskRow {
   id: number;
@@ -15,21 +17,6 @@ export interface TaskRow {
   blocked: boolean;
   ready: boolean;
   criteria: { checked: number; total: number };
-}
-
-// Перегрузки, а не просто union: без них каждый вызывающий (тест включительно) был бы обязан
-// сужать тип сам, хотя литерал full ЗДЕСЬ, в аргументе, уже решает, какая ветка вернётся.
-// Третья, общая — для server.ts: там full приходит из zod как `boolean | undefined`, не
-// литерал, и ни одна из узких перегрузок ему не подходит; она обязана идти ПОСЛЕДНЕЙ, иначе
-// перекрыла бы узкое сужение для литеральных вызовов (порядок объявления решает, какая матчится).
-export function getTask(db: Database.Database, id: number, full?: false): TaskDetailCapped;
-export function getTask(db: Database.Database, id: number, full: true): ReturnType<typeof taskDetail>;
-export function getTask(
-  db: Database.Database, id: number, full?: boolean,
-): TaskDetailCapped | ReturnType<typeof taskDetail>;
-export function getTask(db: Database.Database, id: number, full = false) {
-  // капы — в core taskDetailCapped (та же политика, что kdd show); full — escape hatch
-  return full ? taskDetail(db, id) : taskDetailCapped(db, id);
 }
 
 export function listTracksTool(db: Database.Database) {

@@ -26,12 +26,13 @@ kdd ui                             # board at http://localhost:4499
 kdd status                         # in-progress / blocked digest
 kdd add "Wire up auth" --priority high
 kdd move 12 in_progress
-kdd decide "Use FTS5 for recall" --rationale "no extra dep, good enough"
+kdd decide "Use FTS5 for recall" --rationale "no extra dep, good enough" --source-task 12
+kdd decision 2026-09-20-use-fts5-for-recall
 kdd recall "recall ranking"        # search decisions + tasks
 ```
 
 Commands: `add`, `board`, `show`, `move`, `edit`, `comment`, `block` / `unblock`,
-`link`, `archive` / `unarchive`, `decide`, `recall`, `status`, `rebuild`,
+`link`, `archive` / `unarchive`, `decide`, `decision`, `recall`, `status`, `rebuild`,
 `projects`, `export`, `ui`, plus `tick` / `worker` for experimental agent mode.
 Add `--json` to most for machine-readable output.
 

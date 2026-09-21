@@ -26,6 +26,7 @@ import {
   claimTask,
   commentTask,
   createTrack,
+  decisionDetail,
   deleteTrack,
   DEFAULT_TTL,
   detachFile,
@@ -61,8 +62,7 @@ import {
   statusDigest,
   stopWorkers,
   sweepWorktrees,
-  taskDetail,
-  taskDetailCapped,
+  syncedTaskDetail,
   tick,
   unarchiveTask,
   unblockTask
@@ -243,6 +243,16 @@ function renderShow(d) {
     lines.push("", "links:");
     for (const l of d.links) lines.push(`  ${l.kind} #${l.id} ${cap(l.title, CAPS.titleChars)}`);
   }
+  if (d.decisions_total) {
+    lines.push("", `decisions (${d.decisions_total}):`);
+    if (d.decisions.length < d.decisions_total) {
+      lines.push(`  (+${d.decisions_total - d.decisions.length} more omitted)`);
+    }
+    for (const decision of d.decisions) {
+      const superseded = decision.superseded_by ? ` [superseded by ${cap(decision.superseded_by, CAPS.titleChars)}]` : "";
+      lines.push(`  decision ${decision.slug}${superseded} ${decision.title}`);
+    }
+  }
   if (d.comments_total) {
     lines.push("", `comments (${d.comments_total}):`);
     if (d.comments.length < d.comments_total) {
@@ -256,6 +266,23 @@ function renderShow(d) {
   for (const e of d.events) {
     lines.push(`  ${renderAge(e.created_at)} ago ${e.actor_type} ${e.action}${e.detail ? ` ${e.detail}` : ""}`);
   }
+  return lines.join("\n");
+}
+function renderDecision(d) {
+  const lines = [
+    cap(d.title, CAPS.titleChars),
+    `slug: ${d.slug}  status: ${cap(d.status, CAPS.titleChars)}`,
+    `path: ${d.path}`
+  ];
+  const sources = d.source_tasks.slice(0, CAPS.decisionSources);
+  lines.push("", `source tasks (${d.source_tasks.length}):`);
+  if (sources.length < d.source_tasks.length) {
+    lines.push(`  (+${d.source_tasks.length - sources.length} more omitted)`);
+  }
+  for (const task of sources) {
+    lines.push(`  #${task.id} [${task.status}] ${cap(task.title, CAPS.titleChars)}${task.archived_at ? " ARCHIVED" : ""}`);
+  }
+  if (d.body) lines.push("", cap(d.body, CAPS.bodyChars));
   return lines.join("\n");
 }
 function renderCriteria(cs) {
@@ -528,7 +555,7 @@ program.command("add").argument("<title>").option("--body <md>", 'markdown body,
   ));
   out(o.json, t, () => `#${t.id} created`);
 }));
-program.command("decide").argument("<title>").option("--decision <t>").option("--rationale <t>").option("--alternatives <t>").option("--outcome <t>").option("--supersedes <slug>").option("--body <md>", 'full md body, or "-" for stdin').option("--body-file <path>").option("--json").action((title, o) => run(o.json, () => {
+program.command("decide").argument("<title>").option("--decision <t>").option("--rationale <t>").option("--alternatives <t>").option("--outcome <t>").option("--supersedes <slug>").option("--source-task <id>", "source task id (repeatable)", collect, []).option("--body <md>", 'full md body, or "-" for stdin').option("--body-file <path>").option("--json").action((title, o) => run(o.json, () => {
   const r = withDb((db) => addDecision(db, resolveDecisionsDir(), {
     title,
     decision: o.decision,
@@ -536,10 +563,15 @@ program.command("decide").argument("<title>").option("--decision <t>").option("-
     alternatives: o.alternatives,
     outcome: o.outcome,
     supersedes: o.supersedes,
-    body: readBody(o)
+    body: readBody(o),
+    sourceTasks: o.sourceTask.map(parseId)
   }));
   out(o.json, r, () => r.created ? `decided: ${r.slug}
 ${r.path}` : `already recorded: ${r.slug}`);
+}));
+program.command("decision").argument("<slug>").option("--json").action((slug, o) => run(o.json, () => {
+  const d = withDb((db) => decisionDetail(db, resolveDecisionsDir(), slug));
+  out(o.json, d, () => renderDecision(d));
 }));
 program.command("board").option("--area <area>").option("--status <s>").option("--kind <k>", "feature|bug|chore|research").option("--track <id>", "track id").option("--ready", "only tasks takeable now (new, not blocked)").option("--archived", "show archived tasks only").option("--json").action((o) => run(o.json, () => {
   if (o.kind && !KINDS.includes(o.kind)) {
@@ -560,10 +592,10 @@ program.command("board").option("--area <area>").option("--status <s>").option("
 }));
 program.command("show").argument("<id>").option("--json").action((id, o) => run(o.json, () => {
   if (o.json) {
-    out(true, withDb((db) => taskDetail(db, parseId(id))), () => "");
+    out(true, withDb((db) => syncedTaskDetail(db, resolveDecisionsDir(), parseId(id), true)), () => "");
     return;
   }
-  console.log(renderShow(withDb((db) => taskDetailCapped(db, parseId(id)))));
+  console.log(renderShow(withDb((db) => syncedTaskDetail(db, resolveDecisionsDir(), parseId(id)))));
 }));
 program.command("move").argument("<id>").argument("<status>").option("--reason <text>", "why the transition skips the matrix (ai)").option("--json").action((id, status, o) => run(o.json, () => {
   const t = withDb((db) => moveTask(db, parseId(id), status, getActor(), o.reason));

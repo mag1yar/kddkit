@@ -97,6 +97,23 @@ describe('openDb', () => {
     db.close();
   });
 
+  it('migration 12 preserves decisions with empty source tasks', () => {
+    const p = join(mkdtempSync(join(tmpdir(), 'kdd-decision-source-mig-')), 'kdd.db');
+    const raw = new Database(p);
+    for (let i = 0; i < MIGRATIONS.length - 1; i++) raw.exec(MIGRATIONS[i]);
+    raw.pragma(`user_version = ${MIGRATIONS.length - 1}`);
+    raw.prepare(
+      `INSERT INTO decisions (slug, title, path, content_hash, created, superseded_by)
+       VALUES ('legacy', 'Legacy', '/legacy.md', 'hash', '2026-01-01', NULL)`,
+    ).run();
+    raw.close();
+
+    const db = openDb(p);
+    expect(db.prepare(`SELECT source_tasks FROM decisions WHERE slug = 'legacy'`).get())
+      .toEqual({ source_tasks: '[]' });
+    db.close();
+  });
+
   it('projectPathOf reads back what openDb wrote, and null when the row is missing', () => {
     const db = openDb(':memory:', 'C:/proj');
     expect(projectPathOf(db)).toBe('C:/proj');

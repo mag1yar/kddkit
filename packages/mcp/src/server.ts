@@ -53,7 +53,8 @@ export function createServer(getCtx: CtxFn, actor?: Actor): McpServer {
         + 'full=true returns the complete uncapped history',
       inputSchema: { id: z.number().int().positive(), full: z.boolean().optional() },
     },
-    async ({ id, full }, extra) => guard(getCtx, extra._meta, (c) => h.getTask(c.db, id, full)));
+    async ({ id, full }, extra) => guard(getCtx, extra._meta,
+      (c) => h.getTask(c.db, c.dir, id, full)));
 
   server.registerTool('list_tasks',
     {

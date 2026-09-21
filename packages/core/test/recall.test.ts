@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDb } from '../src/db.js';
@@ -46,6 +46,23 @@ describe('syncIndex — decisions', () => {
     const hit = db.prepare(
       `SELECT ref FROM search_index WHERE search_index MATCH '"zanzibar"'`).get() as any;
     expect(hit.ref).toBe(r.slug);
+  });
+
+  it('updates source tasks when only provenance changes', () => {
+    const db = openDb(':memory:', 'x');
+    const dir = tmp();
+    const one = addTask(db, { title: 'one' }, user);
+    const two = addTask(db, { title: 'two' }, user);
+    const r = addDecision(db, dir, {
+      title: 'same content', decision: 'unchanged', sourceTasks: [one.id],
+    });
+    writeFileSync(r.path, readFileSync(r.path, 'utf8')
+      .replace(`source_tasks: [${one.id}]`, `source_tasks: [${one.id}, ${two.id}]`));
+
+    syncIndex(db, dir);
+
+    expect(db.prepare(`SELECT source_tasks FROM decisions WHERE slug = ?`).get(r.slug))
+      .toEqual({ source_tasks: `[${one.id},${two.id}]` });
   });
 
   it('missing decisions dir is fine (zero decisions)', () => {
@@ -181,6 +198,21 @@ describe('rebuild', () => {
     const counts = rebuild(db2, dir);
     expect(counts).toEqual({ decisions: 2, tasks: 1 });
     expect(recall(db2, dir, 'survives').length).toBe(2);
+  });
+
+  it('restores decision source tasks from markdown', () => {
+    const db = openDb(':memory:', 'x');
+    const dir = tmp();
+    const source = addTask(db, { title: 'source' }, user);
+    const decision = addDecision(db, dir, {
+      title: 'linked', decision: 'keep provenance', sourceTasks: [source.id],
+    });
+    db.prepare(`UPDATE decisions SET source_tasks = '[]' WHERE slug = ?`).run(decision.slug);
+
+    rebuild(db, dir);
+
+    expect(db.prepare(`SELECT source_tasks FROM decisions WHERE slug = ?`).get(decision.slug))
+      .toEqual({ source_tasks: `[${source.id}]` });
   });
 });
 

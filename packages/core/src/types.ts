@@ -38,3 +38,12 @@ export interface EventRow {
   actor_id: string | null; action: string; detail: string | null; created_at: number;
   parent_id: number | null; type: string | null; level: 'info' | 'warn' | 'error';
 }
+export interface DecisionSummary {
+  slug: string; title: string; created: string | null; superseded_by: string | null;
+}
+export interface DecisionSourceTask {
+  id: number; title: string; status: Status; archived_at: number | null;
+}
+export interface DecisionDetail extends DecisionSummary {
+  path: string; status: string; body: string; source_tasks: DecisionSourceTask[];
+}

@@ -1,10 +1,16 @@
+import { readFileSync } from 'node:fs';
 import type Database from 'better-sqlite3';
 import { CAPS, capText } from './caps.js';
 import { authorOf, STATUSES, type Kind, type Status } from './state.js';
-import type { Comment, Criterion, EventRow, FileRow, Task, TaskListRow } from './types.js';
+import type {
+  Comment, Criterion, DecisionDetail, DecisionSummary, EventRow, FileRow, Task, TaskListRow,
+} from './types.js';
 import { mustGetTask } from './ops.js';
 import { listCriteria } from './criteria.js';
 import { filePath, listFiles } from './files.js';
+import { parseDecisionMd } from './decisions.js';
+import { KddError } from './errors.js';
+import { syncIndex } from './recall.js';
 
 export const PRIORITY_ORDER =
   `CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
@@ -45,6 +51,7 @@ export function boardData(
 export function taskDetail(db: Database.Database, id: number): {
   task: Task; criteria: Criterion[]; comments: Comment[]; events: EventRow[];
   links: { id: number; title: string; kind: string }[];
+  decisions: DecisionSummary[];
   // path — абсолютный, вычислен здесь (db.name уже под рукой), а не в клиентах: агент открывает
   // вложение через MCP get_task так же, как человек через kdd show — один источник пути.
   files: (FileRow & { path: string })[];
@@ -68,7 +75,13 @@ export function taskDetail(db: Database.Database, id: number): {
     `SELECT COUNT(*) c FROM agent_events WHERE task_id = ? AND kind = 'run_start'`,
   ).get(id) as { c: number }).c;
   const files = listFiles(db, id).map((f) => ({ ...f, path: filePath(db.name, f) }));
-  return { task, criteria, comments, events, links, files, agent_runs_total };
+  const decisions = db.prepare(
+    `SELECT d.slug, d.title, d.created, d.superseded_by
+       FROM decisions d, json_each(d.source_tasks) source
+      WHERE CAST(source.value AS INTEGER) = ?
+      ORDER BY d.slug`,
+  ).all(id) as DecisionSummary[];
+  return { task, criteria, comments, events, links, decisions, files, agent_runs_total };
 }
 
 export interface TaskDetailCapped {
@@ -79,6 +92,8 @@ export interface TaskDetailCapped {
   events: EventRow[];
   events_total: number;
   links: { id: number; title: string; kind: string }[];
+  decisions: DecisionSummary[];
+  decisions_total: number;
   files: (FileRow & { path: string })[];
   files_total: number;
 }
@@ -99,6 +114,9 @@ export function taskDetailCapped(db: Database.Database, id: number): TaskDetailC
     events: d.events.slice(-CAPS.events),
     events_total: d.events.length,
     links: d.links,
+    decisions: d.decisions.slice(0, CAPS.decisions)
+      .map((decision) => ({ ...decision, title: capText(decision.title, CAPS.titleChars) })),
+    decisions_total: d.decisions.length,
     // Вложения режем с НАЧАЛА списка (он упорядочен по id, то есть по времени): первым
     // приложили — первым и показываем. У комментариев обратная политика — там свежий важнее.
     files: d.files.slice(0, CAPS.files).map((f) => ({
@@ -106,6 +124,42 @@ export function taskDetailCapped(db: Database.Database, id: number): TaskDetailC
       description: f.description === null ? null : capText(f.description, CAPS.fileDescChars),
     })),
     files_total: d.files.length,
+  };
+}
+
+export function syncedTaskDetail(
+  db: Database.Database, decisionsDir: string, id: number, full: true,
+): ReturnType<typeof taskDetail>;
+export function syncedTaskDetail(
+  db: Database.Database, decisionsDir: string, id: number, full?: false,
+): TaskDetailCapped;
+export function syncedTaskDetail(
+  db: Database.Database, decisionsDir: string, id: number, full?: boolean,
+): ReturnType<typeof taskDetail> | TaskDetailCapped;
+export function syncedTaskDetail(
+  db: Database.Database, decisionsDir: string, id: number, full = false,
+): ReturnType<typeof taskDetail> | TaskDetailCapped {
+  syncIndex(db, decisionsDir);
+  return full ? taskDetail(db, id) : taskDetailCapped(db, id);
+}
+
+export function decisionDetail(
+  db: Database.Database, decisionsDir: string, slug: string,
+): DecisionDetail {
+  syncIndex(db, decisionsDir);
+  const row = db.prepare(
+    `SELECT slug, title, path, created, superseded_by FROM decisions WHERE slug = ?`,
+  ).get(slug) as (DecisionSummary & { path: string }) | undefined;
+  if (!row) throw new KddError(`decision '${slug}' not found`);
+  const doc = parseDecisionMd(readFileSync(row.path, 'utf8'));
+  return {
+    ...row,
+    status: doc.status,
+    body: doc.indexBody,
+    source_tasks: doc.sourceTasks.map((id) => {
+      const task = mustGetTask(db, id);
+      return { id, title: task.title, status: task.status, archived_at: task.archived_at };
+    }),
   };
 }
 

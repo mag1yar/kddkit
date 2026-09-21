@@ -9,13 +9,14 @@ import { fileURLToPath } from 'node:url';
 import lockfile from 'proper-lockfile';
 import {
   KddError, addCriterion, addDecision, addTask, appendAgentEvent, archiveTask, attachFile, authorOf, blockTask,
-  closeDb, boardData, BUG_BODY_TEMPLATE, claimNext, claimTask, commentTask, createTrack, deleteTrack, DEFAULT_TTL,
+  closeDb, boardData, BUG_BODY_TEMPLATE, claimNext, claimTask, commentTask, createTrack, decisionDetail,
+  deleteTrack, DEFAULT_TTL,
   detachFile, editTask, editTrack, ensureWorktree, exportBoard, filesDir, headCommit, kddVersion, KINDS, linkTasks,
   listAgentEvents, listCriteria, listProjects, taskBranchHead,
   listTracks, maxWorkers, moveTask, mustGetTask, openDb, parseClaudeStreamLine, rebuild, recall, removeCriterion,
   renewClaim, resolveDbPath, resolveDecisionsDir, resolveToplevel, setAutoTick, setCriterionChecked,
   setProjectToplevel, statusDigest, stopWorkers,
-  sweepWorktrees, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask,
+  sweepWorktrees, syncedTaskDetail, tick, unarchiveTask, unblockTask,
   type KillFn, type Kind, type Status,
 } from '@kddkit/core';
 import {
@@ -24,7 +25,7 @@ import {
 import { fail, getActor, parseId, withDb, withDbAt } from './context.js';
 import { killWorkers, signalGroup, workerAlive, workerTag } from './procs.js';
 import {
-  renderBoard, renderClaim, renderCriteria, renderRecall, renderShow, renderStatus, renderTracks,
+  renderBoard, renderClaim, renderCriteria, renderDecision, renderRecall, renderShow, renderStatus, renderTracks,
 } from './render.js';
 import { createStopRunner, createTickRunner } from './tick-runner.js';
 import { workerPrompt } from './prompt.js';
@@ -165,6 +166,7 @@ program.command('decide')
   .argument('<title>')
   .option('--decision <t>').option('--rationale <t>').option('--alternatives <t>')
   .option('--outcome <t>').option('--supersedes <slug>')
+  .option('--source-task <id>', 'source task id (repeatable)', collect, [])
   .option('--body <md>', 'full md body, or "-" for stdin')
   .option('--body-file <path>')
   .option('--json')
@@ -173,9 +175,18 @@ program.command('decide')
       title, decision: o.decision, rationale: o.rationale,
       alternatives: o.alternatives, outcome: o.outcome,
       supersedes: o.supersedes, body: readBody(o),
+      sourceTasks: o.sourceTask.map(parseId),
     }));
     out(o.json, r, () =>
       r.created ? `decided: ${r.slug}\n${r.path}` : `already recorded: ${r.slug}`);
+  }));
+
+program.command('decision')
+  .argument('<slug>')
+  .option('--json')
+  .action((slug, o) => run(o.json, () => {
+    const d = withDb((db) => decisionDetail(db, resolveDecisionsDir(), slug));
+    out(o.json, d, () => renderDecision(d));
   }));
 
 program.command('board')
@@ -205,8 +216,12 @@ program.command('show')
   .option('--json')
   .action((id, o) => run(o.json, () => {
     // --json остаётся полным дампом; текст идёт через капы core
-    if (o.json) { out(true, withDb((db) => taskDetail(db, parseId(id))), () => ''); return; }
-    console.log(renderShow(withDb((db) => taskDetailCapped(db, parseId(id)))));
+    if (o.json) {
+      out(true, withDb((db) => syncedTaskDetail(db, resolveDecisionsDir(), parseId(id), true)), () => '');
+      return;
+    }
+    console.log(renderShow(withDb((db) =>
+      syncedTaskDetail(db, resolveDecisionsDir(), parseId(id)))));
   }));
 
 program.command('move')

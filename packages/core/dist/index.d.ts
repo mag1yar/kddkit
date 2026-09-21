@@ -13,6 +13,8 @@ declare const CAPS: {
     readonly commentChars: 500;
     readonly events: 10;
     readonly files: 20;
+    readonly decisions: 20;
+    readonly decisionSources: 20;
     readonly fileDescChars: 200;
     readonly fileNameChars: 100;
     readonly recallK: 10;
@@ -158,6 +160,24 @@ interface EventRow {
     type: string | null;
     level: 'info' | 'warn' | 'error';
 }
+interface DecisionSummary {
+    slug: string;
+    title: string;
+    created: string | null;
+    superseded_by: string | null;
+}
+interface DecisionSourceTask {
+    id: number;
+    title: string;
+    status: Status;
+    archived_at: number | null;
+}
+interface DecisionDetail extends DecisionSummary {
+    path: string;
+    status: string;
+    body: string;
+    source_tasks: DecisionSourceTask[];
+}
 
 declare function appendEvent(db: Database.Database, taskId: number | null, actor: Actor, action: string, detail?: object, opts?: {
     parent_id?: number;
@@ -232,6 +252,7 @@ interface DecisionInput {
     outcome?: string;
     supersedes?: string;
     body?: string;
+    sourceTasks?: number[];
 }
 interface ParsedDecision {
     title: string;
@@ -240,9 +261,11 @@ interface ParsedDecision {
     supersededBy: string;
     indexBody: string;
     hash: string;
+    sourceTasks: number[];
 }
 declare function slugify(title: string): string;
 declare function contentHash(title: string, body: string): string;
+declare function normalizeSourceTasks(ids?: number[]): number[];
 declare function renderDecisionBody(input: DecisionInput): string;
 declare function renderDecisionMd(input: DecisionInput, created: string): string;
 declare function parseDecisionMd(raw: string): ParsedDecision;
@@ -290,6 +313,7 @@ declare function taskDetail(db: Database.Database, id: number): {
         title: string;
         kind: string;
     }[];
+    decisions: DecisionSummary[];
     files: (FileRow & {
         path: string;
     })[];
@@ -307,12 +331,18 @@ interface TaskDetailCapped {
         title: string;
         kind: string;
     }[];
+    decisions: DecisionSummary[];
+    decisions_total: number;
     files: (FileRow & {
         path: string;
     })[];
     files_total: number;
 }
 declare function taskDetailCapped(db: Database.Database, id: number): TaskDetailCapped;
+declare function syncedTaskDetail(db: Database.Database, decisionsDir: string, id: number, full: true): ReturnType<typeof taskDetail>;
+declare function syncedTaskDetail(db: Database.Database, decisionsDir: string, id: number, full?: false): TaskDetailCapped;
+declare function syncedTaskDetail(db: Database.Database, decisionsDir: string, id: number, full?: boolean): ReturnType<typeof taskDetail> | TaskDetailCapped;
+declare function decisionDetail(db: Database.Database, decisionsDir: string, slug: string): DecisionDetail;
 declare function statusDigest(db: Database.Database): {
     in_progress: Task[];
     review: Task[];
@@ -538,4 +568,4 @@ declare const maxWorkersEnvLocked: () => boolean;
 declare function getReminded(db: Database.Database, session: string): number[];
 declare function setReminded(db: Database.Database, session: string, ids: number[]): void;
 
-export { type Actor, type AgentEvent, type AgentEventKind, type AutoTick, BUG_BODY_TEMPLATE, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionInput, type EventRow, type FileRow, KINDS, KddError, type KillFn, type KillOutcome, type Kind, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RunResult, STATUSES, type SpawnFn, type Status, type StopResult, TICK_INTERVALS, TRANSITIONS, type Task, type TaskDetailCapped, type TaskListRow, type TickResult, type TickRun, type Track, _cacheUntil, _resetCache, addCriterion, addDecision, addTask, agentId, appendAgentEvent, appendEvent, archiveTask, attachFile, authorOf, blockTask, boardData, capDetail, capText, checkMove, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, contentHash, createTrack, deleteTrack, detachFile, editTask, editTrack, ensureWorktree, expiredLeases, exportBoard, filePath, filesDir, getAutoTick, getFile, getLastRun, getReminded, headCommit, isInlineMime, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listFiles, listProjects, listTracks, logError, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, now, openDb, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, projectPathOf, projectToplevelOf, pruneAgentEvents, reapExpired, rebuild, recall, reclaimExpired, recordFailedAttempt, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, setReminded, slugify, statusDigest, stopWorkers, sweepWorktrees, syncIndex, taskBranchHead, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, unsubmitted, worktreePath };
+export { type Actor, type AgentEvent, type AgentEventKind, type AutoTick, BUG_BODY_TEMPLATE, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type EventRow, type FileRow, KINDS, KddError, type KillFn, type KillOutcome, type Kind, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RunResult, STATUSES, type SpawnFn, type Status, type StopResult, TICK_INTERVALS, TRANSITIONS, type Task, type TaskDetailCapped, type TaskListRow, type TickResult, type TickRun, type Track, _cacheUntil, _resetCache, addCriterion, addDecision, addTask, agentId, appendAgentEvent, appendEvent, archiveTask, attachFile, authorOf, blockTask, boardData, capDetail, capText, checkMove, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, contentHash, createTrack, decisionDetail, deleteTrack, detachFile, editTask, editTrack, ensureWorktree, expiredLeases, exportBoard, filePath, filesDir, getAutoTick, getFile, getLastRun, getReminded, headCommit, isInlineMime, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listFiles, listProjects, listTracks, logError, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, normalizeSourceTasks, now, openDb, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, projectPathOf, projectToplevelOf, pruneAgentEvents, reapExpired, rebuild, recall, reclaimExpired, recordFailedAttempt, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, setReminded, slugify, statusDigest, stopWorkers, sweepWorktrees, syncIndex, syncedTaskDetail, taskBranchHead, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, unsubmitted, worktreePath };

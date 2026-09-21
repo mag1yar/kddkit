@@ -23,6 +23,10 @@ var CAPS = {
   // последних событий в show/get_task
   files: 20,
   // вложений в show/get_task
+  decisions: 20,
+  // связанных решений в show/get_task
+  decisionSources: 20,
+  // исходных задач в kdd decision
   fileDescChars: 200,
   // описание вложения в show/get_task
   fileNameChars: 100,
@@ -240,6 +244,11 @@ var MIGRATIONS = [
   -- \u043D\u0443\u0436\u043D\u044B \u0442\u043E\u043B\u044C\u043A\u043E \u0434\u043B\u044F \u0431\u044B\u0441\u0442\u0440\u043E\u0433\u043E \u0447\u0442\u0435\u043D\u0438\u044F \u0430\u043A\u0442\u0443\u0430\u043B\u044C\u043D\u043E\u0433\u043E evidence \u0438 \u0430\u0432\u0442\u043E\u0440\u0430. \u0421\u0442\u0430\u0440\u044B\u0435 criteria \u0432\u0430\u043B\u0438\u0434\u043D\u044B.
   ALTER TABLE criteria ADD COLUMN evidence TEXT;
   ALTER TABLE criteria ADD COLUMN checked_by TEXT;
+  `,
+  `
+  -- \u041A\u0430\u043D\u043E\u043D provenance \u0436\u0438\u0432\u0451\u0442 \u0432\u043E frontmatter decision Markdown. \u042D\u0442\u0430 JSON-\u043A\u043E\u043B\u043E\u043D\u043A\u0430 \u2014 \u0442\u043E\u043B\u044C\u043A\u043E
+  -- rebuildable \u0438\u043D\u0434\u0435\u043A\u0441 \u0434\u043B\u044F \u043E\u0431\u0440\u0430\u0442\u043D\u043E\u0433\u043E \u0437\u0430\u043F\u0440\u043E\u0441\u0430 task -> decisions.
+  ALTER TABLE decisions ADD COLUMN source_tasks TEXT NOT NULL DEFAULT '[]';
   `
 ];
 function backupBeforeMigrate(db, dbPath, from) {
@@ -1061,7 +1070,7 @@ function detachFile(db, dbPath, fileId, actor) {
 
 // src/decisions.ts
 import { createHash as createHash3 } from "crypto";
-import { existsSync as existsSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "fs";
+import { existsSync as existsSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync2, readdirSync as readdirSync2, writeFileSync as writeFileSync2 } from "fs";
 import { join as join3 } from "path";
 function slugify(title) {
   const s = title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 60).replace(/-+$/, "");
@@ -1071,6 +1080,27 @@ var normalize = (s) => s.replace(/\r\n/g, "\n").trim();
 function contentHash(title, body) {
   return createHash3("sha256").update(`${normalize(title)}
 ${normalize(body)}`).digest("hex");
+}
+function normalizeSourceTasks(ids = []) {
+  for (const id of ids) {
+    if (!Number.isInteger(id) || id < 1) throw new KddError(`invalid source task id '${id}'`);
+  }
+  return [...new Set(ids)].sort((a, b) => a - b);
+}
+function parseSourceTasks(value) {
+  if (value === void 0) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new KddError("invalid source_tasks frontmatter");
+  }
+  if (!Array.isArray(parsed)) throw new KddError("invalid source_tasks frontmatter");
+  try {
+    return normalizeSourceTasks(parsed);
+  } catch {
+    throw new KddError("invalid source_tasks frontmatter");
+  }
 }
 function renderDecisionBody(input) {
   if (input.body !== void 0) return normalize(input.body);
@@ -1085,10 +1115,12 @@ ${normalize(v ?? "") || "-"}`;
   ].join("\n\n");
 }
 function renderDecisionMd(input, created) {
+  const sources = normalizeSourceTasks(input.sourceTasks);
   return `---
 created: ${created}
 status: active
 superseded_by:
+source_tasks: [${sources.join(", ")}]
 ---
 # ${input.title.trim()}
 
@@ -1118,7 +1150,8 @@ function parseDecisionMd(raw) {
     status: fm.status || "active",
     supersededBy: fm.superseded_by ?? "",
     indexBody,
-    hash: contentHash(title, indexBody)
+    hash: contentHash(title, indexBody),
+    sourceTasks: parseSourceTasks(fm.source_tasks)
   };
 }
 function supersede(db, dir, oldSlug, newSlug) {
@@ -1144,10 +1177,37 @@ function addDecision(db, decisionsDir, input) {
   if (input.body !== void 0 && [input.decision, input.rationale, input.alternatives, input.outcome].some((v) => v !== void 0)) {
     throw new KddError("--body is mutually exclusive with section flags");
   }
+  const sourceTasks = normalizeSourceTasks(input.sourceTasks);
+  for (const id of sourceTasks) {
+    if (!db.prepare(`SELECT 1 FROM tasks WHERE id = ?`).get(id)) {
+      throw new KddError(`task #${id} not found`);
+    }
+  }
   const body = renderDecisionBody(input);
   const hash = contentHash(input.title, body);
+  const provenance = JSON.stringify(sourceTasks);
+  let fileDup;
+  if (existsSync3(decisionsDir)) {
+    for (const file of readdirSync2(decisionsDir).filter((name) => name.endsWith(".md")).sort()) {
+      const path2 = join3(decisionsDir, file);
+      const doc = parseDecisionMd(readFileSync2(path2, "utf8"));
+      if (doc.hash !== hash) continue;
+      const slug2 = file.slice(0, -3);
+      if (JSON.stringify(doc.sourceTasks) !== provenance) {
+        throw new KddError(`decision '${slug2}' provenance mismatch`);
+      }
+      fileDup ??= { slug: slug2, path: path2 };
+    }
+  }
+  if (fileDup) return { ...fileDup, created: false };
   const dup = db.prepare(`SELECT slug, path FROM decisions WHERE content_hash = ?`).get(hash);
-  if (dup) return { slug: dup.slug, path: dup.path, created: false };
+  if (dup) {
+    const existing = parseDecisionMd(readFileSync2(dup.path, "utf8")).sourceTasks;
+    if (JSON.stringify(existing) !== provenance) {
+      throw new KddError(`decision '${dup.slug}' provenance mismatch`);
+    }
+    return { slug: dup.slug, path: dup.path, created: false };
+  }
   const date = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
   const base = `${date}-${slugify(input.title)}`;
   let slug = base;
@@ -1157,11 +1217,11 @@ function addDecision(db, decisionsDir, input) {
   return db.transaction(() => {
     if (input.supersedes) supersede(db, decisionsDir, input.supersedes, slug);
     mkdirSync3(decisionsDir, { recursive: true });
-    writeFileSync2(path, renderDecisionMd(input, date));
+    writeFileSync2(path, renderDecisionMd({ ...input, sourceTasks }, date));
     db.prepare(
-      `INSERT INTO decisions (slug, title, path, content_hash, created, superseded_by)
-       VALUES (?, ?, ?, ?, ?, NULL)`
-    ).run(slug, input.title.trim(), path, hash, date);
+      `INSERT INTO decisions (slug, title, path, content_hash, created, superseded_by, source_tasks)
+       VALUES (?, ?, ?, ?, ?, NULL, ?)`
+    ).run(slug, input.title.trim(), path, hash, date, provenance);
     db.prepare(
       `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`
     ).run(slug, input.title.trim(), body);
@@ -1170,13 +1230,15 @@ function addDecision(db, decisionsDir, input) {
 }
 
 // src/recall.ts
-import { existsSync as existsSync4, readFileSync as readFileSync3, readdirSync as readdirSync2 } from "fs";
+import { existsSync as existsSync4, readFileSync as readFileSync3, readdirSync as readdirSync3 } from "fs";
 import { join as join4 } from "path";
 function syncIndex(db, decisionsDir) {
   db.transaction(() => {
-    const files = existsSync4(decisionsDir) ? readdirSync2(decisionsDir).filter((f) => f.endsWith(".md")) : [];
+    const files = existsSync4(decisionsDir) ? readdirSync3(decisionsDir).filter((f) => f.endsWith(".md")) : [];
     const inDb = new Map(
-      db.prepare(`SELECT slug, content_hash, superseded_by FROM decisions`).all().map((r) => [r.slug, r])
+      db.prepare(
+        `SELECT slug, path, content_hash, superseded_by, source_tasks FROM decisions`
+      ).all().map((r) => [r.slug, r])
     );
     const seen = /* @__PURE__ */ new Set();
     for (const f of files) {
@@ -1186,13 +1248,20 @@ function syncIndex(db, decisionsDir) {
       const doc = parseDecisionMd(readFileSync3(path, "utf8"));
       const title = doc.title || slug;
       const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
+      const sourceTasks = JSON.stringify(doc.sourceTasks);
       const row = inDb.get(slug);
-      if (row && row.content_hash === doc.hash && (row.superseded_by ?? null) === (supersededBy ?? null)) continue;
+      if (row && row.content_hash === doc.hash && (row.superseded_by ?? null) === (supersededBy ?? null)) {
+        if (row.path !== path || row.source_tasks !== sourceTasks) {
+          db.prepare(`UPDATE decisions SET path = ?, source_tasks = ? WHERE slug = ?`).run(path, sourceTasks, slug);
+        }
+        continue;
+      }
       db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
       db.prepare(
-        `INSERT OR REPLACE INTO decisions (slug, title, path, content_hash, created, superseded_by)
-         VALUES (?, ?, ?, ?, ?, ?)`
-      ).run(slug, title, path, doc.hash, doc.created || null, supersededBy);
+        `INSERT OR REPLACE INTO decisions
+           (slug, title, path, content_hash, created, superseded_by, source_tasks)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(slug, title, path, doc.hash, doc.created || null, supersededBy, sourceTasks);
       db.prepare(
         `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`
       ).run(slug, title, doc.indexBody);
@@ -1275,6 +1344,7 @@ function rebuild(db, decisionsDir) {
 }
 
 // src/queries.ts
+import { readFileSync as readFileSync4 } from "fs";
 var PRIORITY_ORDER = `CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
 var READY_SQL = `(status = 'new' AND blocked = 0 AND archived_at IS NULL AND kind <> 'research')`;
 function boardData(db, f = {}) {
@@ -1328,7 +1398,13 @@ function taskDetail(db, id) {
     `SELECT COUNT(*) c FROM agent_events WHERE task_id = ? AND kind = 'run_start'`
   ).get(id).c;
   const files = listFiles(db, id).map((f) => ({ ...f, path: filePath(db.name, f) }));
-  return { task, criteria, comments, events, links, files, agent_runs_total };
+  const decisions = db.prepare(
+    `SELECT d.slug, d.title, d.created, d.superseded_by
+       FROM decisions d, json_each(d.source_tasks) source
+      WHERE CAST(source.value AS INTEGER) = ?
+      ORDER BY d.slug`
+  ).all(id);
+  return { task, criteria, comments, events, links, decisions, files, agent_runs_total };
 }
 function taskDetailCapped(db, id) {
   const d = taskDetail(db, id);
@@ -1344,6 +1420,8 @@ function taskDetailCapped(db, id) {
     events: d.events.slice(-CAPS.events),
     events_total: d.events.length,
     links: d.links,
+    decisions: d.decisions.slice(0, CAPS.decisions).map((decision) => ({ ...decision, title: capText(decision.title, CAPS.titleChars) })),
+    decisions_total: d.decisions.length,
     // Вложения режем с НАЧАЛА списка (он упорядочен по id, то есть по времени): первым
     // приложили — первым и показываем. У комментариев обратная политика — там свежий важнее.
     files: d.files.slice(0, CAPS.files).map((f) => ({
@@ -1351,6 +1429,27 @@ function taskDetailCapped(db, id) {
       description: f.description === null ? null : capText(f.description, CAPS.fileDescChars)
     })),
     files_total: d.files.length
+  };
+}
+function syncedTaskDetail(db, decisionsDir, id, full = false) {
+  syncIndex(db, decisionsDir);
+  return full ? taskDetail(db, id) : taskDetailCapped(db, id);
+}
+function decisionDetail(db, decisionsDir, slug) {
+  syncIndex(db, decisionsDir);
+  const row = db.prepare(
+    `SELECT slug, title, path, created, superseded_by FROM decisions WHERE slug = ?`
+  ).get(slug);
+  if (!row) throw new KddError(`decision '${slug}' not found`);
+  const doc = parseDecisionMd(readFileSync4(row.path, "utf8"));
+  return {
+    ...row,
+    status: doc.status,
+    body: doc.indexBody,
+    source_tasks: doc.sourceTasks.map((id) => {
+      const task = mustGetTask(db, id);
+      return { id, title: task.title, status: task.status, archived_at: task.archived_at };
+    })
   };
 }
 function statusDigest(db) {
@@ -1771,14 +1870,14 @@ function sweepWorktrees(db, repoRoot, isBusy) {
 }
 
 // src/release.ts
-import { readFileSync as readFileSync4 } from "fs";
+import { readFileSync as readFileSync5 } from "fs";
 import { join as join6 } from "path";
 var pkgCache = null;
 function pkg() {
   if (pkgCache) return pkgCache;
   try {
     pkgCache = JSON.parse(
-      readFileSync4(join6(import.meta.dirname, "../package.json"), "utf8")
+      readFileSync5(join6(import.meta.dirname, "../package.json"), "utf8")
     );
   } catch {
     pkgCache = {};
@@ -2014,6 +2113,7 @@ export {
   compareVersions,
   contentHash,
   createTrack,
+  decisionDetail,
   deleteTrack,
   detachFile,
   editTask,
@@ -2044,6 +2144,7 @@ export {
   moveTask,
   mustGetTask,
   mustGetTrack,
+  normalizeSourceTasks,
   now,
   openDb,
   parseClaudeStreamLine,
@@ -2081,6 +2182,7 @@ export {
   stopWorkers,
   sweepWorktrees,
   syncIndex,
+  syncedTaskDetail,
   taskBranchHead,
   taskDetail,
   taskDetailCapped,

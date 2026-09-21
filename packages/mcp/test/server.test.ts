@@ -3,7 +3,7 @@ import { addTask, agentId, openDb, resolveDbPath } from '@kddkit/core';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, lazyCtx, mcpActor } from '../src/server.js';
@@ -44,6 +44,23 @@ describe('mcp server over a real transport', () => {
     const client = await connect(db);
     const res = await client.callTool({ name: 'list_tasks', arguments: {} });
     expect(textOf(res).tasks.new[0].title).toBe('hello');
+  });
+
+  it('get_task syncs Markdown backlinks for ordinary and full reads', async () => {
+    const db = openDb(':memory:', 'x');
+    const task = addTask(db, { title: 'source' }, { type: 'user' });
+    const dir = mkdtempSync(join(tmpdir(), 'kdd-mcp-decisions-'));
+    writeFileSync(join(dir, '2026-09-20-linked.md'),
+      '---\ncreated: 2026-09-20\nstatus: active\nsuperseded_by:\nsource_tasks: [1]\n---\n' +
+      '# linked\n\n## Decision\nx\n');
+    const client = await connectTo(() => ({ db, dir }));
+
+    const capped = textOf(await client.callTool({ name: 'get_task', arguments: { id: task.id } }));
+    const full = textOf(await client.callTool({
+      name: 'get_task', arguments: { id: task.id, full: true },
+    }));
+    expect(capped.decisions[0].slug).toBe('2026-09-20-linked');
+    expect(full.decisions).toEqual(capped.decisions);
   });
 
   it('update_task mutates and reports isError on bad input', async () => {

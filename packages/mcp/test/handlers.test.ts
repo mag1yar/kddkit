@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  addTask, openDb, mustGetTask, CAPS, moveTask, addCriterion, setCriterionChecked,
+  addDecision, addTask, openDb, mustGetTask, CAPS, moveTask, addCriterion, setCriterionChecked,
 } from '@kddkit/core';
 import { getTask, listTasks, recallTool, updateTask } from '../src/handlers.js';
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
@@ -9,12 +9,24 @@ import { join } from 'node:path';
 
 const user = { type: 'user' } as const;
 const mk = () => openDb(':memory:', 'x');
+const emptyDir = () => mkdtempSync(join(tmpdir(), 'kdd-mcp-'));
 
 describe('getTask', () => {
+  it('returns decision backlinks in capped and full detail', () => {
+    const db = mk();
+    const dir = emptyDir();
+    const task = addTask(db, { title: 'source' }, user);
+    const decision = addDecision(db, dir, {
+      title: 'linked decision', decision: 'x', sourceTasks: [task.id],
+    });
+    expect(getTask(db, dir, task.id).decisions[0].slug).toBe(decision.slug);
+    expect(getTask(db, dir, task.id, true).decisions[0].slug).toBe(decision.slug);
+  });
+
   it('returns detail with comments and events', () => {
     const db = mk();
     const t = addTask(db, { title: 'detail me' }, user);
-    const d = getTask(db, t.id);
+    const d = getTask(db, emptyDir(), t.id);
     expect(d.task.title).toBe('detail me');
     expect(Array.isArray(d.comments)).toBe(true);
     expect(d.events.length).toBe(1);
@@ -22,16 +34,16 @@ describe('getTask', () => {
 
   it('unknown id throws not found', () => {
     const db = mk();
-    expect(() => getTask(db, 999)).toThrow(/not found/);
+    expect(() => getTask(db, emptyDir(), 999)).toThrow(/not found/);
   });
 
   it('caps comments/events/body, totals stay honest', () => {
     const db = mk();
     const t = addTask(db, { title: 'whale', body: 'x'.repeat(9000) }, user);
     for (let i = 0; i < 25; i++) updateTask(db, { id: t.id, comment: `c${i} ${'y'.repeat(600)}` }, ai);
-    // getTask(db, id) без third arg сужается к TaskDetailCapped перегрузкой — comments_total
+    // getTask(db, dir, id) без fourth arg сужается к TaskDetailCapped перегрузкой — comments_total
     // и events_total уже в типе, каст не нужен.
-    const d = getTask(db, t.id);
+    const d = getTask(db, emptyDir(), t.id);
     expect(d.comments.length).toBe(20);
     expect(d.comments_total).toBe(25);
     expect(d.comments.at(-1)!.body).toMatch(/^c24 /); // последние, не первые
@@ -46,7 +58,7 @@ describe('getTask', () => {
     const db = mk();
     const t = addTask(db, { title: 'whale', body: 'x'.repeat(9000) }, user);
     for (let i = 0; i < 25; i++) updateTask(db, { id: t.id, comment: `c${i}` }, ai);
-    const d = getTask(db, t.id, true);
+    const d = getTask(db, emptyDir(), t.id, true);
     expect(d.comments.length).toBe(25);
     expect(d.task.body!.length).toBe(9000);
   });
@@ -57,7 +69,7 @@ describe('getTask', () => {
     const c = addCriterion(db, t.id, 'tests green', user);
     setCriterionChecked(db, t.id, c.id, true, ai, 'pnpm test');
 
-    expect(getTask(db, t.id).criteria[0]).toMatchObject({
+    expect(getTask(db, emptyDir(), t.id).criteria[0]).toMatchObject({
       evidence: 'pnpm test', checked_by: 'ai:sess-1',
     });
   });
@@ -121,8 +133,6 @@ describe('listTasks', () => {
 });
 
 const ai = { type: 'ai', id: 'sess-1' } as const;
-const emptyDir = () => mkdtempSync(join(tmpdir(), 'kdd-mcp-'));
-
 describe('recallTool', () => {
   it('finds a task by title', () => {
     const db = openDb(':memory:', 'x');
@@ -206,7 +216,7 @@ describe('updateTask attach/detach', () => {
     const src = join(dir, 'shot.png');
     writeFileSync(src, 'PNGDATA');
     updateTask(db, { id: t.id, attach: { path: src, description: 'красная кнопка' } }, user);
-    const d = getTask(db, t.id);
+    const d = getTask(db, emptyDir(), t.id);
     expect(d.files).toHaveLength(1);
     expect(d.files[0].original_name).toBe('shot.png');
     expect(d.files[0].description).toBe('красная кнопка');
@@ -223,9 +233,9 @@ describe('updateTask attach/detach', () => {
     const src = join(dir, 'a.png');
     writeFileSync(src, 'X');
     updateTask(db, { id: t.id, attach: { path: src } }, user);
-    const fileId = getTask(db, t.id).files[0].id;
+    const fileId = getTask(db, emptyDir(), t.id).files[0].id;
     updateTask(db, { id: t.id, detach: fileId }, user);
-    expect(getTask(db, t.id).files).toEqual([]);
+    expect(getTask(db, emptyDir(), t.id).files).toEqual([]);
   });
 
   it('пустой апдейт по-прежнему отбивается', () => {
@@ -244,7 +254,7 @@ describe('updateTask attach/detach', () => {
     writeFileSync(src, 'X');
     expect(() => updateTask(
       db, { id: t.id, attach: { path: src }, move: { to: 'nonsense' } }, user)).toThrow();
-    expect(getTask(db, t.id).files).toEqual([]);
+    expect(getTask(db, emptyDir(), t.id).files).toEqual([]);
   });
 
   // Обратная половина той же гарантии: attach отбивается ДО транзакции, иначе move уже
@@ -257,8 +267,8 @@ describe('updateTask attach/detach', () => {
       { id: t.id, attach: { path: join(dir, 'нет-такого.png') }, move: { to: 'in_progress' } },
       user,
     )).toThrow(/cannot read/);
-    expect(getTask(db, t.id).task.status).toBe('new');
-    expect(getTask(db, t.id).files).toEqual([]);
+    expect(getTask(db, emptyDir(), t.id).task.status).toBe('new');
+    expect(getTask(db, emptyDir(), t.id).files).toEqual([]);
   });
 
   it('detach отказывает, если файл прикреплён к другой задаче', () => {
@@ -268,8 +278,8 @@ describe('updateTask attach/detach', () => {
     const src = join(dir, 'a.png');
     writeFileSync(src, 'X');
     updateTask(db, { id: a.id, attach: { path: src } }, user);
-    const fileId = getTask(db, a.id).files[0].id;
+    const fileId = getTask(db, emptyDir(), a.id).files[0].id;
     expect(() => updateTask(db, { id: b.id, detach: fileId }, user)).toThrow(/not attached/);
-    expect(getTask(db, a.id).files).toHaveLength(1);
+    expect(getTask(db, emptyDir(), a.id).files).toHaveLength(1);
   });
 });

@@ -40,6 +40,7 @@ usually enough):
 kdd status                         # digest: counts + in_progress + blocked
 kdd board [--track <id>] [--area <a>] [--status <s>] [--kind <k>]
 kdd show <id>                      # one task with comments + event trail
+kdd decision <slug>                # one decision with source-task backlinks
 kdd recall "<query>" [-k <n>] [--kind decision|task]   # kind = result type here, not task kind
 kdd track ls [--all]               # --all includes done tracks
 ```
@@ -55,7 +56,7 @@ kdd criteria add <taskId> "<text>"
 kdd criteria check <taskId> <id> [--evidence "<command|URL|commit|attachment|note>"]
 kdd criteria uncheck <taskId> <id>
 kdd criteria rm <taskId> <id>
-kdd decide "<title>" --decision "…" --rationale "…"   # human-gated, see Decisions
+kdd decide "<title>" --decision "…" --rationale "…" [--source-task <id>]   # repeatable source; human-gated
 kdd archive <id>            # Iron Law: normally the human
 kdd link <from> <to> [--kind relates_to]   # kind = link type here, not task kind
 kdd track add "<name>" --description "use when: …"
@@ -176,7 +177,9 @@ vocabularies.
 
 Recording a project decision is deliberate and human-gated: propose the
 decision to the user; it is written with `kdd decide` (by the user, or by you via
-the CLI only when the user asked). Decisions are **not** an MCP tool.
+the CLI only when the user asked). Repeat `--source-task <id>` to record task
+provenance; inspect it later with `kdd decision <slug>`. Decisions are **not** an
+MCP tool.
 
 Decisions are **append-only**: never edit or delete a decision file. To change
 course, record a new decision with `--supersedes <old-slug>` — the old one stays

@@ -1,6 +1,6 @@
 import {
   CAPS, STATUSES, capText as cap, now,
-  type Criterion, type EventRow, type RecallHit, type Status, type Task, type TaskListRow,
+  type Criterion, type DecisionDetail, type EventRow, type RecallHit, type Status, type Task, type TaskListRow,
   type TaskDetailCapped, type Track,
 } from '@kddkit/core';
 
@@ -71,6 +71,18 @@ export function renderShow(d: TaskDetailCapped): string {
     lines.push('', 'links:');
     for (const l of d.links) lines.push(`  ${l.kind} #${l.id} ${cap(l.title, CAPS.titleChars)}`);
   }
+  if (d.decisions_total) {
+    lines.push('', `decisions (${d.decisions_total}):`);
+    if (d.decisions.length < d.decisions_total) {
+      lines.push(`  (+${d.decisions_total - d.decisions.length} more omitted)`);
+    }
+    for (const decision of d.decisions) {
+      const superseded = decision.superseded_by
+        ? ` [superseded by ${cap(decision.superseded_by, CAPS.titleChars)}]`
+        : '';
+      lines.push(`  decision ${decision.slug}${superseded} ${decision.title}`);
+    }
+  }
   if (d.comments_total) {
     lines.push('', `comments (${d.comments_total}):`);
     if (d.comments.length < d.comments_total) {
@@ -85,6 +97,25 @@ export function renderShow(d: TaskDetailCapped): string {
     lines.push(`  ${renderAge(e.created_at)} ago ${e.actor_type} ${e.action}` +
       `${e.detail ? ` ${e.detail}` : ''}`);
   }
+  return lines.join('\n');
+}
+
+export function renderDecision(d: DecisionDetail): string {
+  const lines = [
+    cap(d.title, CAPS.titleChars),
+    `slug: ${d.slug}  status: ${cap(d.status, CAPS.titleChars)}`,
+    `path: ${d.path}`,
+  ];
+  const sources = d.source_tasks.slice(0, CAPS.decisionSources);
+  lines.push('', `source tasks (${d.source_tasks.length}):`);
+  if (sources.length < d.source_tasks.length) {
+    lines.push(`  (+${d.source_tasks.length - sources.length} more omitted)`);
+  }
+  for (const task of sources) {
+    lines.push(`  #${task.id} [${task.status}] ${cap(task.title, CAPS.titleChars)}` +
+      `${task.archived_at ? ' ARCHIVED' : ''}`);
+  }
+  if (d.body) lines.push('', cap(d.body, CAPS.bodyChars));
   return lines.join('\n');
 }
 

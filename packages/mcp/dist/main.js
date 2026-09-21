@@ -21117,7 +21117,7 @@ import {
 } from "fs";
 import { basename, dirname as dirname2, extname, join as join2 } from "path";
 import { createHash as createHash3 } from "crypto";
-import { existsSync as existsSync4, readFileSync as readFileSync3, readdirSync as readdirSync2 } from "fs";
+import { existsSync as existsSync4, readFileSync as readFileSync3, readdirSync as readdirSync3 } from "fs";
 import { join as join4 } from "path";
 var CAPS = {
   boardRows: 8,
@@ -21143,6 +21143,10 @@ var CAPS = {
   // последних событий в show/get_task
   files: 20,
   // вложений в show/get_task
+  decisions: 20,
+  // связанных решений в show/get_task
+  decisionSources: 20,
+  // исходных задач в kdd decision
   fileDescChars: 200,
   // описание вложения в show/get_task
   fileNameChars: 100,
@@ -21351,6 +21355,11 @@ var MIGRATIONS = [
   -- \u043D\u0443\u0436\u043D\u044B \u0442\u043E\u043B\u044C\u043A\u043E \u0434\u043B\u044F \u0431\u044B\u0441\u0442\u0440\u043E\u0433\u043E \u0447\u0442\u0435\u043D\u0438\u044F \u0430\u043A\u0442\u0443\u0430\u043B\u044C\u043D\u043E\u0433\u043E evidence \u0438 \u0430\u0432\u0442\u043E\u0440\u0430. \u0421\u0442\u0430\u0440\u044B\u0435 criteria \u0432\u0430\u043B\u0438\u0434\u043D\u044B.
   ALTER TABLE criteria ADD COLUMN evidence TEXT;
   ALTER TABLE criteria ADD COLUMN checked_by TEXT;
+  `,
+  `
+  -- \u041A\u0430\u043D\u043E\u043D provenance \u0436\u0438\u0432\u0451\u0442 \u0432\u043E frontmatter decision Markdown. \u042D\u0442\u0430 JSON-\u043A\u043E\u043B\u043E\u043D\u043A\u0430 \u2014 \u0442\u043E\u043B\u044C\u043A\u043E
+  -- rebuildable \u0438\u043D\u0434\u0435\u043A\u0441 \u0434\u043B\u044F \u043E\u0431\u0440\u0430\u0442\u043D\u043E\u0433\u043E \u0437\u0430\u043F\u0440\u043E\u0441\u0430 task -> decisions.
+  ALTER TABLE decisions ADD COLUMN source_tasks TEXT NOT NULL DEFAULT '[]';
   `
 ];
 function backupBeforeMigrate(db, dbPath, from) {
@@ -21741,6 +21750,27 @@ function contentHash(title, body) {
   return createHash3("sha256").update(`${normalize(title)}
 ${normalize(body)}`).digest("hex");
 }
+function normalizeSourceTasks(ids = []) {
+  for (const id of ids) {
+    if (!Number.isInteger(id) || id < 1) throw new KddError(`invalid source task id '${id}'`);
+  }
+  return [...new Set(ids)].sort((a, b) => a - b);
+}
+function parseSourceTasks(value) {
+  if (value === void 0) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new KddError("invalid source_tasks frontmatter");
+  }
+  if (!Array.isArray(parsed)) throw new KddError("invalid source_tasks frontmatter");
+  try {
+    return normalizeSourceTasks(parsed);
+  } catch {
+    throw new KddError("invalid source_tasks frontmatter");
+  }
+}
 function parseDecisionMd(raw) {
   const text = raw.replace(/\r\n/g, "\n");
   const fm = {};
@@ -21764,14 +21794,17 @@ function parseDecisionMd(raw) {
     status: fm.status || "active",
     supersededBy: fm.superseded_by ?? "",
     indexBody,
-    hash: contentHash(title, indexBody)
+    hash: contentHash(title, indexBody),
+    sourceTasks: parseSourceTasks(fm.source_tasks)
   };
 }
 function syncIndex(db, decisionsDir) {
   db.transaction(() => {
-    const files = existsSync4(decisionsDir) ? readdirSync2(decisionsDir).filter((f) => f.endsWith(".md")) : [];
+    const files = existsSync4(decisionsDir) ? readdirSync3(decisionsDir).filter((f) => f.endsWith(".md")) : [];
     const inDb = new Map(
-      db.prepare(`SELECT slug, content_hash, superseded_by FROM decisions`).all().map((r) => [r.slug, r])
+      db.prepare(
+        `SELECT slug, path, content_hash, superseded_by, source_tasks FROM decisions`
+      ).all().map((r) => [r.slug, r])
     );
     const seen = /* @__PURE__ */ new Set();
     for (const f of files) {
@@ -21781,13 +21814,20 @@ function syncIndex(db, decisionsDir) {
       const doc = parseDecisionMd(readFileSync3(path, "utf8"));
       const title = doc.title || slug;
       const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
+      const sourceTasks = JSON.stringify(doc.sourceTasks);
       const row = inDb.get(slug);
-      if (row && row.content_hash === doc.hash && (row.superseded_by ?? null) === (supersededBy ?? null)) continue;
+      if (row && row.content_hash === doc.hash && (row.superseded_by ?? null) === (supersededBy ?? null)) {
+        if (row.path !== path || row.source_tasks !== sourceTasks) {
+          db.prepare(`UPDATE decisions SET path = ?, source_tasks = ? WHERE slug = ?`).run(path, sourceTasks, slug);
+        }
+        continue;
+      }
       db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
       db.prepare(
-        `INSERT OR REPLACE INTO decisions (slug, title, path, content_hash, created, superseded_by)
-         VALUES (?, ?, ?, ?, ?, ?)`
-      ).run(slug, title, path, doc.hash, doc.created || null, supersededBy);
+        `INSERT OR REPLACE INTO decisions
+           (slug, title, path, content_hash, created, superseded_by, source_tasks)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(slug, title, path, doc.hash, doc.created || null, supersededBy, sourceTasks);
       db.prepare(
         `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`
       ).run(slug, title, doc.indexBody);
@@ -21805,11 +21845,11 @@ function syncIndex(db, decisionsDir) {
     const ids = db.prepare(
       `SELECT DISTINCT task_id AS id FROM events WHERE id > ? AND task_id IS NOT NULL`
     ).all(last);
-    const getTask2 = db.prepare(`SELECT * FROM tasks WHERE id = ?`);
+    const getTask = db.prepare(`SELECT * FROM tasks WHERE id = ?`);
     const getComments = db.prepare(`SELECT body FROM comments WHERE task_id = ? ORDER BY id`);
     for (const { id } of ids) {
       db.prepare(`DELETE FROM search_index WHERE kind='task' AND ref = ?`).run(String(id));
-      const t = getTask2.get(id);
+      const t = getTask.get(id);
       if (!t || t.archived_at) continue;
       const body = [t.body ?? "", ...getComments.all(id).map((c) => c.body)].filter(Boolean).join("\n");
       db.prepare(
@@ -21910,7 +21950,13 @@ function taskDetail(db, id) {
     `SELECT COUNT(*) c FROM agent_events WHERE task_id = ? AND kind = 'run_start'`
   ).get(id).c;
   const files = listFiles(db, id).map((f) => ({ ...f, path: filePath(db.name, f) }));
-  return { task, criteria, comments, events, links, files, agent_runs_total };
+  const decisions = db.prepare(
+    `SELECT d.slug, d.title, d.created, d.superseded_by
+       FROM decisions d, json_each(d.source_tasks) source
+      WHERE CAST(source.value AS INTEGER) = ?
+      ORDER BY d.slug`
+  ).all(id);
+  return { task, criteria, comments, events, links, decisions, files, agent_runs_total };
 }
 function taskDetailCapped(db, id) {
   const d = taskDetail(db, id);
@@ -21926,6 +21972,8 @@ function taskDetailCapped(db, id) {
     events: d.events.slice(-CAPS.events),
     events_total: d.events.length,
     links: d.links,
+    decisions: d.decisions.slice(0, CAPS.decisions).map((decision) => ({ ...decision, title: capText(decision.title, CAPS.titleChars) })),
+    decisions_total: d.decisions.length,
     // Вложения режем с НАЧАЛА списка (он упорядочен по id, то есть по времени): первым
     // приложили — первым и показываем. У комментариев обратная политика — там свежий важнее.
     files: d.files.slice(0, CAPS.files).map((f) => ({
@@ -21935,15 +21983,16 @@ function taskDetailCapped(db, id) {
     files_total: d.files.length
   };
 }
+function syncedTaskDetail(db, decisionsDir, id, full = false) {
+  syncIndex(db, decisionsDir);
+  return full ? taskDetail(db, id) : taskDetailCapped(db, id);
+}
 var DEFAULT_TTL = 15 * 60;
 var OK_TTL = 60 * 60 * 1e3;
 var ERR_TTL = 5 * 60 * 1e3;
 
 // src/handlers.ts
 import { statSync as statSync2 } from "fs";
-function getTask(db, id, full = false) {
-  return full ? taskDetail(db, id) : taskDetailCapped(db, id);
-}
 function listTracksTool(db) {
   return listTracks(db, {}).map((t) => ({
     id: t.id,
@@ -22045,7 +22094,11 @@ function createServer(getCtx, actor) {
       description: `Task with links, last ${CAPS.comments} comments and last ${CAPS.events} events (comments_total/events_total show the full counts); full=true returns the complete uncapped history`,
       inputSchema: { id: external_exports.number().int().positive(), full: external_exports.boolean().optional() }
     },
-    async ({ id, full }, extra) => guard(getCtx, extra._meta, (c) => getTask(c.db, id, full))
+    async ({ id, full }, extra) => guard(
+      getCtx,
+      extra._meta,
+      (c) => syncedTaskDetail(c.db, c.dir, id, full)
+    )
   );
   server.registerTool(
     "list_tasks",

@@ -12,8 +12,12 @@ export function syncIndex(db: Database.Database, decisionsDir: string): void {
       ? readdirSync(decisionsDir).filter((f) => f.endsWith('.md'))
       : [];
     const inDb = new Map(
-      (db.prepare(`SELECT slug, content_hash, superseded_by FROM decisions`).all() as
-        { slug: string; content_hash: string; superseded_by: string | null }[])
+      (db.prepare(
+        `SELECT slug, path, content_hash, superseded_by, source_tasks FROM decisions`,
+      ).all() as {
+        slug: string; path: string; content_hash: string;
+        superseded_by: string | null; source_tasks: string;
+      }[])
         .map((r) => [r.slug, r]),
     );
     const seen = new Set<string>();
@@ -25,14 +29,22 @@ export function syncIndex(db: Database.Database, decisionsDir: string): void {
       const title = doc.title || slug;
       const supersededBy =
         doc.status === 'superseded' ? (doc.supersededBy || '?') : (doc.supersededBy || null);
+      const sourceTasks = JSON.stringify(doc.sourceTasks);
       const row = inDb.get(slug);
       if (row && row.content_hash === doc.hash &&
-          (row.superseded_by ?? null) === (supersededBy ?? null)) continue;
+          (row.superseded_by ?? null) === (supersededBy ?? null)) {
+        if (row.path !== path || row.source_tasks !== sourceTasks) {
+          db.prepare(`UPDATE decisions SET path = ?, source_tasks = ? WHERE slug = ?`)
+            .run(path, sourceTasks, slug);
+        }
+        continue;
+      }
       db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
       db.prepare(
-        `INSERT OR REPLACE INTO decisions (slug, title, path, content_hash, created, superseded_by)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      ).run(slug, title, path, doc.hash, doc.created || null, supersededBy);
+        `INSERT OR REPLACE INTO decisions
+           (slug, title, path, content_hash, created, superseded_by, source_tasks)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(slug, title, path, doc.hash, doc.created || null, supersededBy, sourceTasks);
       db.prepare(
         `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`,
       ).run(slug, title, doc.indexBody);

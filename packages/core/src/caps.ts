@@ -15,6 +15,8 @@ export const CAPS = {
   commentChars: 500,
   events: 10,              // последних событий в show/get_task
   files: 20,               // вложений в show/get_task
+  decisions: 20,           // связанных решений в show/get_task
+  decisionSources: 20,     // исходных задач в kdd decision
   fileDescChars: 200,      // описание вложения в show/get_task
   fileNameChars: 100,      // original_name — с клиентского multipart-имени, режем на записи
   recallK: 10,             // дефолтный top-k

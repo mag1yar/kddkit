@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { CAPS } from '@kddkit/core';
+import {
+  CAPS, addTask, openDb, taskDetailCapped, type DecisionDetail,
+} from '@kddkit/core';
 import { makeEnv, kdd } from './run.js';
+import { renderDecision, renderShow } from '../src/render.js';
 
 let env: NodeJS.ProcessEnv;
 beforeEach(() => { env = makeEnv(); });
@@ -25,6 +28,64 @@ function seed100(): void {
 }
 
 describe('output contracts (CLI-05)', () => {
+  it('caps task backlinks and reports their total', () => {
+    const db = openDb(':memory:', 'x');
+    const task = addTask(db, { title: 'source' }, { type: 'user' });
+    const insert = db.prepare(
+      `INSERT INTO decisions
+         (slug, title, path, content_hash, created, superseded_by, source_tasks)
+       VALUES (?, ?, ?, ?, ?, NULL, '[1]')`,
+    );
+    for (let i = 0; i < 21; i++) {
+      insert.run(`decision-${String(i).padStart(2, '0')}`, `decision ${i}`,
+        `/tmp/decision-${i}.md`, `hash-${i}`, '2026-09-20');
+    }
+
+    const out = renderShow(taskDetailCapped(db, task.id));
+    expect(out).toContain('decisions (21):');
+    expect(out).toContain('(+1 more omitted)');
+    expect(out.match(/^  decision /gm)).toHaveLength(20);
+  });
+
+  it('caps decision sources and Markdown body with visible totals', () => {
+    const detail: DecisionDetail = {
+      slug: 'large', title: 'large', path: '/tmp/large.md', created: '2026-09-20',
+      superseded_by: null, status: 'active', body: 'x'.repeat(CAPS.bodyChars + 100),
+      source_tasks: Array.from({ length: 21 }, (_, i) => ({
+        id: i + 1, title: `source ${i + 1}`, status: 'new', archived_at: null,
+      })),
+    };
+
+    const out = renderDecision(detail);
+    expect(out).toContain('source tasks (21):');
+    expect(out).toContain('(+1 more omitted)');
+    expect(out.match(/^  #\d+/gm)).toHaveLength(20);
+    expect(out).toContain('chars]');
+  });
+
+  it('caps frontmatter-backed decision metadata', () => {
+    const db = openDb(':memory:', 'x');
+    const task = addTask(db, { title: 'source' }, { type: 'user' });
+    const supersededBy = 's'.repeat(100);
+    db.prepare(
+      `INSERT INTO decisions
+         (slug, title, path, content_hash, created, superseded_by, source_tasks)
+       VALUES ('choice', 'choice', '/tmp/choice.md', 'hash', '2026-09-20', ?, '[1]')`,
+    ).run(supersededBy);
+
+    const show = renderShow(taskDetailCapped(db, task.id));
+    expect(show).toContain(`[superseded by ${'s'.repeat(50)}… [+50 chars]]`);
+    expect(show).not.toContain(supersededBy);
+
+    const status = 'x'.repeat(100);
+    const decision = renderDecision({
+      slug: 'choice', title: 'choice', path: '/tmp/choice.md', created: '2026-09-20',
+      superseded_by: null, status, body: '', source_tasks: [],
+    });
+    expect(decision).toContain(`status: ${'x'.repeat(50)}… [+50 chars]`);
+    expect(decision).not.toContain(status);
+  });
+
   it('status ≤ 2KB on a 100-task board', () => {
     seed100();
     const s = kdd(env, 'status');

@@ -174,6 +174,11 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE criteria ADD COLUMN evidence TEXT;
   ALTER TABLE criteria ADD COLUMN checked_by TEXT;
   `,
+  `
+  -- Канон provenance живёт во frontmatter decision Markdown. Эта JSON-колонка — только
+  -- rebuildable индекс для обратного запроса task -> decisions.
+  ALTER TABLE decisions ADD COLUMN source_tasks TEXT NOT NULL DEFAULT '[]';
+  `,
 ];
 
 // Копия базы перед миграцией. VACUUM INTO, а не copyFile: она пишет один консистентный файл,

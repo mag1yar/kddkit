@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { readdirSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, rmSync } from 'node:fs';
 import { makeEnv, kdd } from './run.js';
+import { kddFail } from './run.js';
 
 describe('kdd decide', () => {
   it('creates a decision and prints the slug', { timeout: 60_000 }, () => {
@@ -23,6 +24,37 @@ describe('kdd decide', () => {
     const r = JSON.parse(kdd(env, 'decide', 't', '--decision', 'd', '--json'));
     expect(r.created).toBe(true);
     expect(r.slug).toContain('-t');
+  });
+
+  it('shows the source tasks section when provenance is empty', { timeout: 60_000 }, () => {
+    const env = makeEnv();
+    const created = JSON.parse(kdd(env, 'decide', 'no sources', '--decision', 'x', '--json'));
+
+    expect(kdd(env, 'decision', created.slug)).toContain('source tasks (0):');
+  });
+
+  it('records repeatable source tasks and exposes both detail directions', { timeout: 60_000 }, () => {
+    const env = makeEnv();
+    const one = JSON.parse(kdd(env, 'add', 'first source', '--json'));
+    const two = JSON.parse(kdd(env, 'add', 'second source', '--json'));
+    const created = JSON.parse(kdd(env, 'decide', 'linked choice', '--decision', 'x',
+      '--source-task', String(two.id), '--source-task', String(one.id), '--json'));
+
+    const detail = JSON.parse(kdd(env, 'decision', created.slug, '--json'));
+    expect(detail.source_tasks.map((t: { id: number }) => t.id)).toEqual([one.id, two.id]);
+    expect(kdd(env, 'decision', created.slug)).toContain('source tasks (2):');
+
+    expect(JSON.parse(kdd(env, 'show', String(one.id), '--json')).decisions[0].slug)
+      .toBe(created.slug);
+    expect(kdd(env, 'show', String(two.id))).toContain(`decision ${created.slug}`);
+  });
+
+  it('rejects an unknown source before creating a decision file', { timeout: 60_000 }, () => {
+    const env = makeEnv();
+    const failed = kddFail(env, 'decide', 'invalid source', '--decision', 'x',
+      '--source-task', '999');
+    expect(failed.stderr).toContain('task #999 not found');
+    expect(existsSync(env.KDD_DECISIONS_DIR!)).toBe(false);
   });
 });
 

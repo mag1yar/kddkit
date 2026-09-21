@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type Database from 'better-sqlite3';
 import { KddError } from './errors.js';
@@ -12,6 +12,7 @@ export interface DecisionInput {
   outcome?: string;
   supersedes?: string; // slug решения, которое заменяем
   body?: string;       // полное md-тело; взаимоисключимо с секционными флагами
+  sourceTasks?: number[];
 }
 
 export interface ParsedDecision {
@@ -21,6 +22,7 @@ export interface ParsedDecision {
   supersededBy: string;  // '' если active
   indexBody: string;     // всё ниже строки "# title"
   hash: string;
+  sourceTasks: number[];
 }
 
 export function slugify(title: string): string {
@@ -40,6 +42,22 @@ export function contentHash(title: string, body: string): string {
     .digest('hex');
 }
 
+export function normalizeSourceTasks(ids: number[] = []): number[] {
+  for (const id of ids) {
+    if (!Number.isInteger(id) || id < 1) throw new KddError(`invalid source task id '${id}'`);
+  }
+  return [...new Set(ids)].sort((a, b) => a - b);
+}
+
+function parseSourceTasks(value: string | undefined): number[] {
+  if (value === undefined) return [];
+  let parsed: unknown;
+  try { parsed = JSON.parse(value); } catch { throw new KddError('invalid source_tasks frontmatter'); }
+  if (!Array.isArray(parsed)) throw new KddError('invalid source_tasks frontmatter');
+  try { return normalizeSourceTasks(parsed as number[]); }
+  catch { throw new KddError('invalid source_tasks frontmatter'); }
+}
+
 export function renderDecisionBody(input: DecisionInput): string {
   if (input.body !== undefined) return normalize(input.body);
   const sec = (name: string, v?: string) => `## ${name}\n${normalize(v ?? '') || '-'}`;
@@ -53,7 +71,9 @@ export function renderDecisionBody(input: DecisionInput): string {
 }
 
 export function renderDecisionMd(input: DecisionInput, created: string): string {
-  return `---\ncreated: ${created}\nstatus: active\nsuperseded_by:\n---\n` +
+  const sources = normalizeSourceTasks(input.sourceTasks);
+  return `---\ncreated: ${created}\nstatus: active\nsuperseded_by:\n` +
+    `source_tasks: [${sources.join(', ')}]\n---\n` +
     `# ${input.title.trim()}\n\n${renderDecisionBody(input)}\n`;
 }
 
@@ -83,6 +103,7 @@ export function parseDecisionMd(raw: string): ParsedDecision {
     supersededBy: fm.superseded_by ?? '',
     indexBody,
     hash: contentHash(title, indexBody),
+    sourceTasks: parseSourceTasks(fm.source_tasks),
   };
 }
 
@@ -112,11 +133,39 @@ export function addDecision(
         .some((v) => v !== undefined)) {
     throw new KddError('--body is mutually exclusive with section flags');
   }
+  const sourceTasks = normalizeSourceTasks(input.sourceTasks);
+  for (const id of sourceTasks) {
+    if (!db.prepare(`SELECT 1 FROM tasks WHERE id = ?`).get(id)) {
+      throw new KddError(`task #${id} not found`);
+    }
+  }
   const body = renderDecisionBody(input);
   const hash = contentHash(input.title, body);
+  const provenance = JSON.stringify(sourceTasks);
+  let fileDup: { slug: string; path: string } | undefined;
+  if (existsSync(decisionsDir)) {
+    for (const file of readdirSync(decisionsDir).filter((name) => name.endsWith('.md')).sort()) {
+      const path = join(decisionsDir, file);
+      const doc = parseDecisionMd(readFileSync(path, 'utf8'));
+      if (doc.hash !== hash) continue;
+      const slug = file.slice(0, -3);
+      if (JSON.stringify(doc.sourceTasks) !== provenance) {
+        throw new KddError(`decision '${slug}' provenance mismatch`);
+      }
+      fileDup ??= { slug, path };
+    }
+  }
+  if (fileDup) return { ...fileDup, created: false };
+
   const dup = db.prepare(`SELECT slug, path FROM decisions WHERE content_hash = ?`)
     .get(hash) as { slug: string; path: string } | undefined;
-  if (dup) return { slug: dup.slug, path: dup.path, created: false };
+  if (dup) {
+    const existing = parseDecisionMd(readFileSync(dup.path, 'utf8')).sourceTasks;
+    if (JSON.stringify(existing) !== provenance) {
+      throw new KddError(`decision '${dup.slug}' provenance mismatch`);
+    }
+    return { slug: dup.slug, path: dup.path, created: false };
+  }
 
   const date = new Date().toISOString().slice(0, 10);
   const base = `${date}-${slugify(input.title)}`;
@@ -130,11 +179,11 @@ export function addDecision(
   return db.transaction(() => {
     if (input.supersedes) supersede(db, decisionsDir, input.supersedes, slug);
     mkdirSync(decisionsDir, { recursive: true });
-    writeFileSync(path, renderDecisionMd(input, date));
+    writeFileSync(path, renderDecisionMd({ ...input, sourceTasks }, date));
     db.prepare(
-      `INSERT INTO decisions (slug, title, path, content_hash, created, superseded_by)
-       VALUES (?, ?, ?, ?, ?, NULL)`,
-    ).run(slug, input.title.trim(), path, hash, date);
+      `INSERT INTO decisions (slug, title, path, content_hash, created, superseded_by, source_tasks)
+       VALUES (?, ?, ?, ?, ?, NULL, ?)`,
+    ).run(slug, input.title.trim(), path, hash, date, provenance);
     db.prepare(
       `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`,
     ).run(slug, input.title.trim(), body);

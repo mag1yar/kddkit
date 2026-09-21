@@ -102,13 +102,14 @@ kdd ui          # open the board at http://localhost:4499
 kdd status      # in-progress / blocked digest
 kdd add "Wire up auth"        --priority high
 kdd move 12 in_progress
-kdd decide "Use FTS5 for recall" --rationale "no extra dep, good enough"
+kdd decide "Use FTS5 for recall" --rationale "no extra dep, good enough" --source-task 12
+kdd decision 2026-09-20-use-fts5-for-recall
 kdd recall "recall ranking"   # search decisions + tasks
 ```
 
 Full command set: `add`, `board`, `show`, `move`, `edit`, `comment`,
 `block` / `unblock`, `attach` / `detach`, `link`, `archive` / `unarchive`,
-`decide`, `recall`, `status`, `rebuild`, `projects`, `export`, `ui`. Add
+`decide`, `decision`, `recall`, `status`, `rebuild`, `projects`, `export`, `ui`. Add
 `--json` to most for machine-readable output.
 
 On the board itself, a task's dialog has a **Files** tab: drop a file, or

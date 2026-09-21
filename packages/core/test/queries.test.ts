@@ -1,12 +1,16 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, renameSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type Database from 'better-sqlite3';
 import { openDb } from '../src/db.js';
 import { addTask, moveTask, blockTask, archiveTask } from '../src/ops.js';
-import { boardData, taskDetail, taskDetailCapped, statusDigest, exportBoard, unsubmitted } from '../src/queries.js';
+import {
+  boardData, decisionDetail, exportBoard, statusDigest, syncedTaskDetail,
+  taskDetail, taskDetailCapped, unsubmitted,
+} from '../src/queries.js';
 import { linkTasks } from '../src/ops.js';
+import { addDecision } from '../src/decisions.js';
 import { addCriterion, setCriterionChecked } from '../src/criteria.js';
 import { attachFile } from '../src/files.js';
 import { CAPS } from '../src/caps.js';
@@ -73,6 +77,69 @@ describe('taskDetail', () => {
     const d1 = taskDetail(db, 1);
     expect(d1.links).toEqual([{ id: 2, title: 'обычная', kind: 'relates_to' }]);
     expect(d1.events.map((e) => e.action)).toEqual(['created']);
+  });
+
+  it('returns decision backlinks in full and capped detail', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kdd-query-decisions-'));
+    const decision = addDecision(db, dir, {
+      title: 'linked decision', decision: 'x', sourceTasks: [1],
+    });
+    expect(taskDetail(db, 1).decisions).toEqual([{
+      slug: decision.slug, title: 'linked decision', created: expect.any(String), superseded_by: null,
+    }]);
+    expect(taskDetailCapped(db, 1).decisions).toEqual(taskDetail(db, 1).decisions);
+  });
+
+  it('caps decision backlinks with an honest total', () => {
+    const insert = db.prepare(
+      `INSERT INTO decisions
+         (slug, title, path, content_hash, created, superseded_by, source_tasks)
+       VALUES (?, ?, ?, ?, ?, NULL, '[1]')`,
+    );
+    for (let i = 0; i < 21; i++) {
+      insert.run(`decision-${String(i).padStart(2, '0')}`, `${'d'.repeat(100)}-${i}`,
+        `/tmp/decision-${i}.md`, `hash-${i}`, '2026-09-20');
+    }
+
+    const capped = taskDetailCapped(db, 1);
+    expect(capped.decisions).toHaveLength(20);
+    expect(capped.decisions_total).toBe(21);
+    expect(capped.decisions[0].title).toContain('chars]');
+  });
+
+  it('uses one synchronized path for full and capped task detail', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kdd-query-sync-'));
+    writeFileSync(join(dir, '2026-09-20-manual.md'),
+      '---\ncreated: 2026-09-20\nstatus: active\nsuperseded_by:\nsource_tasks: [1]\n---\n' +
+      '# manual\n\n## Decision\nx\n');
+    expect(syncedTaskDetail(db, dir, 1, false).decisions[0].slug)
+      .toBe('2026-09-20-manual');
+    expect(syncedTaskDetail(db, dir, 1, true).decisions[0].slug)
+      .toBe('2026-09-20-manual');
+  });
+
+  it('returns the current source task state from decision detail', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kdd-query-decision-detail-'));
+    const decision = addDecision(db, dir, {
+      title: 'linked decision', decision: 'x', sourceTasks: [1],
+    });
+    expect(decisionDetail(db, dir, decision.slug)).toMatchObject({
+      slug: decision.slug,
+      title: 'linked decision',
+      status: 'active',
+      source_tasks: [{ id: 1, title: 'срочная', status: 'new', archived_at: null }],
+    });
+  });
+
+  it('refreshes the indexed path when the decisions directory moves', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kdd-query-decision-move-'));
+    const decision = addDecision(db, dir, { title: 'movable', decision: 'x' });
+    const movedDir = `${dir}-moved`;
+    renameSync(dir, movedDir);
+    expect(decisionDetail(db, movedDir, decision.slug)).toMatchObject({
+      path: join(movedDir, `${decision.slug}.md`),
+      title: 'movable',
+    });
   });
 });
 
