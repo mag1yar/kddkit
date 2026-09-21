@@ -16,7 +16,7 @@ import {
   listTracks, maxWorkers, moveTask, mustGetTask, openDb, parseClaudeStreamLine, rebuild, recall, removeCriterion,
   renewClaim, resolveDbPath, resolveDecisionsDir, resolveToplevel, setAutoTick, setCriterionChecked,
   setProjectToplevel, statusDigest, stopWorkers,
-  sweepWorktrees, syncedTaskDetail, tick, unarchiveTask, unblockTask,
+  sweepWorktrees, syncedTaskDetail, taskBrief, tick, unarchiveTask, unblockTask,
   type KillFn, type Kind, type Status,
 } from '@kddkit/core';
 import {
@@ -25,7 +25,8 @@ import {
 import { fail, getActor, parseId, withDb, withDbAt } from './context.js';
 import { killWorkers, signalGroup, workerAlive, workerTag } from './procs.js';
 import {
-  renderBoard, renderClaim, renderCriteria, renderDecision, renderRecall, renderShow, renderStatus, renderTracks,
+  renderBoard, renderBrief, renderClaim, renderCriteria, renderDecision, renderRecall, renderShow, renderStatus,
+  renderTracks,
 } from './render.js';
 import { createStopRunner, createTickRunner } from './tick-runner.js';
 import { workerPrompt } from './prompt.js';
@@ -222,6 +223,14 @@ program.command('show')
     }
     console.log(renderShow(withDb((db) =>
       syncedTaskDetail(db, resolveDecisionsDir(), parseId(id)))));
+  }));
+
+program.command('brief')
+  .argument('<taskId>')
+  .option('--json')
+  .action((taskId, o) => run(o.json, () => {
+    const brief = withDb((db) => taskBrief(db, resolveDecisionsDir(), parseId(taskId)));
+    out(o.json, brief, () => renderBrief(brief));
   }));
 
 program.command('move')

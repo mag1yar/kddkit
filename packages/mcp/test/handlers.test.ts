@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   addDecision, addTask, openDb, mustGetTask, CAPS, moveTask, addCriterion, setCriterionChecked,
+  taskBrief,
 } from '@kddkit/core';
-import { getTask, listTasks, recallTool, updateTask } from '../src/handlers.js';
+import { getTask, getTaskBrief, listTasks, recallTool, updateTask } from '../src/handlers.js';
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,6 +13,13 @@ const mk = () => openDb(':memory:', 'x');
 const emptyDir = () => mkdtempSync(join(tmpdir(), 'kdd-mcp-'));
 
 describe('getTask', () => {
+  it('returns the core brief unchanged', () => {
+    const db = mk();
+    const dir = emptyDir();
+    const task = addTask(db, { title: 'brief me', body: 'goal' }, user);
+    expect(getTaskBrief(db, dir, task.id)).toEqual(taskBrief(db, dir, task.id));
+  });
+
   it('returns decision backlinks in capped and full detail', () => {
     const db = mk();
     const dir = emptyDir();

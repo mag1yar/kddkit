@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 
 declare const CAPS: {
+    readonly briefBytes: 4096;
     readonly boardRows: 8;
     readonly listRows: 20;
     readonly statusRows: 5;
@@ -568,4 +569,82 @@ declare const maxWorkersEnvLocked: () => boolean;
 declare function getReminded(db: Database.Database, session: string): number[];
 declare function setReminded(db: Database.Database, session: string, ids: number[]): void;
 
-export { type Actor, type AgentEvent, type AgentEventKind, type AutoTick, BUG_BODY_TEMPLATE, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type EventRow, type FileRow, KINDS, KddError, type KillFn, type KillOutcome, type Kind, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RunResult, STATUSES, type SpawnFn, type Status, type StopResult, TICK_INTERVALS, TRANSITIONS, type Task, type TaskDetailCapped, type TaskListRow, type TickResult, type TickRun, type Track, _cacheUntil, _resetCache, addCriterion, addDecision, addTask, agentId, appendAgentEvent, appendEvent, archiveTask, attachFile, authorOf, blockTask, boardData, capDetail, capText, checkMove, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, contentHash, createTrack, decisionDetail, deleteTrack, detachFile, editTask, editTrack, ensureWorktree, expiredLeases, exportBoard, filePath, filesDir, getAutoTick, getFile, getLastRun, getReminded, headCommit, isInlineMime, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listFiles, listProjects, listTracks, logError, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, normalizeSourceTasks, now, openDb, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, projectPathOf, projectToplevelOf, pruneAgentEvents, reapExpired, rebuild, recall, reclaimExpired, recordFailedAttempt, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, setReminded, slugify, statusDigest, stopWorkers, sweepWorktrees, syncIndex, syncedTaskDetail, taskBranchHead, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, unsubmitted, worktreePath };
+interface BriefSection<T> {
+    items: T[];
+    omitted: number;
+}
+type NextAction = {
+    kind: 'resolve_blocker' | 'start_work' | 'complete_criterion' | 'submit_review' | 'await_acceptance' | 'archived' | 'done';
+    text: string;
+    criterion_id?: number;
+};
+interface TaskBrief {
+    task: {
+        id: number;
+        title: string;
+        goal: string | null;
+        status: Status;
+        blocked: boolean;
+        block_reason: string | null;
+        priority: Priority;
+        kind: Kind;
+        area: string | null;
+        archived_at: number | null;
+    };
+    criteria: BriefSection<{
+        id: number;
+        text: string;
+        checked_at: number | null;
+        evidence?: string;
+        checked_by?: string;
+    }>;
+    comments: BriefSection<{
+        id: number;
+        author: string;
+        body: string;
+        created_at: number;
+    }>;
+    events: BriefSection<{
+        id: number;
+        actor_type: 'user' | 'ai';
+        actor_id?: string;
+        action: string;
+        detail?: string;
+        created_at: number;
+    }>;
+    links: BriefSection<{
+        id: number;
+        title: string;
+        kind: string;
+    }>;
+    decisions: BriefSection<{
+        slug: string;
+        title: string;
+        created: string | null;
+        superseded_by: string | null;
+    }>;
+    files: BriefSection<{
+        id: number;
+        name: string;
+        mime_type: string | null;
+        size_bytes: number;
+        description: string | null;
+        path: string;
+    }>;
+    provenance?: {
+        worker_id?: string;
+        session_id?: string;
+        branch?: string;
+        worktree?: string;
+        before_commit?: string;
+        after_commit?: string;
+        error?: string;
+    };
+    next_action: NextAction;
+    budget: {
+        max_bytes: 4096;
+    };
+}
+declare function taskBrief(db: Database.Database, decisionsDir: string, id: number): TaskBrief;
+
+export { type Actor, type AgentEvent, type AgentEventKind, type AutoTick, BUG_BODY_TEMPLATE, type BriefSection, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type EventRow, type FileRow, KINDS, KddError, type KillFn, type KillOutcome, type Kind, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, type NextAction, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RunResult, STATUSES, type SpawnFn, type Status, type StopResult, TICK_INTERVALS, TRANSITIONS, type Task, type TaskBrief, type TaskDetailCapped, type TaskListRow, type TickResult, type TickRun, type Track, _cacheUntil, _resetCache, addCriterion, addDecision, addTask, agentId, appendAgentEvent, appendEvent, archiveTask, attachFile, authorOf, blockTask, boardData, capDetail, capText, checkMove, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, contentHash, createTrack, decisionDetail, deleteTrack, detachFile, editTask, editTrack, ensureWorktree, expiredLeases, exportBoard, filePath, filesDir, getAutoTick, getFile, getLastRun, getReminded, headCommit, isInlineMime, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listFiles, listProjects, listTracks, logError, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, normalizeSourceTasks, now, openDb, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, projectPathOf, projectToplevelOf, pruneAgentEvents, reapExpired, rebuild, recall, reclaimExpired, recordFailedAttempt, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, setReminded, slugify, statusDigest, stopWorkers, sweepWorktrees, syncIndex, syncedTaskDetail, taskBranchHead, taskBrief, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, unsubmitted, worktreePath };

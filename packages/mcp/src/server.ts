@@ -50,11 +50,18 @@ export function createServer(getCtx: CtxFn, actor?: Actor): McpServer {
     {
       description: `Task with links, last ${CAPS.comments} comments and last ${CAPS.events} `
         + 'events (comments_total/events_total show the full counts); '
-        + 'full=true returns the complete uncapped history',
-      inputSchema: { id: z.number().int().positive(), full: z.boolean().optional() },
+        + 'full=true returns the complete uncapped history; '
+        + 'brief=true returns only the deterministic resume packet; brief and full are exclusive',
+      inputSchema: {
+        id: z.number().int().positive(),
+        full: z.boolean().optional(),
+        brief: z.boolean().optional(),
+      },
     },
-    async ({ id, full }, extra) => guard(getCtx, extra._meta,
-      (c) => h.getTask(c.db, c.dir, id, full)));
+    async ({ id, full, brief }, extra) => guard(getCtx, extra._meta, (c) => {
+      if (brief && full) throw new KddError('brief and full are mutually exclusive');
+      return brief ? h.getTaskBrief(c.db, c.dir, id) : h.getTask(c.db, c.dir, id, full);
+    }));
 
   server.registerTool('list_tasks',
     {

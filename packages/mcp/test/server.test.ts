@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { addTask, agentId, openDb, resolveDbPath } from '@kddkit/core';
+import { addTask, agentId, openDb, resolveDbPath, taskBrief } from '@kddkit/core';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { execFileSync } from 'node:child_process';
@@ -32,7 +32,7 @@ const textOf = (res: any) => JSON.parse(res.content[0].text);
 const rawText = (res: any): string => res.content[0].text;
 
 describe('mcp server over a real transport', () => {
-  it('lists the four tools', async () => {
+  it('lists the five tools', async () => {
     const client = await connect(openDb(':memory:', 'x'));
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
     expect(names).toEqual(['get_task', 'list_tasks', 'list_tracks', 'recall', 'update_task']);
@@ -61,6 +61,34 @@ describe('mcp server over a real transport', () => {
     }));
     expect(capped.decisions[0].slug).toBe('2026-09-20-linked');
     expect(full.decisions).toEqual(capped.decisions);
+  });
+
+  it('get_task brief mode is exclusive and leaves ordinary/full modes unchanged', async () => {
+    const db = openDb(':memory:', 'x');
+    const task = addTask(db, { title: 'source', body: 'goal' }, { type: 'user' });
+    const dir = mkdtempSync(join(tmpdir(), 'kdd-mcp-brief-'));
+    const client = await connectTo(() => ({ db, dir }));
+    const ordinary = textOf(await client.callTool({
+      name: 'get_task', arguments: { id: task.id },
+    }));
+    const full = textOf(await client.callTool({
+      name: 'get_task', arguments: { id: task.id, full: true },
+    }));
+    const brief = textOf(await client.callTool({
+      name: 'get_task', arguments: { id: task.id, brief: true },
+    }));
+    const conflict = await client.callTool({
+      name: 'get_task', arguments: { id: 999, brief: true, full: true },
+    });
+
+    expect(ordinary.comments_total).toBeDefined();
+    expect(ordinary).not.toHaveProperty('budget');
+    expect(full.task.body).toBe('goal');
+    expect(full).not.toHaveProperty('budget');
+    expect(brief).toEqual(taskBrief(db, dir, task.id));
+    expect(brief.comments_total).toBeUndefined();
+    expect(conflict.isError).toBe(true);
+    expect(rawText(conflict)).toMatch(/brief.*full.*mutually exclusive/i);
   });
 
   it('update_task mutates and reports isError on bad input', async () => {

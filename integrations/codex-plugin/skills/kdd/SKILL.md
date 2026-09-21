@@ -40,6 +40,7 @@ usually enough):
 kdd status                         # digest: counts + in_progress + blocked
 kdd board [--track <id>] [--area <a>] [--status <s>] [--kind <k>]
 kdd show <id>                      # one task with comments + event trail
+kdd brief <id>                     # compact deterministic resume packet
 kdd decision <slug>                # one decision with source-task backlinks
 kdd recall "<query>" [-k <n>] [--kind decision|task]   # kind = result type here, not task kind
 kdd track ls [--all]               # --all includes done tracks
@@ -150,6 +151,10 @@ task is done when every criterion holds. Working a task, you own the checkboxes:
   `comments_total` / `events_total` show the real counts. When the trail is
   longer than what you received and the history matters, call
   `get_task { id, full: true }` for the complete, uncapped record.
+- To resume work in a fresh session, use `get_task { id, brief: true }`. It returns
+  only the deterministic packet, capped at 4096 serialized JSON bytes with honest
+  per-section `omitted` counts. It is derived on read, makes no LLM call, and is not
+  stored. `brief: true` and `full: true` are mutually exclusive.
 
 ### Attachments
 

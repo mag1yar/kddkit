@@ -21119,7 +21119,11 @@ import { basename, dirname as dirname2, extname, join as join2 } from "path";
 import { createHash as createHash3 } from "crypto";
 import { existsSync as existsSync4, readFileSync as readFileSync3, readdirSync as readdirSync3 } from "fs";
 import { join as join4 } from "path";
+import { existsSync as existsSync6, readFileSync as readFileSync6, readdirSync as readdirSync4 } from "fs";
+import { join as join7 } from "path";
 var CAPS = {
+  briefBytes: 4096,
+  // JSON/MCP payload для детерминированного resume-пакета
   boardRows: 8,
   // строк на колонку в CLI board (контракт ≤4KB, cyrillic ×2 байта)
   listRows: 20,
@@ -21990,6 +21994,252 @@ function syncedTaskDetail(db, decisionsDir, id, full = false) {
 var DEFAULT_TTL = 15 * 60;
 var OK_TTL = 60 * 60 * 1e3;
 var ERR_TTL = 5 * 60 * 1e3;
+var lexical = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+function detailObject(detail) {
+  if (!detail) return {};
+  try {
+    const value = JSON.parse(detail);
+    return value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+function stringField(key, ...objects) {
+  for (const object3 of objects) {
+    const value = object3[key];
+    if (typeof value === "string") return value;
+  }
+  return void 0;
+}
+function readRunProvenance(db, taskId) {
+  const row = db.prepare(
+    `WITH latest_start AS (
+       SELECT id, worker_id, detail
+         FROM agent_events
+        WHERE task_id = ? AND kind = 'run_start'
+        ORDER BY id DESC
+        LIMIT 1
+     )
+     SELECT s.worker_id,
+            s.detail AS start_detail,
+            (SELECT ae.detail FROM agent_events ae
+              WHERE ae.task_id = ? AND ae.worker_id = s.worker_id
+                AND ae.kind = 'run_end' AND ae.id > s.id
+              ORDER BY ae.id ASC LIMIT 1) AS end_detail,
+            (SELECT ae.detail FROM agent_events ae
+              WHERE ae.task_id = ? AND ae.worker_id = s.worker_id
+                AND ae.kind = 'error' AND ae.id > s.id
+              ORDER BY ae.id DESC LIMIT 1) AS error_detail
+       FROM latest_start s`
+  ).get(taskId, taskId, taskId);
+  if (!row) return void 0;
+  const start = detailObject(row.start_detail);
+  const end = detailObject(row.end_detail);
+  const error2 = detailObject(row.error_detail);
+  const provenance = { worker_id: row.worker_id };
+  const sessionId = stringField("session_id", start, end, error2);
+  const branch = stringField("branch", start, end, error2);
+  const worktree = stringField("worktree", start, end, error2);
+  const beforeCommit = stringField("head", start);
+  const afterCommit = stringField("head", end);
+  const message = stringField("message", error2);
+  if (sessionId !== void 0) provenance.session_id = sessionId;
+  if (branch !== void 0) provenance.branch = branch;
+  if (worktree !== void 0) provenance.worktree = worktree;
+  if (beforeCommit !== void 0) provenance.before_commit = beforeCommit;
+  if (afterCommit !== void 0) provenance.after_commit = afterCommit;
+  if (message !== void 0) provenance.error = message;
+  return provenance;
+}
+function readTaskDecisions(decisionsDir, taskId) {
+  if (!existsSync6(decisionsDir)) return [];
+  return readdirSync4(decisionsDir).filter((file) => file.endsWith(".md")).flatMap((file) => {
+    const slug = file.slice(0, -3);
+    const decision = parseDecisionMd(readFileSync6(join7(decisionsDir, file), "utf8"));
+    if (!decision.sourceTasks.includes(taskId)) return [];
+    return [{
+      slug,
+      title: capText(decision.title || slug, CAPS.titleChars),
+      created: decision.created || null,
+      superseded_by: decision.status === "superseded" ? decision.supersededBy || "?" : decision.supersededBy || null
+    }];
+  });
+}
+function nextAction(task, criteria) {
+  if (task.status === "done") return { kind: "done", text: "Task is done; no action remains." };
+  if (task.archived_at !== null) {
+    return { kind: "archived", text: "Task is archived; no action remains." };
+  }
+  if (task.blocked) {
+    return {
+      kind: "resolve_blocker",
+      text: task.block_reason ? `Resolve blocker: ${task.block_reason}` : "Resolve the task blocker."
+    };
+  }
+  if (task.status === "backlog") {
+    return { kind: "start_work", text: "Move the task to new and start work." };
+  }
+  if (task.status === "new") return { kind: "start_work", text: "Start work on the task." };
+  const open = criteria.find((criterion) => criterion.checked_at === null);
+  if (open) {
+    return {
+      kind: "complete_criterion",
+      criterion_id: open.id,
+      text: `Complete criterion #${open.id}: ${open.text}`
+    };
+  }
+  if (task.status !== "review") {
+    return { kind: "submit_review", text: "Submit the task to review." };
+  }
+  return { kind: "await_acceptance", text: "Await human acceptance or requested changes." };
+}
+var briefBytes = (brief) => Buffer.byteLength(JSON.stringify(brief), "utf8");
+function omitLastItem(section) {
+  if (section.items.length === 0) return false;
+  section.items.pop();
+  section.omitted += 1;
+  return true;
+}
+function drain(brief, section) {
+  while (briefBytes(brief) > CAPS.briefBytes && omitLastItem(section)) {
+  }
+}
+function fitBrief(brief, sources, errorSource) {
+  if (briefBytes(brief) <= CAPS.briefBytes) return brief;
+  drain(brief, brief.events);
+  drain(brief, brief.comments);
+  drain(brief, brief.files);
+  drain(brief, brief.links);
+  drain(brief, brief.decisions);
+  if (briefBytes(brief) > CAPS.briefBytes && brief.provenance?.error && errorSource) {
+    for (const cap of [128, 64, 32, 16]) {
+      brief.provenance.error = capText(errorSource, cap);
+      if (briefBytes(brief) <= CAPS.briefBytes) return brief;
+    }
+    delete brief.provenance.error;
+  }
+  if (briefBytes(brief) > CAPS.briefBytes && brief.provenance) delete brief.provenance;
+  const caps = {
+    block_reason: CAPS.blockReasonChars,
+    goal: 512,
+    next_action: 128,
+    area: 128,
+    title: CAPS.titleChars
+  };
+  const tighten = (key) => {
+    if (sources[key] === null) {
+      caps[key] = 16;
+      return;
+    }
+    if (caps[key] <= 16) return;
+    caps[key] = Math.max(16, Math.floor(caps[key] / 2));
+    const value = capText(sources[key], caps[key]);
+    if (key === "next_action") brief.next_action.text = value;
+    else if (key === "block_reason") brief.task.block_reason = value;
+    else if (key === "goal") brief.task.goal = value;
+    else if (key === "area") brief.task.area = value;
+    else brief.task.title = value;
+  };
+  while (briefBytes(brief) > CAPS.briefBytes && Object.values(caps).some((cap) => cap > 16)) {
+    for (const key of ["block_reason", "goal", "next_action", "area", "title"]) {
+      tighten(key);
+      if (briefBytes(brief) <= CAPS.briefBytes) return brief;
+    }
+  }
+  drain(brief, brief.criteria);
+  if (briefBytes(brief) > CAPS.briefBytes) {
+    throw new Error("task brief cannot fit the 4096-byte JSON budget");
+  }
+  return brief;
+}
+function taskBrief(db, decisionsDir, id) {
+  const detail = taskDetail(db, id);
+  const criteria = [...detail.criteria].sort((a, b) => {
+    const rank = (criterion) => criterion.checked_at === null ? 0 : criterion.evidence ? 1 : 2;
+    return rank(a) - rank(b) || a.position - b.position || a.id - b.id;
+  });
+  const provenance = readRunProvenance(db, id);
+  const errorSource = provenance?.error;
+  if (provenance?.error) provenance.error = capText(provenance.error, 256);
+  const task = {
+    id: detail.task.id,
+    title: capText(detail.task.title, CAPS.titleChars),
+    goal: detail.task.body === null ? null : capText(detail.task.body, 512),
+    status: detail.task.status,
+    blocked: !!detail.task.blocked,
+    block_reason: detail.task.block_reason === null ? null : capText(detail.task.block_reason, CAPS.blockReasonChars),
+    priority: detail.task.priority,
+    kind: detail.task.kind,
+    area: detail.task.area === null ? null : capText(detail.task.area, 128),
+    archived_at: detail.task.archived_at
+  };
+  const projectedCriteria = {
+    items: criteria.map((criterion) => ({
+      id: criterion.id,
+      text: capText(criterion.text, 128),
+      checked_at: criterion.checked_at,
+      ...criterion.evidence ? { evidence: capText(criterion.evidence, 128) } : {},
+      ...criterion.checked_by ? { checked_by: criterion.checked_by } : {}
+    })),
+    omitted: 0
+  };
+  const action = nextAction(task, projectedCriteria.items);
+  const actionSource = action.text;
+  action.text = capText(action.text, 128);
+  const brief = {
+    task,
+    criteria: projectedCriteria,
+    comments: {
+      items: detail.comments.map((comment) => ({
+        id: comment.id,
+        author: comment.author,
+        body: capText(comment.body, 256),
+        created_at: comment.created_at
+      })).sort((a, b) => b.created_at - a.created_at || b.id - a.id),
+      omitted: 0
+    },
+    events: {
+      items: detail.events.filter((event) => event.action !== "commented").map((event) => ({
+        id: event.id,
+        actor_type: event.actor_type,
+        ...event.actor_id ? { actor_id: event.actor_id } : {},
+        action: event.action,
+        ...event.detail ? { detail: capText(event.detail, 256) } : {},
+        created_at: event.created_at
+      })).sort((a, b) => b.created_at - a.created_at || b.id - a.id),
+      omitted: 0
+    },
+    links: {
+      items: detail.links.map((link) => ({ ...link, title: capText(link.title, CAPS.titleChars) })).sort((a, b) => a.id - b.id || lexical(a.kind, b.kind)),
+      omitted: 0
+    },
+    decisions: {
+      items: readTaskDecisions(decisionsDir, id).sort((a, b) => lexical(a.slug, b.slug)),
+      omitted: 0
+    },
+    files: {
+      items: detail.files.map((file) => ({
+        id: file.id,
+        name: file.original_name,
+        mime_type: file.mime_type,
+        size_bytes: file.size_bytes,
+        description: file.description === null ? null : capText(file.description, 128),
+        path: file.path
+      })).sort((a, b) => a.id - b.id),
+      omitted: 0
+    },
+    ...provenance ? { provenance } : {},
+    next_action: action,
+    budget: { max_bytes: CAPS.briefBytes }
+  };
+  return fitBrief(brief, {
+    block_reason: detail.task.block_reason,
+    goal: detail.task.body,
+    next_action: actionSource,
+    area: detail.task.area,
+    title: detail.task.title
+  }, errorSource);
+}
 
 // src/handlers.ts
 import { statSync as statSync2 } from "fs";
@@ -22091,14 +22341,17 @@ function createServer(getCtx, actor) {
   server.registerTool(
     "get_task",
     {
-      description: `Task with links, last ${CAPS.comments} comments and last ${CAPS.events} events (comments_total/events_total show the full counts); full=true returns the complete uncapped history`,
-      inputSchema: { id: external_exports.number().int().positive(), full: external_exports.boolean().optional() }
+      description: `Task with links, last ${CAPS.comments} comments and last ${CAPS.events} events (comments_total/events_total show the full counts); full=true returns the complete uncapped history; brief=true returns only the deterministic resume packet; brief and full are exclusive`,
+      inputSchema: {
+        id: external_exports.number().int().positive(),
+        full: external_exports.boolean().optional(),
+        brief: external_exports.boolean().optional()
+      }
     },
-    async ({ id, full }, extra) => guard(
-      getCtx,
-      extra._meta,
-      (c) => syncedTaskDetail(c.db, c.dir, id, full)
-    )
+    async ({ id, full, brief }, extra) => guard(getCtx, extra._meta, (c) => {
+      if (brief && full) throw new KddError("brief and full are mutually exclusive");
+      return brief ? taskBrief(c.db, c.dir, id) : syncedTaskDetail(c.db, c.dir, id, full);
+    })
   );
   server.registerTool(
     "list_tasks",

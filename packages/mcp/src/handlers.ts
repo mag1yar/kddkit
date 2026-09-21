@@ -6,7 +6,10 @@ import {
   type Actor, type Priority, type Status, type Kind,
 } from '@kddkit/core';
 
-export { syncedTaskDetail as getTask } from '@kddkit/core';
+export {
+  syncedTaskDetail as getTask,
+  taskBrief as getTaskBrief,
+} from '@kddkit/core';
 
 export interface TaskRow {
   id: number;

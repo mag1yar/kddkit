@@ -17,3 +17,4 @@ export * from './agent_events.js';
 export * from './worktree.js';
 export * from './release.js';
 export * from './settings.js';
+export * from './brief.js';

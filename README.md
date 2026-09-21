@@ -102,12 +102,13 @@ kdd ui          # open the board at http://localhost:4499
 kdd status      # in-progress / blocked digest
 kdd add "Wire up auth"        --priority high
 kdd move 12 in_progress
+kdd brief 12 --json            # deterministic <=4KB resume packet
 kdd decide "Use FTS5 for recall" --rationale "no extra dep, good enough" --source-task 12
 kdd decision 2026-09-20-use-fts5-for-recall
 kdd recall "recall ranking"   # search decisions + tasks
 ```
 
-Full command set: `add`, `board`, `show`, `move`, `edit`, `comment`,
+Full command set: `add`, `board`, `show`, `brief`, `move`, `edit`, `comment`,
 `block` / `unblock`, `attach` / `detach`, `link`, `archive` / `unarchive`,
 `decide`, `decision`, `recall`, `status`, `rebuild`, `projects`, `export`, `ui`. Add
 `--json` to most for machine-readable output.
@@ -152,7 +153,8 @@ is human-gated — the agent proposes it; it lands via `kdd decide`.
 
 MCP tools: `get_task`, `list_tasks`, `list_tracks`, `recall`, `update_task`. Creating,
 archiving, linking and deciding are intentionally CLI-only, so those stay with
-you.
+you. `get_task { id, brief: true }` returns only the deterministic resume packet;
+it is derived on read, never generated or stored, and cannot be combined with `full: true`.
 
 ## Optional advanced capability: agent mode (experimental)
 

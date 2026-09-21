@@ -63,6 +63,7 @@ import {
   stopWorkers,
   sweepWorktrees,
   syncedTaskDetail,
+  taskBrief,
   tick,
   unarchiveTask,
   unblockTask
@@ -266,6 +267,70 @@ function renderShow(d) {
   for (const e of d.events) {
     lines.push(`  ${renderAge(e.created_at)} ago ${e.actor_type} ${e.action}${e.detail ? ` ${e.detail}` : ""}`);
   }
+  return lines.join("\n");
+}
+function renderBrief(brief) {
+  const { task } = brief;
+  const lines = [
+    `#${task.id} ${task.title}`,
+    `status: ${task.status}${task.blocked ? " BLOCKED" : ""}${task.archived_at !== null ? ` ARCHIVED @${task.archived_at}` : ""}`,
+    `priority: ${task.priority}`,
+    `kind: ${task.kind}`,
+    `area: ${task.area ?? "none"}`
+  ];
+  if (task.block_reason) lines.push(`blocker: ${task.block_reason}`);
+  if (task.goal) lines.push(`goal: ${task.goal}`);
+  if (brief.criteria.items.length || brief.criteria.omitted) {
+    lines.push("criteria:");
+    for (const criterion2 of brief.criteria.items) {
+      const checked = criterion2.checked_at === null ? " " : `x @${criterion2.checked_at}`;
+      lines.push(`  [${checked}] ${criterion2.id}. ${criterion2.text}`);
+      if (criterion2.evidence) lines.push(`      evidence: ${criterion2.evidence}`);
+      if (criterion2.checked_by) lines.push(`      checked by: ${criterion2.checked_by}`);
+    }
+    if (brief.criteria.omitted) lines.push(`  (+${brief.criteria.omitted} omitted)`);
+  }
+  if (brief.comments.items.length || brief.comments.omitted) {
+    lines.push("comments:");
+    for (const comment of brief.comments.items) {
+      lines.push(`  [${comment.id} @${comment.created_at} ${comment.author}] ${comment.body}`);
+    }
+    if (brief.comments.omitted) lines.push(`  (+${brief.comments.omitted} omitted)`);
+  }
+  if (brief.events.items.length || brief.events.omitted) {
+    lines.push("events:");
+    for (const event of brief.events.items) {
+      lines.push(`  [${event.id} @${event.created_at} ${event.actor_type}${event.actor_id ? `:${event.actor_id}` : ""}] ${event.action}${event.detail ? ` ${event.detail}` : ""}`);
+    }
+    if (brief.events.omitted) lines.push(`  (+${brief.events.omitted} omitted)`);
+  }
+  if (brief.links.items.length || brief.links.omitted) {
+    lines.push("links:");
+    for (const link of brief.links.items) lines.push(`  ${link.kind} #${link.id} ${link.title}`);
+    if (brief.links.omitted) lines.push(`  (+${brief.links.omitted} omitted)`);
+  }
+  if (brief.decisions.items.length || brief.decisions.omitted) {
+    lines.push("decisions:");
+    for (const decision of brief.decisions.items) {
+      lines.push(`  ${decision.slug} ${decision.title}${decision.created ? ` [created ${decision.created}]` : ""}${decision.superseded_by ? ` [superseded by ${decision.superseded_by}]` : ""}`);
+    }
+    if (brief.decisions.omitted) lines.push(`  (+${brief.decisions.omitted} omitted)`);
+  }
+  if (brief.files.items.length || brief.files.omitted) {
+    lines.push("files:");
+    for (const file of brief.files.items) {
+      lines.push(`  [${file.id}] ${file.name} ${file.mime_type ?? "unknown"} ${file.size_bytes}B ${file.path}`);
+      if (file.description) lines.push(`      ${file.description}`);
+    }
+    if (brief.files.omitted) lines.push(`  (+${brief.files.omitted} omitted)`);
+  }
+  if (brief.provenance) {
+    lines.push("provenance:");
+    for (const [key, value] of Object.entries(brief.provenance)) lines.push(`  ${key}: ${value}`);
+  }
+  const criterion = brief.next_action.criterion_id === void 0 ? "" : ` criterion #${brief.next_action.criterion_id}`;
+  lines.push(`next [${brief.next_action.kind}${criterion}]: ${brief.next_action.text}`);
+  lines.push(`budget: ${brief.budget.max_bytes} bytes`);
   return lines.join("\n");
 }
 function renderDecision(d) {
@@ -596,6 +661,10 @@ program.command("show").argument("<id>").option("--json").action((id, o) => run(
     return;
   }
   console.log(renderShow(withDb((db) => syncedTaskDetail(db, resolveDecisionsDir(), parseId(id)))));
+}));
+program.command("brief").argument("<taskId>").option("--json").action((taskId, o) => run(o.json, () => {
+  const brief = withDb((db) => taskBrief(db, resolveDecisionsDir(), parseId(taskId)));
+  out(o.json, brief, () => renderBrief(brief));
 }));
 program.command("move").argument("<id>").argument("<status>").option("--reason <text>", "why the transition skips the matrix (ai)").option("--json").action((id, status, o) => run(o.json, () => {
   const t = withDb((db) => moveTask(db, parseId(id), status, getActor(), o.reason));
