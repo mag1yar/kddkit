@@ -38,6 +38,7 @@ usually enough):
 
 ```
 kdd status                         # digest: counts + in_progress + blocked
+kdd attention [--json]             # tasks currently requiring human action
 kdd board [--track <id>] [--area <a>] [--status <s>] [--kind <k>]
 kdd show <id>                      # one task with comments + event trail
 kdd brief <id>                     # compact deterministic resume packet

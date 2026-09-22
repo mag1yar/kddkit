@@ -1,5 +1,6 @@
 export type Status = 'backlog' | 'new' | 'in_progress' | 'review' | 'done';
 export const STATUSES: Status[] = ['backlog', 'new', 'in_progress', 'review', 'done'];
+export const MAX_FAILED_ATTEMPTS = 3; // K: подряд неудачных попыток -> авто-блок задачи
 
 export type Priority = 'low' | 'medium' | 'high' | 'urgent';
 export const PRIORITIES: Priority[] = ['low', 'medium', 'high', 'urgent'];

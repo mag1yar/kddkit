@@ -21128,6 +21128,7 @@ var CAPS = {
   // строк на колонку в CLI board (контракт ≤4KB, cyrillic ×2 байта)
   listRows: 20,
   // строк на колонку в MCP list_tasks (Claude, без байт-бюджета)
+  attentionRows: 20,
   statusRows: 5,
   // строк на секцию kdd status
   statusBytes: 2048,

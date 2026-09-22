@@ -4,6 +4,7 @@ export const CAPS = {
   briefBytes: 4096,          // JSON/MCP payload для детерминированного resume-пакета
   boardRows: 8,            // строк на колонку в CLI board (контракт ≤4KB, cyrillic ×2 байта)
   listRows: 20,            // строк на колонку в MCP list_tasks (Claude, без байт-бюджета)
+  attentionRows: 20,
   statusRows: 5,           // строк на секцию kdd status
   statusBytes: 2048,       // бюджет текстовой выдачи kdd status — контракт, structural cap в
                             // renderStatus (как recallBytes в renderRecall): строк не хватает

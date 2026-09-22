@@ -1,6 +1,7 @@
 import {
   CAPS, STATUSES, capText as cap, now,
-  type Criterion, type DecisionDetail, type EventRow, type RecallHit, type Status, type Task, type TaskListRow,
+  type AttentionInbox, type Criterion, type DecisionDetail, type EventRow, type RecallHit,
+  type Status, type Task, type TaskListRow,
   type TaskBrief, type TaskDetailCapped, type Track,
 } from '@kddkit/core';
 
@@ -38,6 +39,17 @@ export function renderBoard(b: Record<Status, TaskListRow[]>): string {
       lines.push(`  (+${b[s].length - shown.length} more, use --status ${s})`);
     }
   }
+  return lines.join('\n');
+}
+
+export function renderAttention(inbox: AttentionInbox): string {
+  const oneLine = (value: string) => value.replace(/[\r\n]+/g, ' ');
+  const lines = inbox.items.map((item) =>
+    `#${item.id} [${item.reason}] ${oneLine(item.title)} (${item.status})` +
+    `${item.block_reason ? ` — ${oneLine(item.block_reason)}` : ''}`,
+  );
+  if (lines.length === 0) lines.push('attention: none');
+  if (inbox.omitted > 0) lines.push(`(+${inbox.omitted} omitted)`);
   return lines.join('\n');
 }
 

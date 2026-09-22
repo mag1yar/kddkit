@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 import { now } from './db.js';
-import { type Actor } from './state.js';
+import { MAX_FAILED_ATTEMPTS, type Actor } from './state.js';
 import { appendEvent, authorOf, mustGetTask } from './ops.js';
 import { KddError } from './errors.js';
 import { PRIORITY_ORDER } from './queries.js';
@@ -9,8 +9,6 @@ import { appendAgentEvent, lastAgentEventKind } from './agent_events.js';
 
 export const DEFAULT_TTL = 15 * 60; // сек; hermes-дефолт, override через --ttl
 const SYSTEM: Actor = { type: 'ai', id: 'system' }; // provenance ленивого reclaim (не притворяемся владельцем)
-
-export const MAX_FAILED_ATTEMPTS = 3; // K: подряд неудачных попыток -> авто-блок задачи
 
 // Учёт неудачной попытки агента: ++счётчик, при K -> блок. Внутри открытой транзакции.
 export function recordFailedAttempt(

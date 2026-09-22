@@ -5,8 +5,9 @@ import { addTask, moveTask, placeTask } from '../src/ops.js';
 import { addCriterion, setCriterionChecked } from '../src/criteria.js';
 import {
   claimTask, claimNext, renewClaim, reclaimExpired, releaseClaim, stopWorkers,
-  MAX_FAILED_ATTEMPTS, DEFAULT_TTL,
+  DEFAULT_TTL,
 } from '../src/claim.js';
+import { MAX_FAILED_ATTEMPTS } from '../src/state.js';
 import { now } from '../src/db.js';
 import { KddError } from '../src/errors.js';
 import { lastAgentEventKind, appendAgentEvent, runProduced } from '../src/agent_events.js';

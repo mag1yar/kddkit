@@ -17,6 +17,7 @@ import {
   appendAgentEvent,
   archiveTask,
   attachFile,
+  attentionData,
   authorOf,
   blockTask,
   closeDb,
@@ -47,6 +48,7 @@ import {
   maxWorkers,
   moveTask,
   mustGetTask,
+  now as now3,
   openDb as openDb2,
   parseClaudeStreamLine,
   rebuild,
@@ -218,6 +220,15 @@ function renderBoard(b) {
       lines.push(`  (+${b[s].length - shown.length} more, use --status ${s})`);
     }
   }
+  return lines.join("\n");
+}
+function renderAttention(inbox) {
+  const oneLine = (value) => value.replace(/[\r\n]+/g, " ");
+  const lines = inbox.items.map(
+    (item) => `#${item.id} [${item.reason}] ${oneLine(item.title)} (${item.status})${item.block_reason ? ` \u2014 ${oneLine(item.block_reason)}` : ""}`
+  );
+  if (lines.length === 0) lines.push("attention: none");
+  if (inbox.omitted > 0) lines.push(`(+${inbox.omitted} omitted)`);
   return lines.join("\n");
 }
 function renderShow(d) {
@@ -665,6 +676,10 @@ program.command("show").argument("<id>").option("--json").action((id, o) => run(
 program.command("brief").argument("<taskId>").option("--json").action((taskId, o) => run(o.json, () => {
   const brief = withDb((db) => taskBrief(db, resolveDecisionsDir(), parseId(taskId)));
   out(o.json, brief, () => renderBrief(brief));
+}));
+program.command("attention").option("--json").action((o) => run(o.json, () => {
+  const inbox = withDb((db) => attentionData(db, now3()));
+  out(o.json, inbox, () => renderAttention(inbox));
 }));
 program.command("move").argument("<id>").argument("<status>").option("--reason <text>", "why the transition skips the matrix (ai)").option("--json").action((id, status, o) => run(o.json, () => {
   const t = withDb((db) => moveTask(db, parseId(id), status, getActor(), o.reason));

@@ -10,6 +10,25 @@ export interface Task {
   failed_attempts: number;      // неудачные попытки агента; reset при review, block при K (claim.ts)
   position: number; archived_at: number | null; created_at: number; updated_at: number;
 }
+export type AttentionReason =
+  | 'needs_input'
+  | 'review_rework'
+  | 'await_acceptance'
+  | 'stale_in_progress';
+
+export interface AttentionItem {
+  id: number;
+  title: string;
+  status: Status;
+  reason: AttentionReason;
+  block_reason: string | null;
+  last_activity: number;
+}
+
+export interface AttentionInbox {
+  items: AttentionItem[];
+  omitted: number;
+}
 // Строка доски: Task + производные поля, посчитанные на чтении (не хранятся).
 export interface TaskListRow extends Task {
   ready: 0 | 1;               // takeable now: new & не blocked & не archived

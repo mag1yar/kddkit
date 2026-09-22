@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs';
 import type Database from 'better-sqlite3';
 import { CAPS, capText } from './caps.js';
-import { authorOf, STATUSES, type Kind, type Status } from './state.js';
+import { authorOf, MAX_FAILED_ATTEMPTS, STATUSES, type Kind, type Status } from './state.js';
 import type {
-  Comment, Criterion, DecisionDetail, DecisionSummary, EventRow, FileRow, Task, TaskListRow,
+  AttentionInbox, AttentionItem, Comment, Criterion, DecisionDetail, DecisionSummary,
+  EventRow, FileRow, Task, TaskListRow,
 } from './types.js';
 import { mustGetTask } from './ops.js';
 import { listCriteria } from './criteria.js';
@@ -177,6 +178,79 @@ export function statusDigest(db: Database.Database): {
     recent: db.prepare(
       `SELECT * FROM events ORDER BY id DESC LIMIT ${CAPS.statusEvents}`).all() as EventRow[],
   };
+}
+
+export function attentionData(db: Database.Database, nowSeconds: number): AttentionInbox {
+  type Row = AttentionItem & { reason_rank: number; total_count: number };
+  const rows = db.prepare(`
+    WITH task_facts AS (
+      SELECT t.*,
+        MAX(t.updated_at, COALESCE(
+          (SELECT MAX(e.created_at) FROM events e WHERE e.task_id = t.id), t.updated_at
+        )) AS last_activity,
+        (SELECT e.type FROM events e
+          WHERE e.task_id = t.id AND e.action = 'blocked'
+          ORDER BY e.id DESC LIMIT 1) AS latest_blocked_type,
+        (SELECT MAX(e.id) FROM events e
+          WHERE e.task_id = t.id AND e.action = 'moved'
+            AND e.detail LIKE '%"to":"review"%') AS last_review_id
+      FROM tasks t
+      WHERE t.archived_at IS NULL AND t.status <> 'done'
+    ), classified AS (
+      SELECT f.*,
+        CASE
+          WHEN f.blocked = 1 AND (
+            substr(f.block_reason, 1, 12) = 'needs human:' OR (
+              f.failed_attempts >= @maxFailed AND f.latest_blocked_type = 'claim'
+            )
+          ) THEN 'needs_input'
+          WHEN f.blocked = 0 AND f.status IN ('review', 'in_progress')
+            AND f.last_review_id IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM criteria c
+              JOIN events e ON e.task_id = c.task_id
+              WHERE c.task_id = f.id AND c.checked_at IS NULL
+                AND e.action = 'criterion_unchecked' AND e.id > f.last_review_id
+                AND CASE WHEN json_valid(e.detail) THEN
+                  json_type(e.detail, '$.id') = 'integer'
+                  AND json_extract(e.detail, '$.id') = c.id END
+            ) THEN 'review_rework'
+          WHEN f.blocked = 0 AND f.status = 'review' THEN 'await_acceptance'
+          WHEN f.blocked = 0 AND f.status = 'in_progress'
+            AND f.last_activity <= @cutoff THEN 'stale_in_progress'
+          ELSE NULL
+        END AS reason
+      FROM task_facts f
+    ), candidates AS (
+      SELECT id, title, status, reason, block_reason, last_activity,
+        CASE reason
+          WHEN 'needs_input' THEN 1
+          WHEN 'review_rework' THEN 2
+          WHEN 'await_acceptance' THEN 3
+          ELSE 4
+        END AS reason_rank
+      FROM classified WHERE reason IS NOT NULL
+    ), counted AS (
+      SELECT *, COUNT(*) OVER () AS total_count FROM candidates
+    )
+    SELECT * FROM counted
+    ORDER BY reason_rank, last_activity, id
+    LIMIT @limit
+  `).all({
+    maxFailed: MAX_FAILED_ATTEMPTS,
+    cutoff: nowSeconds - 86_400,
+    limit: CAPS.attentionRows,
+  }) as Row[];
+
+  const total = rows[0]?.total_count ?? 0;
+  const items = rows.map(({ reason_rank: _rank, total_count: _total, ...row }) => ({
+    ...row,
+    title: capText(row.title, CAPS.titleChars),
+    block_reason: row.block_reason === null
+      ? null
+      : capText(row.block_reason, CAPS.blockReasonChars),
+  }));
+  return { items, omitted: total - items.length };
 }
 
 export function exportBoard(db: Database.Database): {

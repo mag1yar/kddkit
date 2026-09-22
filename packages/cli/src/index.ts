@@ -8,12 +8,14 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import lockfile from 'proper-lockfile';
 import {
-  KddError, addCriterion, addDecision, addTask, appendAgentEvent, archiveTask, attachFile, authorOf, blockTask,
+  KddError, addCriterion, addDecision, addTask, appendAgentEvent, archiveTask, attachFile,
+  attentionData, authorOf, blockTask,
   closeDb, boardData, BUG_BODY_TEMPLATE, claimNext, claimTask, commentTask, createTrack, decisionDetail,
   deleteTrack, DEFAULT_TTL,
   detachFile, editTask, editTrack, ensureWorktree, exportBoard, filesDir, headCommit, kddVersion, KINDS, linkTasks,
   listAgentEvents, listCriteria, listProjects, taskBranchHead,
-  listTracks, maxWorkers, moveTask, mustGetTask, openDb, parseClaudeStreamLine, rebuild, recall, removeCriterion,
+  listTracks, maxWorkers, moveTask, mustGetTask, now, openDb, parseClaudeStreamLine,
+  rebuild, recall, removeCriterion,
   renewClaim, resolveDbPath, resolveDecisionsDir, resolveToplevel, setAutoTick, setCriterionChecked,
   setProjectToplevel, statusDigest, stopWorkers,
   sweepWorktrees, syncedTaskDetail, taskBrief, tick, unarchiveTask, unblockTask,
@@ -25,7 +27,8 @@ import {
 import { fail, getActor, parseId, withDb, withDbAt } from './context.js';
 import { killWorkers, signalGroup, workerAlive, workerTag } from './procs.js';
 import {
-  renderBoard, renderBrief, renderClaim, renderCriteria, renderDecision, renderRecall, renderShow, renderStatus,
+  renderAttention, renderBoard, renderBrief, renderClaim, renderCriteria, renderDecision,
+  renderRecall, renderShow, renderStatus,
   renderTracks,
 } from './render.js';
 import { createStopRunner, createTickRunner } from './tick-runner.js';
@@ -231,6 +234,13 @@ program.command('brief')
   .action((taskId, o) => run(o.json, () => {
     const brief = withDb((db) => taskBrief(db, resolveDecisionsDir(), parseId(taskId)));
     out(o.json, brief, () => renderBrief(brief));
+  }));
+
+program.command('attention')
+  .option('--json')
+  .action((o) => run(o.json, () => {
+    const inbox = withDb((db) => attentionData(db, now()));
+    out(o.json, inbox, () => renderAttention(inbox));
   }));
 
 program.command('move')
