@@ -118,7 +118,7 @@ function Column({ status, tasks, total, trackName, onOpen }: {
       </div>
       {/* flex-1 + min-h-0: список забирает остаток колонки (пустая колонка = дроп-зона во всю
           высоту) и скроллится сам; 83 задачи в backlog не тянут страницу */}
-      <KanbanColumnContent value={status} className="min-h-8 flex-1 gap-2 overflow-y-auto p-0.5">
+      <KanbanColumnContent value={status} className="relative min-h-8 flex-1 gap-2 overflow-y-auto p-0.5">
         {tasks.map((t) => (
           <TaskCard key={t.id} task={t} trackName={trackName} onOpen={onOpen} asHandle />
         ))}
