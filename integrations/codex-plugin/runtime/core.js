@@ -340,9 +340,10 @@ import { execFileSync } from "child_process";
 import { createHash } from "crypto";
 import { existsSync, readdirSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { join, resolve } from "path";
 import Database2 from "better-sqlite3";
 var kddHome = () => process.env.KDD_HOME ?? join(homedir(), ".kdd");
+var storeIdentity = () => createHash("sha256").update(resolve(kddHome())).update("\0").update(process.env.KDD_DB ? resolve(process.env.KDD_DB) : "").digest("hex").slice(0, 16);
 function resolveDbPath(cwd = process.cwd()) {
   if (process.env.KDD_DB) return { dbPath: process.env.KDD_DB, projectPath: cwd };
   let common;
@@ -2693,6 +2694,7 @@ export {
   slugify,
   statusDigest,
   stopWorkers,
+  storeIdentity,
   sweepWorktrees,
   syncIndex,
   syncedTaskDetail,

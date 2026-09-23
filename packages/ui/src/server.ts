@@ -11,7 +11,7 @@ import {
   createTrack, deleteTrack, detachFile, editTask, editTrack, filePath, getFile, getAutoTick,
   getLastRun, isInlineMime, kddHome, listAgentEvents, listProjects, listTracks, logError,
   maxWorkers, maxWorkersEnvLocked, moveTask, openDb, placeTask, releaseInfo, removeCriterion,
-  setAutoTick, setCriterionChecked, taskDetail, unblockTask, type Kind, type Priority,
+  setAutoTick, setCriterionChecked, storeIdentity, taskDetail, unblockTask, type Kind, type Priority,
 } from '@kddkit/core';
 
 export {
@@ -103,6 +103,7 @@ export function createApp(
 ): Hono {
   const app = new Hono();
   const token = opts.token;
+  const store = storeIdentity();
 
   app.onError((e, c) => {
     if (e instanceof KddError) return c.json({ error: e.message }, 400);
@@ -135,7 +136,7 @@ export function createApp(
     app.use('/api/*', async (c, next) => {
       // ping — вне проверки: по нему `kdd ui` из соседнего проекта решает, переиспользовать ли
       // этот сервер, а токена работающего сервера он знать не может. Секрета ping не выдаёт:
-      // только «я kdd» + hash доски + нужен ли токен.
+      // только «я kdd» + hash доски/стора + нужен ли токен.
       if (c.req.path === '/api/ping') return next();
       if ((c.req.header('x-kdd-token') ?? c.req.query('token')) !== token) {
         return c.json({ error: 'unauthorized' }, 401);
@@ -157,7 +158,7 @@ export function createApp(
   // needsToken говорит второму `kdd ui`, с каким сервером он имеет дело: без этого он либо
   // молча печатал бы ссылку на сервер, поднятый совсем в другом режиме, либо (когда ping был
   // под токеном) получал 401 и падал с EADDRINUSE вместо переиспользования.
-  app.get('/api/ping', (c) => c.json({ kdd: true, default: defaultHash, needsToken: !!token }));
+  app.get('/api/ping', (c) => c.json({ kdd: true, default: defaultHash, needsToken: !!token, store }));
   // Список — это абсолютные пути ВСЕХ досок на машине, то есть инвентарь чужой работы.
   // Переключатель проектов нужен своему человеку за loopback; выставленный наружу сервер
   // отдаёт только ту доску, ради которой его выставили.

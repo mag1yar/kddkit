@@ -17,7 +17,7 @@ import {
   listTracks, maxWorkers, moveTask, mustGetTask, now, openDb, parseClaudeStreamLine,
   rebuild, recall, removeCriterion,
   renewClaim, resolveDbPath, resolveDecisionsDir, resolveToplevel, setAutoTick, setCriterionChecked,
-  setProjectToplevel, statusDigest, stopWorkers,
+  setProjectToplevel, statusDigest, stopWorkers, storeIdentity,
   sweepWorktrees, syncedTaskDetail, taskBrief, tick, unarchiveTask, unblockTask,
   type KillFn, type Kind, type Status,
 } from '@kddkit/core';
@@ -770,8 +770,14 @@ async function uiStart(port: number, host = '127.0.0.1', token?: string): Promis
     catch { return null; } // сервера нет — поднимаем свой
   };
   const ping = await probe('/api/ping');
-  const info = ping?.ok ? (await ping.json()) as { kdd?: boolean; needsToken?: boolean } : null;
+  const info = ping?.ok ? (await ping.json()) as { kdd?: boolean; needsToken?: boolean; store?: string } : null;
   if (info?.kdd) {
+    if (info.store !== storeIdentity()) {
+      fail(info.store
+        ? `a kdd ui already runs on :${port} with a different store — stop it or choose another --port`
+        : `the kdd ui already running on :${port} does not report its store — stop the old server or choose another --port`,
+      false);
+    }
     // Режим работающего сервера мог не совпасть с запрошенным. Молча напечатать ссылку —
     // значит соврать: человек уверен, что доска выставлена наружу и под токеном, а она
     // ни то ни другое (или наоборот — открыта, когда он думает, что нет).

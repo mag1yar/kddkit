@@ -2,11 +2,17 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import Database from 'better-sqlite3';
 import { KddError } from './errors.js';
 
 export const kddHome = (): string => process.env.KDD_HOME ?? join(homedir(), '.kdd');
+
+// KDD_DB выбирает доску по умолчанию, KDD_HOME — остальные доски в UI.
+export const storeIdentity = (): string => createHash('sha256')
+  .update(resolve(kddHome())).update('\0')
+  .update(process.env.KDD_DB ? resolve(process.env.KDD_DB) : '')
+  .digest('hex').slice(0, 16);
 
 export function resolveDbPath(cwd: string = process.cwd()): { dbPath: string; projectPath: string } {
   if (process.env.KDD_DB) return { dbPath: process.env.KDD_DB, projectPath: cwd };

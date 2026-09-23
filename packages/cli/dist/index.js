@@ -63,6 +63,7 @@ import {
   setProjectToplevel,
   statusDigest,
   stopWorkers,
+  storeIdentity,
   sweepWorktrees,
   syncedTaskDetail,
   taskBrief,
@@ -1089,6 +1090,12 @@ async function uiStart(port, host = "127.0.0.1", token) {
   const ping = await probe("/api/ping");
   const info = ping?.ok ? await ping.json() : null;
   if (info?.kdd) {
+    if (info.store !== storeIdentity()) {
+      fail(
+        info.store ? `a kdd ui already runs on :${port} with a different store \u2014 stop it or choose another --port` : `the kdd ui already running on :${port} does not report its store \u2014 stop the old server or choose another --port`,
+        false
+      );
+    }
     if (!!token !== !!info.needsToken) {
       fail(
         info.needsToken ? `a kdd ui already runs on :${port} and requires a token \u2014 pass the same --token to reuse it` : `a kdd ui already runs on :${port} without a token \u2014 stop it before exposing the board`,
