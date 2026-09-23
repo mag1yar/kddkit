@@ -809,6 +809,7 @@ async function uiStart(port: number, host = '127.0.0.1', token?: string): Promis
 const criteria = program.command('criteria').description('acceptance criteria on tasks');
 
 criteria.command('add')
+  .description('add an acceptance criterion to a task')
   .argument('<taskId>').argument('<text>')
   .option('--json')
   .action((taskId, text, o) => run(o.json, () => {
@@ -817,6 +818,7 @@ criteria.command('add')
   }));
 
 criteria.command('check')
+  .description('mark a criterion verified, optionally with evidence')
   .argument('<taskId>').argument('<id>')
   .option('--evidence <text>', 'verification command, URL, commit, attachment or note')
   .option('--json')
@@ -827,6 +829,7 @@ criteria.command('check')
   }));
 
 criteria.command('uncheck')
+  .description('mark a criterion unverified')
   .argument('<taskId>').argument('<id>')
   .option('--json')
   .action((taskId, id, o) => run(o.json, () => {
@@ -836,6 +839,7 @@ criteria.command('uncheck')
   }));
 
 criteria.command('rm')
+  .description('remove an acceptance criterion')
   .argument('<taskId>').argument('<id>')
   .option('--json')
   .action((taskId, id, o) => run(o.json, () => {
@@ -844,6 +848,7 @@ criteria.command('rm')
   }));
 
 criteria.command('ls')
+  .description('list acceptance criteria on a task')
   .argument('<taskId>')
   .option('--json')
   .action((taskId, o) => run(o.json, () => {
@@ -854,6 +859,7 @@ criteria.command('ls')
 const track = program.command('track').description('manage tracks (task groups)');
 
 track.command('add')
+  .description('create a track')
   .argument('<name>')
   .option('--description <t>', '"use when…" routing hint for the agent')
   .option('--json')
@@ -863,6 +869,7 @@ track.command('add')
   }));
 
 track.command('ls')
+  .description('list active tracks, or all tracks with --all')
   .option('--all', 'include completed tracks')
   .option('--json')
   .action((o) => run(o.json, () => {
@@ -871,6 +878,7 @@ track.command('ls')
   }));
 
 track.command('edit')
+  .description('rename a track or change its description')
   .argument('<id>')
   .option('--name <t>').option('--description <t>')
   .option('--json')
@@ -881,6 +889,7 @@ track.command('edit')
   }));
 
 track.command('done')
+  .description('mark a track complete')
   .argument('<id>')
   .option('--json')
   .action((id, o) => run(o.json, () => {
@@ -889,6 +898,7 @@ track.command('done')
   }));
 
 track.command('reopen')
+  .description('reactivate a completed track')
   .argument('<id>')
   .option('--json')
   .action((id, o) => run(o.json, () => {
@@ -897,6 +907,7 @@ track.command('reopen')
   }));
 
 track.command('rm')
+  .description('delete a track and detach its tasks')
   .argument('<id>')
   .option('--json')
   .action((id, o) => run(o.json, () => {

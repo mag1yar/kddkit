@@ -1125,36 +1125,36 @@ async function uiStart(port, host = "127.0.0.1", token) {
   console.log(`kdd ui: ${url}`);
 }
 var criteria = program.command("criteria").description("acceptance criteria on tasks");
-criteria.command("add").argument("<taskId>").argument("<text>").option("--json").action((taskId, text, o) => run(o.json, () => {
+criteria.command("add").description("add an acceptance criterion to a task").argument("<taskId>").argument("<text>").option("--json").action((taskId, text, o) => run(o.json, () => {
   const c = withDb((db) => addCriterion(db, parseId(taskId), text, getActor()));
   out(o.json, c, () => `#${c.task_id} criterion ${c.id} added`);
 }));
-criteria.command("check").argument("<taskId>").argument("<id>").option("--evidence <text>", "verification command, URL, commit, attachment or note").option("--json").action((taskId, id, o) => run(o.json, () => {
+criteria.command("check").description("mark a criterion verified, optionally with evidence").argument("<taskId>").argument("<id>").option("--evidence <text>", "verification command, URL, commit, attachment or note").option("--json").action((taskId, id, o) => run(o.json, () => {
   const c = withDb((db) => setCriterionChecked(db, parseId(taskId), parseId(id), true, getActor(), o.evidence));
   out(o.json, c, () => `#${c.task_id} criterion ${c.id} checked`);
 }));
-criteria.command("uncheck").argument("<taskId>").argument("<id>").option("--json").action((taskId, id, o) => run(o.json, () => {
+criteria.command("uncheck").description("mark a criterion unverified").argument("<taskId>").argument("<id>").option("--json").action((taskId, id, o) => run(o.json, () => {
   const c = withDb((db) => setCriterionChecked(db, parseId(taskId), parseId(id), false, getActor()));
   out(o.json, c, () => `#${c.task_id} criterion ${c.id} unchecked`);
 }));
-criteria.command("rm").argument("<taskId>").argument("<id>").option("--json").action((taskId, id, o) => run(o.json, () => {
+criteria.command("rm").description("remove an acceptance criterion").argument("<taskId>").argument("<id>").option("--json").action((taskId, id, o) => run(o.json, () => {
   withDb((db) => removeCriterion(db, parseId(taskId), parseId(id), getActor()));
   out(o.json, { ok: true }, () => `#${parseId(taskId)} criterion ${parseId(id)} removed`);
 }));
-criteria.command("ls").argument("<taskId>").option("--json").action((taskId, o) => run(o.json, () => {
+criteria.command("ls").description("list acceptance criteria on a task").argument("<taskId>").option("--json").action((taskId, o) => run(o.json, () => {
   const cs = withDb((db) => listCriteria(db, parseId(taskId)));
   out(o.json, cs, () => renderCriteria(cs));
 }));
 var track = program.command("track").description("manage tracks (task groups)");
-track.command("add").argument("<name>").option("--description <t>", '"use when\u2026" routing hint for the agent').option("--json").action((name, o) => run(o.json, () => {
+track.command("add").description("create a track").argument("<name>").option("--description <t>", '"use when\u2026" routing hint for the agent').option("--json").action((name, o) => run(o.json, () => {
   const t = withDb((db) => createTrack(db, { name, description: o.description }));
   out(o.json, t, () => `track #${t.id} ${t.name}`);
 }));
-track.command("ls").option("--all", "include completed tracks").option("--json").action((o) => run(o.json, () => {
+track.command("ls").description("list active tracks, or all tracks with --all").option("--all", "include completed tracks").option("--json").action((o) => run(o.json, () => {
   const ts = withDb((db) => listTracks(db, o.all ? {} : { status: "active" }));
   out(o.json, ts, () => renderTracks(ts));
 }));
-track.command("edit").argument("<id>").option("--name <t>").option("--description <t>").option("--json").action((id, o) => run(o.json, () => {
+track.command("edit").description("rename a track or change its description").argument("<id>").option("--name <t>").option("--description <t>").option("--json").action((id, o) => run(o.json, () => {
   const t = withDb((db) => editTrack(
     db,
     parseId(id),
@@ -1162,15 +1162,15 @@ track.command("edit").argument("<id>").option("--name <t>").option("--descriptio
   ));
   out(o.json, t, () => `track #${t.id} updated`);
 }));
-track.command("done").argument("<id>").option("--json").action((id, o) => run(o.json, () => {
+track.command("done").description("mark a track complete").argument("<id>").option("--json").action((id, o) => run(o.json, () => {
   const t = withDb((db) => editTrack(db, parseId(id), { status: "done" }));
   out(o.json, t, () => `track #${t.id} done`);
 }));
-track.command("reopen").argument("<id>").option("--json").action((id, o) => run(o.json, () => {
+track.command("reopen").description("reactivate a completed track").argument("<id>").option("--json").action((id, o) => run(o.json, () => {
   const t = withDb((db) => editTrack(db, parseId(id), { status: "active" }));
   out(o.json, t, () => `track #${t.id} active`);
 }));
-track.command("rm").argument("<id>").option("--json").action((id, o) => run(o.json, () => {
+track.command("rm").description("delete a track and detach its tasks").argument("<id>").option("--json").action((id, o) => run(o.json, () => {
   withDb((db) => deleteTrack(db, parseId(id)));
   out(o.json, { ok: true }, () => `track #${parseId(id)} deleted`);
 }));
