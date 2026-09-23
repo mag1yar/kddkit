@@ -129,7 +129,7 @@ try {
   });
   if (!initialize.result?.serverInfo?.name) throw new Error(`initialize failed: ${JSON.stringify(initialize)}`);
   const tools = await rpc(child, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
-  if (tools.result?.tools?.length !== 5) throw new Error(`tools/list failed: ${JSON.stringify(tools)}`);
+  if (tools.result?.tools?.length !== 6) throw new Error(`tools/list failed: ${JSON.stringify(tools)}`);
   console.log(`fresh install SQLite OK; MCP initialize=${initialize.result.serverInfo.name}; tools=${tools.result.tools.length}; Codex hooks valid`);
 } finally {
   if (child) await stopChild(child);

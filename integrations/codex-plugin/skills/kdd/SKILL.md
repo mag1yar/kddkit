@@ -15,8 +15,8 @@ Two ways in, and both write as `ai`: MCP always, the CLI because it recognises
 the Claude Code or Codex environment it runs in. Attribution is automatic — you never pass
 a flag to be yourself.
 
-- **MCP tools — your default for everything task-shaped.** Reads: `list_tasks`,
-  `get_task`, `recall`, `list_tracks`. The one write: `update_task` (edit / move /
+- **MCP tools — your default for everything task-shaped.** Reads: `list_projects`,
+  `list_tasks`, `get_task`, `recall`, `list_tracks`. The one write: `update_task` (edit / move /
   comment / attach / detach a file, ONE task).
 - **`kdd` CLI — the human's surface** (it also runs the web board, `kdd ui`), and
   yours for the ops MCP doesn't expose (below). For move / comment / edit /
@@ -26,6 +26,11 @@ a flag to be yourself.
   turns off every rule that keys on `ai` at once: the acceptance-criteria gate,
   the lease fence, the transition matrix. A refused move is answered with
   `--reason` once the user has asked for it, never by changing identity.
+
+If Claude Code or Codex started above several repositories and MCP cannot find a git
+repository, call `list_projects`, then pass the chosen absolute worktree path as
+`project` to **each** MCP task call. A known repository path works even if its
+board is not listed yet. Never guess a repository from the server cwd.
 
 ### CLI reference — the whole surface, no `--help` needed
 

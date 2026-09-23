@@ -1,10 +1,12 @@
 import type Database from 'better-sqlite3';
+import { execFileSync } from 'node:child_process';
+import { isAbsolute } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import {
   agentId, CAPS, KddError, logError, manualSessionFromEnv, normalizeSessionId,
-  openDb, resolveDbPath, resolveDecisionsDir,
+  listProjects, openDb, resolveDbPath, resolveDecisionsDir,
   PRIORITIES, STATUSES, KINDS, type Actor, type Status, type Kind,
 } from '@kddkit/core';
 import * as h from './handlers.js';
@@ -14,19 +16,19 @@ type Result = { content: { type: 'text'; text: string }[]; isError?: boolean };
 /** База и каталог решений. Добывается лениво: см. startServer. */
 export interface Ctx { db: Database.Database; dir: string }
 type Meta = Record<string, unknown> | undefined;
-type CtxFn = (meta?: Meta) => Ctx;
+type CtxFn = (meta?: Meta, project?: string) => Ctx;
 
 const ok = (data: unknown): Result => ({ content: [{ type: 'text', text: JSON.stringify(data) }] });
 
 const fail = (text: string): Result => ({ content: [{ type: 'text', text }], isError: true });
 
-function guard(getCtx: CtxFn, meta: Meta, fn: (c: Ctx) => unknown): Result {
+function guard(getCtx: CtxFn, meta: Meta, project: string | undefined, fn: (c: Ctx) => unknown): Result {
   // Раньше базу открывал startServer, и любая её проблема (не git-репо, чужая схема,
   // битый нативный модуль) убивала процесс ДО хендшейка: клиент показывал «disconnected»
   // и ни строчки причины — объяснить можно только то, что успело подключиться.
   let c: Ctx;
   try {
-    c = getCtx(meta);
+    c = getCtx(meta, project);
   } catch (e) {
     return fail(e instanceof KddError ? e.message : String(e));
   }
@@ -43,6 +45,23 @@ function guard(getCtx: CtxFn, meta: Meta, fn: (c: Ctx) => unknown): Result {
 const statusEnum = z.enum(STATUSES as [Status, ...Status[]]);
 const priorityEnum = z.enum(PRIORITIES as [string, ...string[]]);
 const kindEnum = z.enum(KINDS as [Kind, ...Kind[]]);
+const projectField = z.string().min(1).optional()
+  .describe('Absolute path inside the git repository; use list_projects to find known projects');
+
+function knownProjects(): string[] {
+  return listProjects().flatMap((p) => {
+    try {
+      const output = execFileSync('git', ['--git-dir', p.projectPath, 'worktree', 'list', '--porcelain'],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      return output.split(/\r?\n\r?\n/).filter((block) => !/^bare$/m.test(block))
+        .map((block) => block.match(/^worktree (.+)$/m)?.[1])
+        .filter((path): path is string => !!path)
+        .filter((path) => {
+          try { return resolveDbPath(path).dbPath === p.dbPath; } catch { return false; }
+        });
+    } catch { return []; } // stale or unavailable repository
+  });
+}
 
 export function createServer(getCtx: CtxFn, actor?: Actor): McpServer {
   const server = new McpServer({ name: 'kdd', version: '0.1.0' });
@@ -57,9 +76,10 @@ export function createServer(getCtx: CtxFn, actor?: Actor): McpServer {
         id: z.number().int().positive(),
         full: z.boolean().optional(),
         brief: z.boolean().optional(),
+        project: projectField,
       },
     },
-    async ({ id, full, brief }, extra) => guard(getCtx, extra._meta, (c) => {
+    async ({ id, full, brief, project }, extra) => guard(getCtx, extra._meta, project, (c) => {
       if (brief && full) throw new KddError('brief and full are mutually exclusive');
       return brief ? h.getTaskBrief(c.db, c.dir, id) : h.getTask(c.db, c.dir, id, full);
     }));
@@ -75,18 +95,29 @@ export function createServer(getCtx: CtxFn, actor?: Actor): McpServer {
         kind: kindEnum.optional(),
         track_id: z.number().int().positive().optional(),
         ready: z.boolean().optional(),
+        project: projectField,
       },
     },
-    async (a, extra) => guard(getCtx, extra._meta, (c) => h.listTasks(c.db, a)));
+    async (a, extra) => guard(getCtx, extra._meta, a.project, (c) => h.listTasks(c.db, a)));
+
+  server.registerTool('list_projects',
+    {
+      description: 'Absolute git worktree paths for known local KDD projects; '
+        + 'pass one path as project to other tools',
+      inputSchema: {},
+    },
+    async () => {
+      try { return ok(knownProjects()); } catch (e) { return fail(String(e)); }
+    });
 
   server.registerTool('list_tracks',
     {
       description: 'Tracks with their "use when…" description and status. Route new tasks '
         + 'to an active track matching the current branch/worktree; status=done marks a '
         + 'finished body of work (kept for context, not a routing target)',
-      inputSchema: {},
+      inputSchema: { project: projectField },
     },
-    async (_a, extra) => guard(getCtx, extra._meta, (c) => h.listTracksTool(c.db)));
+    async ({ project }, extra) => guard(getCtx, extra._meta, project, (c) => h.listTracksTool(c.db)));
 
   server.registerTool('recall',
     {
@@ -95,10 +126,11 @@ export function createServer(getCtx: CtxFn, actor?: Actor): McpServer {
         query: z.string(),
         k: z.number().int().min(1).max(CAPS.recallKMax).optional(),
         kind: z.enum(['decision', 'task']).optional(),
+        project: projectField,
       },
     },
-    async ({ query, k, kind }, extra) => guard(
-      getCtx, extra._meta, (c) => h.recallTool(c.db, c.dir, query, { k, kind }),
+    async ({ query, k, kind, project }, extra) => guard(
+      getCtx, extra._meta, project, (c) => h.recallTool(c.db, c.dir, query, { k, kind }),
     ));
 
   server.registerTool('update_task',
@@ -109,6 +141,7 @@ export function createServer(getCtx: CtxFn, actor?: Actor): McpServer {
         + 'attach.path is a path on this machine — download the file first if it lives elsewhere',
       inputSchema: {
         id: z.number().int().positive(),
+        project: projectField,
         edit: z.object({
           title: z.string().optional(), body: z.string().optional(),
           priority: priorityEnum.optional(), kind: kindEnum.optional(),
@@ -126,27 +159,40 @@ export function createServer(getCtx: CtxFn, actor?: Actor): McpServer {
           .describe('file id from get_task files[]'),
       },
     },
-    async (a, extra) => guard(getCtx, extra._meta, (c) => h.updateTask(
-      c.db, a as h.UpdateInput, actor ?? mcpActor(extra._meta),
+    async (a, extra) => guard(getCtx, extra._meta, a.project, (c) => h.updateTask(
+      c.db, a as h.UpdateInput, actor ?? mcpActor(extra._meta, a.project),
     )));
 
   return server;
 }
 
 /**
- * Ленивое подключение к базе. Кэшируем только успех: если репо появится (клиент сменил cwd)
- * или нативный модуль пересоберут, следующий вызов инструмента поднимется сам, без реконнекта.
+ * Ленивое подключение к базе. Кэшируем только успех: исправленный нативный модуль
+ * или явный project позволяет повторить вызов без реконнекта.
  */
 export function lazyCtx(): CtxFn {
   const contexts = new Map<string, Ctx>();
-  return (meta) => {
-    const cwd = mcpWorkspace(meta) ?? process.cwd();
+  return (meta, project) => {
+    if (project && !isAbsolute(project)) throw new KddError('project must be an absolute repository path');
+    if (project && (process.env.KDD_DB || process.env.KDD_DECISIONS_DIR)) {
+      throw new KddError('project cannot be used with KDD_DB or KDD_DECISIONS_DIR overrides');
+    }
+    const cwd = project ?? mcpWorkspace(meta) ?? process.cwd();
     const cached = contexts.get(cwd);
     if (cached) return cached;
     // Сначала всё, что может бросить, не заняв ресурс: иначе упавший resolveDecisionsDir
     // оставлял бы открытое соединение, которое некому закрыть — и так на каждый вызов.
+    let dbPath: string, projectPath: string;
+    try {
+      ({ dbPath, projectPath } = resolveDbPath(cwd));
+    } catch (e) {
+      if (e instanceof KddError && e.message.startsWith('not in a git repository')) {
+        throw new KddError(`Cannot resolve KDD store: git found no repository at '${cwd}'. `
+          + 'Use list_projects and pass project to the tool.');
+      }
+      throw e;
+    }
     const dir = resolveDecisionsDir(cwd);
-    const { dbPath, projectPath } = resolveDbPath(cwd);
     const ctx = { db: openDb(dbPath, projectPath), dir };
     contexts.set(cwd, ctx);
     return ctx;
@@ -173,10 +219,10 @@ const mcpWorkspace = (meta?: Meta): string | undefined => {
  * иначе «сдал через kdd — принял через MCP» проходит мимо гейта на самоприёмку. Экспортируется
  * ради теста — расхождение с CLI уже было баг.
  */
-export const mcpActor = (meta?: Record<string, unknown>): Actor => {
+export const mcpActor = (meta?: Record<string, unknown>, project?: string): Actor => {
   const hasTurnMetadata = !!meta && Object.hasOwn(meta, 'x-codex-turn-metadata');
   const values = codexTurn(meta);
-  const cwd = mcpWorkspace(meta) ?? process.cwd();
+  const cwd = project ?? mcpWorkspace(meta) ?? process.cwd();
   const normalizedTurnId = normalizeSessionId(values?.session_id)
     ?? normalizeSessionId(values?.thread_id)
     ?? normalizeSessionId(values?.threadId);

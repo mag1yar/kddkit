@@ -3,7 +3,7 @@ import { addTask, agentId, openDb, resolveDbPath, taskBrief } from '@kddkit/core
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -71,10 +71,10 @@ describe('mcp server over a real transport', () => {
     db.close();
   });
 
-  it('lists the five tools', async () => {
+  it('lists the six tools', async () => {
     const client = await connect(openDb(':memory:', 'x'));
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
-    expect(names).toEqual(['get_task', 'list_tasks', 'list_tracks', 'recall', 'update_task']);
+    expect(names).toEqual(['get_task', 'list_projects', 'list_tasks', 'list_tracks', 'recall', 'update_task']);
   });
 
   it('list_tasks returns grouped rows', async () => {
@@ -308,11 +308,64 @@ describe('a broken store', () => {
       process.chdir(mkdtempSync(join(tmpdir(), 'kdd-mcp-nogit-')));
       try {
         const client = await connectLazy();
-        expect((await client.listTools()).tools).toHaveLength(5);
+        expect((await client.listTools()).tools).toHaveLength(6);
         const res = await client.callTool({ name: 'list_tasks', arguments: {} });
-        expect(rawText(res)).toMatch(/not in a git repository/);
+        expect(rawText(res)).toContain(process.cwd());
+        expect(rawText(res)).toMatch(/store.*git found no repository/i);
+        expect(rawText(res)).not.toContain('.planning');
         expect((res as { isError?: boolean }).isError).toBe(true);
       } finally { process.chdir(cwd); }
+    });
+  });
+
+  it('selects the requested repository when the server starts above two repositories', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'kdd-mcp-container-'));
+    const repos = ['one', 'two'].map((name) => join(root, name));
+    const previousCwd = process.cwd();
+    await withEnv({ KDD_HOME: join(root, 'home'), KDD_DB: undefined, KDD_DECISIONS_DIR: undefined }, async () => {
+      for (const repo of repos) {
+        mkdirSync(repo);
+        execFileSync('git', ['init', '-q'], { cwd: repo });
+        const { dbPath, projectPath } = resolveDbPath(repo);
+        const db = openDb(dbPath, projectPath);
+        addTask(db, { title: repo }, { type: 'user' });
+        db.close();
+      }
+      process.chdir(root);
+      try {
+        const client = await connectLazy();
+        const projects = textOf(await client.callTool({ name: 'list_projects', arguments: {} }));
+        expect(projects).toHaveLength(2);
+        expect(projects.sort()).toEqual(repos.map((repo) => realpathSync(repo)).sort());
+        for (const repo of repos) {
+          const board = textOf(await client.callTool({
+            name: 'list_tasks', arguments: { project: repo },
+          }));
+          expect(board.tasks.new.map((t: { title: string }) => t.title)).toEqual([repo]);
+        }
+        const changed = await client.callTool({
+          name: 'update_task', arguments: { project: repos[1], id: 1, edit: { area: 'selected' } },
+        });
+        expect(changed.isError).not.toBe(true);
+        const first = textOf(await client.callTool({
+          name: 'get_task', arguments: { project: repos[0], id: 1 },
+        }));
+        const second = textOf(await client.callTool({
+          name: 'get_task', arguments: { project: repos[1], id: 1 },
+        }));
+        expect(first.task.area).toBeNull();
+        expect(second.task.area).toBe('selected');
+      } finally { process.chdir(previousCwd); }
+    });
+  });
+
+  it('refuses an explicit project when an environment override would select another store', async () => {
+    await withEnv({ KDD_DB: join(tmpdir(), 'other-board.db') }, async () => {
+      const res = await (await connectLazy()).callTool({
+        name: 'list_tasks', arguments: { project: process.cwd() },
+      });
+      expect(res.isError).toBe(true);
+      expect(rawText(res)).toMatch(/project cannot be used with KDD_DB/);
     });
   });
 

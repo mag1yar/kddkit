@@ -6884,6 +6884,10 @@ var require_dist = __commonJS({
   }
 });
 
+// src/server.ts
+import { execFileSync as execFileSync3 } from "child_process";
+import { isAbsolute } from "path";
+
 // ../../node_modules/.pnpm/zod@3.25.76/node_modules/zod/v3/external.js
 var external_exports = {};
 __export(external_exports, {
@@ -21102,6 +21106,7 @@ import { mkdirSync, renameSync, rmSync } from "fs";
 import { dirname } from "path";
 import { execFileSync } from "child_process";
 import { createHash } from "crypto";
+import { existsSync, readdirSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import Database2 from "better-sqlite3";
@@ -21447,6 +21452,31 @@ function resolveDecisionsDir(cwd = process.cwd()) {
     throw new KddError("not in a git repository (kdd resolves .planning via git)");
   }
   return join(top, ".planning", "decisions");
+}
+function listProjects() {
+  const home = kddHome();
+  if (!existsSync(home)) return [];
+  const out = [];
+  for (const entry of readdirSync(home, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const dbPath = join(home, entry.name, "kdd.db");
+    if (!existsSync(dbPath)) continue;
+    try {
+      const db = new Database2(dbPath, { readonly: true });
+      const rows = db.prepare(
+        `SELECT key, value FROM meta WHERE key IN ('project_path','autotick_enabled')`
+      ).all();
+      db.close();
+      const meta = new Map(rows.map((r) => [r.key, r.value]));
+      out.push({
+        dbPath,
+        projectPath: meta.get("project_path") ?? "(unknown)",
+        autoTickEnabled: meta.get("autotick_enabled") === "1"
+      });
+    } catch {
+    }
+  }
+  return out;
 }
 var STATUSES = ["backlog", "new", "in_progress", "review", "done"];
 var PRIORITIES = ["low", "medium", "high", "urgent"];
@@ -22436,10 +22466,10 @@ function updateTask(db, input, actor) {
 // src/server.ts
 var ok = (data) => ({ content: [{ type: "text", text: JSON.stringify(data) }] });
 var fail = (text) => ({ content: [{ type: "text", text }], isError: true });
-function guard(getCtx, meta, fn) {
+function guard(getCtx, meta, project, fn) {
   let c;
   try {
-    c = getCtx(meta);
+    c = getCtx(meta, project);
   } catch (e) {
     return fail(e instanceof KddError ? e.message : String(e));
   }
@@ -22457,6 +22487,27 @@ function guard(getCtx, meta, fn) {
 var statusEnum = external_exports.enum(STATUSES);
 var priorityEnum = external_exports.enum(PRIORITIES);
 var kindEnum = external_exports.enum(KINDS);
+var projectField = external_exports.string().min(1).optional().describe("Absolute path inside the git repository; use list_projects to find known projects");
+function knownProjects() {
+  return listProjects().flatMap((p) => {
+    try {
+      const output = execFileSync3(
+        "git",
+        ["--git-dir", p.projectPath, "worktree", "list", "--porcelain"],
+        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
+      );
+      return output.split(/\r?\n\r?\n/).filter((block) => !/^bare$/m.test(block)).map((block) => block.match(/^worktree (.+)$/m)?.[1]).filter((path) => !!path).filter((path) => {
+        try {
+          return resolveDbPath(path).dbPath === p.dbPath;
+        } catch {
+          return false;
+        }
+      });
+    } catch {
+      return [];
+    }
+  });
+}
 function createServer(getCtx, actor) {
   const server = new McpServer({ name: "kdd", version: "0.1.0" });
   server.registerTool(
@@ -22466,10 +22517,11 @@ function createServer(getCtx, actor) {
       inputSchema: {
         id: external_exports.number().int().positive(),
         full: external_exports.boolean().optional(),
-        brief: external_exports.boolean().optional()
+        brief: external_exports.boolean().optional(),
+        project: projectField
       }
     },
-    async ({ id, full, brief }, extra) => guard(getCtx, extra._meta, (c) => {
+    async ({ id, full, brief, project }, extra) => guard(getCtx, extra._meta, project, (c) => {
       if (brief && full) throw new KddError("brief and full are mutually exclusive");
       return brief ? taskBrief(c.db, c.dir, id) : syncedTaskDetail(c.db, c.dir, id, full);
     })
@@ -22483,18 +22535,33 @@ function createServer(getCtx, actor) {
         area: external_exports.string().optional(),
         kind: kindEnum.optional(),
         track_id: external_exports.number().int().positive().optional(),
-        ready: external_exports.boolean().optional()
+        ready: external_exports.boolean().optional(),
+        project: projectField
       }
     },
-    async (a, extra) => guard(getCtx, extra._meta, (c) => listTasks(c.db, a))
+    async (a, extra) => guard(getCtx, extra._meta, a.project, (c) => listTasks(c.db, a))
+  );
+  server.registerTool(
+    "list_projects",
+    {
+      description: "Absolute git worktree paths for known local KDD projects; pass one path as project to other tools",
+      inputSchema: {}
+    },
+    async () => {
+      try {
+        return ok(knownProjects());
+      } catch (e) {
+        return fail(String(e));
+      }
+    }
   );
   server.registerTool(
     "list_tracks",
     {
       description: 'Tracks with their "use when\u2026" description and status. Route new tasks to an active track matching the current branch/worktree; status=done marks a finished body of work (kept for context, not a routing target)',
-      inputSchema: {}
+      inputSchema: { project: projectField }
     },
-    async (_a, extra) => guard(getCtx, extra._meta, (c) => listTracksTool(c.db))
+    async ({ project }, extra) => guard(getCtx, extra._meta, project, (c) => listTracksTool(c.db))
   );
   server.registerTool(
     "recall",
@@ -22503,12 +22570,14 @@ function createServer(getCtx, actor) {
       inputSchema: {
         query: external_exports.string(),
         k: external_exports.number().int().min(1).max(CAPS.recallKMax).optional(),
-        kind: external_exports.enum(["decision", "task"]).optional()
+        kind: external_exports.enum(["decision", "task"]).optional(),
+        project: projectField
       }
     },
-    async ({ query, k, kind }, extra) => guard(
+    async ({ query, k, kind, project }, extra) => guard(
       getCtx,
       extra._meta,
+      project,
       (c) => recallTool(c.db, c.dir, query, { k, kind })
     )
   );
@@ -22518,6 +22587,7 @@ function createServer(getCtx, actor) {
       description: "Edit, move, comment and/or attach a file to a single task (actor=ai). A move may be refused (unchecked criteria, a task you submitted for review yourself) \u2014 the way through is move.reason, and only once the user has asked for it. attach.path is a path on this machine \u2014 download the file first if it lives elsewhere",
       inputSchema: {
         id: external_exports.number().int().positive(),
+        project: projectField,
         edit: external_exports.object({
           title: external_exports.string().optional(),
           body: external_exports.string().optional(),
@@ -22535,22 +22605,34 @@ function createServer(getCtx, actor) {
         detach: external_exports.number().int().positive().optional().describe("file id from get_task files[]")
       }
     },
-    async (a, extra) => guard(getCtx, extra._meta, (c) => updateTask(
+    async (a, extra) => guard(getCtx, extra._meta, a.project, (c) => updateTask(
       c.db,
       a,
-      actor ?? mcpActor(extra._meta)
+      actor ?? mcpActor(extra._meta, a.project)
     ))
   );
   return server;
 }
 function lazyCtx() {
   const contexts = /* @__PURE__ */ new Map();
-  return (meta) => {
-    const cwd = mcpWorkspace(meta) ?? process.cwd();
+  return (meta, project) => {
+    if (project && !isAbsolute(project)) throw new KddError("project must be an absolute repository path");
+    if (project && (process.env.KDD_DB || process.env.KDD_DECISIONS_DIR)) {
+      throw new KddError("project cannot be used with KDD_DB or KDD_DECISIONS_DIR overrides");
+    }
+    const cwd = project ?? mcpWorkspace(meta) ?? process.cwd();
     const cached2 = contexts.get(cwd);
     if (cached2) return cached2;
+    let dbPath, projectPath;
+    try {
+      ({ dbPath, projectPath } = resolveDbPath(cwd));
+    } catch (e) {
+      if (e instanceof KddError && e.message.startsWith("not in a git repository")) {
+        throw new KddError(`Cannot resolve KDD store: git found no repository at '${cwd}'. Use list_projects and pass project to the tool.`);
+      }
+      throw e;
+    }
     const dir = resolveDecisionsDir(cwd);
-    const { dbPath, projectPath } = resolveDbPath(cwd);
     const ctx = { db: openDb(dbPath, projectPath), dir };
     contexts.set(cwd, ctx);
     return ctx;
@@ -22573,10 +22655,10 @@ var mcpWorkspace = (meta) => {
   if (!workspaces || typeof workspaces !== "object" || Array.isArray(workspaces)) return void 0;
   return Object.keys(workspaces).find(Boolean);
 };
-var mcpActor = (meta) => {
+var mcpActor = (meta, project) => {
   const hasTurnMetadata = !!meta && Object.hasOwn(meta, "x-codex-turn-metadata");
   const values = codexTurn(meta);
-  const cwd = mcpWorkspace(meta) ?? process.cwd();
+  const cwd = project ?? mcpWorkspace(meta) ?? process.cwd();
   const normalizedTurnId = normalizeSessionId(values?.session_id) ?? normalizeSessionId(values?.thread_id) ?? normalizeSessionId(values?.threadId);
   const manualSession = process.env.KDD_SESSION ? void 0 : normalizedTurnId ? { client: "codex", sessionId: normalizedTurnId, cwd } : hasTurnMetadata ? { client: "codex", cwd } : manualSessionFromEnv(cwd);
   if (values) {
