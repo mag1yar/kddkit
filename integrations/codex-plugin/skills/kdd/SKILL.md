@@ -1,6 +1,6 @@
 ---
 name: kdd
-description: Use when working in a project that has a KDD board — to check current tasks, record progress, move tasks through the board, or recall past decisions. KDD is the substrate that stores tasks, decisions and project context outside the context window, pulled on demand and shared across every worktree.
+description: Read before any KDD MCP tool or `kdd` CLI command in a project with a KDD board. Covers task progress, board moves, past decisions, and CLI fallback when MCP is unavailable.
 ---
 
 # KDD — task & memory substrate
@@ -32,6 +32,14 @@ repository, call `list_projects`, then pass the chosen absolute worktree path as
 `project` to **each** MCP task call. A known repository path works even if its
 board is not listed yet. Never guess a repository from the server cwd.
 
+If an older MCP server lacks `list_projects` or `project` and reports `not in a git
+repository`, its starting cwd is fixed for this session. Repeating the same call
+or changing the shell cwd will not fix it. Run the CLI from the target repository
+for task writes until Claude Code or Codex is restarted from that repository;
+tell the user why MCP failed and how to restore it. Use the CLI when MCP is
+unavailable for another reason too, and explain the actual failure. CLI writes
+from Claude Code or Codex are still attributed to `ai`.
+
 ### CLI reference — the whole surface, no `--help` needed
 
 **Every command takes `--json`** for a machine-readable object. Add it when you
@@ -55,6 +63,8 @@ kdd track ls [--all]               # --all includes done tracks
 Writes — only on an explicit user request (see Iron Law):
 
 ```
+kdd comment <id> "<text>"   # task write when MCP is unavailable
+kdd move <id> <status> [--reason "<text>"]   # task write when MCP is unavailable
 kdd block <id> "<reason>"   /   kdd unblock <id>
 kdd attach <taskId> <path> [--desc "<text>"]   # local path only, 20 MB cap
 kdd detach <fileId>
@@ -113,8 +123,9 @@ attach with `update_task { id, edit: { track_id } }`.
 
 ## Writing to the board
 
-All task writes go through the MCP `update_task` tool (logged as `ai`), never the
-CLI equivalents.
+Use the MCP `update_task` tool for task writes when available (logged as `ai`).
+When MCP is unavailable, use the matching CLI command from the target repository
+as described above.
 
 - Record progress as you go: `update_task { id, comment: "<what happened>" }`.
   Write the comment in your own voice, as the one who did the work — "Fixed the
