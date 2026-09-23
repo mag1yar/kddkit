@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-23
 **Task:** #23
-**Status:** design approved in chat; written spec awaiting review
+**Status:** written spec approved in chat for implementation planning
 
 ## Goal
 
