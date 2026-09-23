@@ -91,7 +91,9 @@ describe('attachFile', () => {
   // строка в renderShow/get_task до этой правки. Капаем на ЗАПИСИ, не на чтении, чтобы база
   // никогда не держала абсурдное имя вовсе.
   it('original_name режется капом на записи, а не остаётся сырым от клиента', () => {
-    const longName = `${'а'.repeat(CAPS.fileNameChars + 50)}.png`;
+    // ASCII сохраняет проверку символьного cap, но не превышает Linux NAME_MAX в 255 байт
+    // до вызова attachFile — иначе тест падает при создании fixture и код не проверяет.
+    const longName = `${'a'.repeat(CAPS.fileNameChars + 50)}.png`;
     const f = attachFile(db, dbPath, 1, src(longName, 'X'), {}, user);
     expect(f.original_name.length).toBeLessThan(longName.length);
     expect(f.original_name).toMatch(/… \[\+\d+ chars\]$/);
