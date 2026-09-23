@@ -7,7 +7,7 @@ import type Database from 'better-sqlite3';
 import { CAPS, capText } from './caps.js';
 import { now } from './db.js';
 import { KddError } from './errors.js';
-import { appendEvent, mustGetTask } from './ops.js';
+import { appendTaskMutationEvent, mustGetTask } from './ops.js';
 import type { Actor } from './state.js';
 import type { FileRow } from './types.js';
 
@@ -119,13 +119,13 @@ export function attachFile(
       // (редактора описаний в UI нет, DO NOTHING проглотил бы его без единого признака).
       if (opts.description && opts.description !== row.description) {
         db.prepare(`UPDATE files SET description = ? WHERE id = ?`).run(opts.description, row.id);
-        appendEvent(db, taskId, actor, 'file_attached', { id: row.id, name, described: true });
+        appendTaskMutationEvent(db, taskId, actor, 'file_attached', { id: row.id, name, described: true });
         db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
         return { ...row, description: opts.description };
       }
       return row;
     }
-    appendEvent(db, taskId, actor, 'file_attached', { id: row.id, name });
+    appendTaskMutationEvent(db, taskId, actor, 'file_attached', { id: row.id, name });
     db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
     return row;
   }).immediate();
@@ -147,7 +147,7 @@ export function detachFile(
   // неё сознательно.
   db.transaction(() => {
     db.prepare(`DELETE FROM files WHERE id = ?`).run(fileId);
-    appendEvent(db, f.task_id, actor, 'file_detached', { id: fileId, name: f.original_name });
+    appendTaskMutationEvent(db, f.task_id, actor, 'file_detached', { id: fileId, name: f.original_name });
     db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), f.task_id);
     // Считаем по (sha256, ext), а не по одному sha256: имя блоба на диске строится из ОБОИХ
     // (filePath), и одни и те же байты под двумя расширениями — это два файла. Счёт по одному

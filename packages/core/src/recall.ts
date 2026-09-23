@@ -13,9 +13,9 @@ export function syncIndex(db: Database.Database, decisionsDir: string): void {
       : [];
     const inDb = new Map(
       (db.prepare(
-        `SELECT slug, path, content_hash, superseded_by, source_tasks FROM decisions`,
+        `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`,
       ).all() as {
-        slug: string; path: string; content_hash: string;
+        slug: string; path: string; content_hash: string; created: string | null;
         superseded_by: string | null; source_tasks: string;
       }[])
         .map((r) => [r.slug, r]),
@@ -33,9 +33,10 @@ export function syncIndex(db: Database.Database, decisionsDir: string): void {
       const row = inDb.get(slug);
       if (row && row.content_hash === doc.hash &&
           (row.superseded_by ?? null) === (supersededBy ?? null)) {
-        if (row.path !== path || row.source_tasks !== sourceTasks) {
-          db.prepare(`UPDATE decisions SET path = ?, source_tasks = ? WHERE slug = ?`)
-            .run(path, sourceTasks, slug);
+        if (row.path !== path || row.source_tasks !== sourceTasks ||
+            row.created !== (doc.created || null)) {
+          db.prepare(`UPDATE decisions SET path = ?, source_tasks = ?, created = ? WHERE slug = ?`)
+            .run(path, sourceTasks, doc.created || null, slug);
         }
         continue;
       }

@@ -2,7 +2,7 @@ import {
   CAPS, STATUSES, capText as cap, now,
   type AttentionInbox, type Criterion, type DecisionDetail, type EventRow, type RecallHit,
   type Status, type Task, type TaskListRow,
-  type TaskBrief, type TaskDetailCapped, type Track,
+  type ManualProvenance, type SessionHandoff, type TaskBrief, type TaskDetailCapped, type Track,
 } from '@kddkit/core';
 
 // «#5 claimed by ai:s1 (expires in 14m)» — human-строка после claim/renew.
@@ -51,6 +51,22 @@ export function renderAttention(inbox: AttentionInbox): string {
   if (lines.length === 0) lines.push('attention: none');
   if (inbox.omitted > 0) lines.push(`(+${inbox.omitted} omitted)`);
   return lines.join('\n');
+}
+
+function renderManual(lines: string[], provenance?: ManualProvenance): void {
+  if (!provenance) return;
+  lines.push('manual provenance:');
+  for (const [key, value] of Object.entries(provenance)) lines.push(`  ${key}: ${value}`);
+}
+
+function renderHandoffs(lines: string[], handoffs: SessionHandoff[], omitted: number): void {
+  if (!handoffs.length && !omitted) return;
+  lines.push('handoffs:');
+  for (const handoff of handoffs) {
+    lines.push(`  ${handoff.from_client}:${handoff.from_session_id} -> ` +
+      `${handoff.to_client}:${handoff.to_session_id} (event #${handoff.event_id})`);
+  }
+  if (omitted) lines.push(`  (+${omitted} omitted)`);
 }
 
 export function renderShow(d: TaskDetailCapped): string {
@@ -104,6 +120,9 @@ export function renderShow(d: TaskDetailCapped): string {
       lines.push(`  [${c.author} ${renderAge(c.created_at)} ago] ${c.body}`);
     }
   }
+  if (d.manual_provenance || d.handoffs_total) lines.push('');
+  renderManual(lines, d.manual_provenance);
+  renderHandoffs(lines, d.handoffs, d.handoffs_total - d.handoffs.length);
   lines.push('', 'history:');
   for (const e of d.events) {
     lines.push(`  ${renderAge(e.created_at)} ago ${e.actor_type} ${e.action}` +
@@ -173,10 +192,13 @@ export function renderBrief(brief: TaskBrief): string {
     }
     if (brief.files.omitted) lines.push(`  (+${brief.files.omitted} omitted)`);
   }
+  renderManual(lines, brief.manual_provenance);
+  renderHandoffs(lines, brief.handoffs.items, brief.handoffs.omitted);
   if (brief.provenance) {
-    lines.push('provenance:');
+    lines.push('worker provenance:');
     for (const [key, value] of Object.entries(brief.provenance)) lines.push(`  ${key}: ${value}`);
   }
+  if (brief.worker_provenance_omitted) lines.push('worker provenance omitted');
   const criterion = brief.next_action.criterion_id === undefined
     ? ''
     : ` criterion #${brief.next_action.criterion_id}`;

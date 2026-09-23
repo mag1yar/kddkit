@@ -77,12 +77,13 @@ import {
 } from "@kddkit/ui";
 
 // src/context.ts
-import { agentId, KddError, openDb, resolveDbPath } from "@kddkit/core";
+import { agentId, KddError, manualSessionFromEnv, openDb, resolveDbPath } from "@kddkit/core";
 function getActor() {
   const explicit = process.env.KDD_ACTOR;
   if (explicit === "user") return { type: "user" };
   if (explicit !== "ai" && process.env.CLAUDECODE !== "1" && !process.env.CODEX_SESSION_ID && !process.env.CODEX_THREAD_ID) return { type: "user" };
-  return { type: "ai", id: agentId() };
+  const manualSession = manualSessionFromEnv();
+  return { type: "ai", id: agentId(), ...manualSession ? { manualSession } : {} };
 }
 function withDbAt(dbPath, projectPath, fn) {
   const db = openDb(dbPath, projectPath);
@@ -231,6 +232,19 @@ function renderAttention(inbox) {
   if (inbox.omitted > 0) lines.push(`(+${inbox.omitted} omitted)`);
   return lines.join("\n");
 }
+function renderManual(lines, provenance) {
+  if (!provenance) return;
+  lines.push("manual provenance:");
+  for (const [key, value] of Object.entries(provenance)) lines.push(`  ${key}: ${value}`);
+}
+function renderHandoffs(lines, handoffs, omitted) {
+  if (!handoffs.length && !omitted) return;
+  lines.push("handoffs:");
+  for (const handoff of handoffs) {
+    lines.push(`  ${handoff.from_client}:${handoff.from_session_id} -> ${handoff.to_client}:${handoff.to_session_id} (event #${handoff.event_id})`);
+  }
+  if (omitted) lines.push(`  (+${omitted} omitted)`);
+}
 function renderShow(d) {
   const t = d.task;
   const lines = [
@@ -274,6 +288,9 @@ function renderShow(d) {
       lines.push(`  [${c.author} ${renderAge(c.created_at)} ago] ${c.body}`);
     }
   }
+  if (d.manual_provenance || d.handoffs_total) lines.push("");
+  renderManual(lines, d.manual_provenance);
+  renderHandoffs(lines, d.handoffs, d.handoffs_total - d.handoffs.length);
   lines.push("", "history:");
   for (const e of d.events) {
     lines.push(`  ${renderAge(e.created_at)} ago ${e.actor_type} ${e.action}${e.detail ? ` ${e.detail}` : ""}`);
@@ -335,10 +352,13 @@ function renderBrief(brief) {
     }
     if (brief.files.omitted) lines.push(`  (+${brief.files.omitted} omitted)`);
   }
+  renderManual(lines, brief.manual_provenance);
+  renderHandoffs(lines, brief.handoffs.items, brief.handoffs.omitted);
   if (brief.provenance) {
-    lines.push("provenance:");
+    lines.push("worker provenance:");
     for (const [key, value] of Object.entries(brief.provenance)) lines.push(`  ${key}: ${value}`);
   }
+  if (brief.worker_provenance_omitted) lines.push("worker provenance omitted");
   const criterion = brief.next_action.criterion_id === void 0 ? "" : ` criterion #${brief.next_action.criterion_id}`;
   lines.push(`next [${brief.next_action.kind}${criterion}]: ${brief.next_action.text}`);
   lines.push(`budget: ${brief.budget.max_bytes} bytes`);
@@ -1152,8 +1172,12 @@ program.command("projects").option("--json").action((o) => run(o.json, () => {
   out(o.json, ps, () => ps.length ? ps.map((p) => `${p.projectPath}
   ${p.dbPath}`).join("\n") : "no projects");
 }));
-program.command("export").action(() => run(true, () => {
-  const dump = withDb((db) => exportBoard(db));
+program.command("export").option("--include-sensitive").action((o) => run(true, () => {
+  const dump = withDb((db) => exportBoard(
+    db,
+    resolveDecisionsDir(),
+    { includeSensitive: !!o.includeSensitive }
+  ));
   console.log(JSON.stringify(dump));
 }));
 program.parse();

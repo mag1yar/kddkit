@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { agentId, KddError, openDb, resolveDbPath, type Actor } from '@kddkit/core';
+import { agentId, KddError, manualSessionFromEnv, openDb, resolveDbPath, type Actor } from '@kddkit/core';
 
 /**
  * Кто дёргает CLI. KDD_ACTOR — явное слово (его ставят tick/worker), иначе смотрим на само
@@ -13,7 +13,8 @@ export function getActor(): Actor {
   if (explicit === 'user') return { type: 'user' };
   if (explicit !== 'ai' && process.env.CLAUDECODE !== '1'
     && !process.env.CODEX_SESSION_ID && !process.env.CODEX_THREAD_ID) return { type: 'user' };
-  return { type: 'ai', id: agentId() };
+  const manualSession = manualSessionFromEnv();
+  return { type: 'ai', id: agentId(), ...(manualSession ? { manualSession } : {}) };
 }
 
 export function withDbAt<T>(dbPath: string, projectPath: string, fn: (db: Database.Database) => T): T {

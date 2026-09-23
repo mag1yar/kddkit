@@ -10,7 +10,29 @@ export const PRIORITIES: Priority[] = ['low', 'medium', 'high', 'urgent'];
 export type Kind = 'feature' | 'bug' | 'chore' | 'research';
 export const KINDS: Kind[] = ['feature', 'bug', 'chore', 'research'];
 
-export type Actor = { type: 'user' | 'ai'; id?: string };
+export interface ManualSession {
+  client: 'claude' | 'codex';
+  sessionId?: string;
+  cwd: string;
+}
+export type Actor = { type: 'user' | 'ai'; id?: string; manualSession?: ManualSession };
+
+export function normalizeSessionId(raw: unknown): string | undefined {
+  return typeof raw === 'string' && /^[A-Za-z0-9._:-]{1,256}$/.test(raw) ? raw : undefined;
+}
+
+export function manualSessionFromEnv(cwd = process.cwd()): ManualSession | undefined {
+  const e = process.env;
+  if (e.KDD_SESSION) return undefined;
+  if (e.CLAUDECODE === '1' || e.CLAUDE_CODE_SESSION_ID) {
+    return { client: 'claude', sessionId: normalizeSessionId(e.CLAUDE_CODE_SESSION_ID), cwd };
+  }
+  if (e.CODEX_SESSION_ID || e.CODEX_THREAD_ID) {
+    return { client: 'codex',
+      sessionId: normalizeSessionId(e.CODEX_SESSION_ID) ?? normalizeSessionId(e.CODEX_THREAD_ID), cwd };
+  }
+  return undefined;
+}
 
 export const TRANSITIONS: Record<Status, Status[]> = {
   backlog: ['new'],

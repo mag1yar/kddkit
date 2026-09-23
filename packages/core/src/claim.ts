@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import { now } from './db.js';
 import { MAX_FAILED_ATTEMPTS, type Actor } from './state.js';
-import { appendEvent, authorOf, mustGetTask } from './ops.js';
+import { appendEvent, appendTaskMutationEvent, authorOf, mustGetTask } from './ops.js';
 import { KddError } from './errors.js';
 import { PRIORITY_ORDER } from './queries.js';
 import type { Task } from './types.js';
@@ -262,7 +262,7 @@ export function claimTask(
       return { ok: false,
         error: `#${id} is not claimable (status ${t.status}${t.claimed_by ? `, held by ${t.claimed_by}` : ''})` };
     }
-    appendEvent(db, id, actor, 'claimed', { ttl, expires }, { type: 'claim' });
+    appendTaskMutationEvent(db, id, actor, 'claimed', { ttl, expires }, { type: 'claim' });
     return { ok: true, task: mustGetTask(db, id) };
   })();
 }
@@ -286,7 +286,7 @@ export function claimNext(
          WHERE id=? AND status='new' AND blocked=0 AND archived_at IS NULL AND claimed_by IS NULL`,
       ).run(authorOf(actor), expires, now(), id);
       if (r.changes === 1) {
-        appendEvent(db, id, actor, 'claimed', { ttl, expires }, { type: 'claim' });
+        appendTaskMutationEvent(db, id, actor, 'claimed', { ttl, expires }, { type: 'claim' });
         return mustGetTask(db, id);
       }
     }

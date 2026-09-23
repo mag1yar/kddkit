@@ -21105,6 +21105,7 @@ import { createHash } from "crypto";
 import { homedir } from "os";
 import { join } from "path";
 import Database2 from "better-sqlite3";
+import { execFileSync as execFileSync2 } from "child_process";
 import { createHash as createHash2 } from "crypto";
 import {
   existsSync as existsSync2,
@@ -21450,6 +21451,24 @@ function resolveDecisionsDir(cwd = process.cwd()) {
 var STATUSES = ["backlog", "new", "in_progress", "review", "done"];
 var PRIORITIES = ["low", "medium", "high", "urgent"];
 var KINDS = ["feature", "bug", "chore", "research"];
+function normalizeSessionId(raw) {
+  return typeof raw === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(raw) ? raw : void 0;
+}
+function manualSessionFromEnv(cwd = process.cwd()) {
+  const e = process.env;
+  if (e.KDD_SESSION) return void 0;
+  if (e.CLAUDECODE === "1" || e.CLAUDE_CODE_SESSION_ID) {
+    return { client: "claude", sessionId: normalizeSessionId(e.CLAUDE_CODE_SESSION_ID), cwd };
+  }
+  if (e.CODEX_SESSION_ID || e.CODEX_THREAD_ID) {
+    return {
+      client: "codex",
+      sessionId: normalizeSessionId(e.CODEX_SESSION_ID) ?? normalizeSessionId(e.CODEX_THREAD_ID),
+      cwd
+    };
+  }
+  return void 0;
+}
 var TRANSITIONS = {
   backlog: ["new"],
   new: ["backlog", "in_progress"],
@@ -21556,6 +21575,34 @@ function appendEvent(db, taskId, actor, action, detail, opts) {
   );
   return Number(r.lastInsertRowid);
 }
+function appendTaskMutationEvent(db, taskId, actor, action, detail, opts) {
+  const session = actor.type === "ai" ? actor.manualSession : void 0;
+  if (!session) return appendEvent(db, taskId, actor, action, detail, opts);
+  const git2 = (args) => {
+    try {
+      return execFileSync2("git", args, {
+        cwd: session.cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"]
+      }).trim() || void 0;
+    } catch {
+      return void 0;
+    }
+  };
+  const worktree = git2(["rev-parse", "--show-toplevel"]);
+  const branch = worktree ? git2(["symbolic-ref", "--quiet", "--short", "HEAD"]) : void 0;
+  const head = worktree ? git2(["rev-parse", "--verify", "HEAD"]) : void 0;
+  return appendEvent(db, taskId, actor, action, {
+    ...detail ?? {},
+    manual_provenance: {
+      client: session.client,
+      ...normalizeSessionId(session.sessionId) ? { session_id: session.sessionId } : {},
+      ...worktree ? { worktree } : {},
+      ...branch ? { branch } : {},
+      ...head ? { head_commit: head } : {}
+    }
+  }, opts);
+}
 function mustGetTask(db, id) {
   const t = db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id);
   if (!t) throw new KddError(`task #${id} not found`);
@@ -21581,7 +21628,7 @@ function editTask(db, id, patch, actor) {
     mustGetTask(db, id);
     const sets = fields.map((f) => `${f} = ?`).join(", ");
     db.prepare(`UPDATE tasks SET ${sets}, updated_at = ? WHERE id = ?`).run(...fields.map((f) => patch[f]), now(), id);
-    appendEvent(db, id, actor, "edited", { fields });
+    appendTaskMutationEvent(db, id, actor, "edited", { fields });
     return mustGetTask(db, id);
   })();
 }
@@ -21593,7 +21640,7 @@ function commentTask(db, id, body, actor) {
     const r = db.prepare(
       `INSERT INTO comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)`
     ).run(id, authorOf(actor), text, now());
-    appendEvent(db, id, actor, "commented");
+    appendTaskMutationEvent(db, id, actor, "commented");
     return db.prepare(`SELECT * FROM comments WHERE id = ?`).get(Number(r.lastInsertRowid));
   })();
 }
@@ -21635,7 +21682,7 @@ function moveTask(db, id, to, actor, reason) {
       `UPDATE tasks SET status = ?, position = ?, updated_at = ?${leaving ? ", claimed_by = NULL, claim_expires = NULL" : ""}${reset ? ", failed_attempts = 0" : ""}
        WHERE id = ?`
     ).run(to, nextPosition(db, to), now(), id);
-    appendEvent(db, id, actor, "moved", {
+    appendTaskMutationEvent(db, id, actor, "moved", {
       from: t.status,
       to,
       ...reason ? { reason } : {},
@@ -21728,13 +21775,13 @@ function attachFile(db, dbPath, taskId, srcPath, opts, actor) {
     if (r.changes === 0) {
       if (opts.description && opts.description !== row.description) {
         db.prepare(`UPDATE files SET description = ? WHERE id = ?`).run(opts.description, row.id);
-        appendEvent(db, taskId, actor, "file_attached", { id: row.id, name, described: true });
+        appendTaskMutationEvent(db, taskId, actor, "file_attached", { id: row.id, name, described: true });
         db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
         return { ...row, description: opts.description };
       }
       return row;
     }
-    appendEvent(db, taskId, actor, "file_attached", { id: row.id, name });
+    appendTaskMutationEvent(db, taskId, actor, "file_attached", { id: row.id, name });
     db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
     return row;
   }).immediate();
@@ -21744,7 +21791,7 @@ function detachFile(db, dbPath, fileId, actor) {
   if (!f) throw new KddError(`file #${fileId} not found`);
   db.transaction(() => {
     db.prepare(`DELETE FROM files WHERE id = ?`).run(fileId);
-    appendEvent(db, f.task_id, actor, "file_detached", { id: fileId, name: f.original_name });
+    appendTaskMutationEvent(db, f.task_id, actor, "file_detached", { id: fileId, name: f.original_name });
     db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), f.task_id);
     const left = db.prepare(`SELECT COUNT(*) AS c FROM files WHERE sha256 = ? AND ext = ?`).get(f.sha256, f.ext).c;
     if (left === 0) rmSync2(filePath(dbPath, f), { force: true });
@@ -21808,7 +21855,7 @@ function syncIndex(db, decisionsDir) {
     const files = existsSync4(decisionsDir) ? readdirSync3(decisionsDir).filter((f) => f.endsWith(".md")) : [];
     const inDb = new Map(
       db.prepare(
-        `SELECT slug, path, content_hash, superseded_by, source_tasks FROM decisions`
+        `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`
       ).all().map((r) => [r.slug, r])
     );
     const seen = /* @__PURE__ */ new Set();
@@ -21822,8 +21869,8 @@ function syncIndex(db, decisionsDir) {
       const sourceTasks = JSON.stringify(doc.sourceTasks);
       const row = inDb.get(slug);
       if (row && row.content_hash === doc.hash && (row.superseded_by ?? null) === (supersededBy ?? null)) {
-        if (row.path !== path || row.source_tasks !== sourceTasks) {
-          db.prepare(`UPDATE decisions SET path = ?, source_tasks = ? WHERE slug = ?`).run(path, sourceTasks, slug);
+        if (row.path !== path || row.source_tasks !== sourceTasks || row.created !== (doc.created || null)) {
+          db.prepare(`UPDATE decisions SET path = ?, source_tasks = ?, created = ? WHERE slug = ?`).run(path, sourceTasks, doc.created || null, slug);
         }
         continue;
       }
@@ -21903,6 +21950,49 @@ function recall(db, decisionsDir, query, opts = {}) {
   });
 }
 var PRIORITY_ORDER = `CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
+function manualEvent(event) {
+  if (event.actor_type !== "ai" || !event.detail) return void 0;
+  try {
+    const detail = JSON.parse(event.detail);
+    if (!detail || typeof detail !== "object") return void 0;
+    const raw = detail.manual_provenance;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return void 0;
+    const p = raw;
+    if (p.client !== "claude" && p.client !== "codex") return void 0;
+    return {
+      client: p.client,
+      ...normalizeSessionId(p.session_id) ? { session_id: p.session_id } : {},
+      ...typeof p.worktree === "string" ? { worktree: p.worktree } : {},
+      ...typeof p.branch === "string" ? { branch: p.branch } : {},
+      ...typeof p.head_commit === "string" ? { head_commit: p.head_commit } : {}
+    };
+  } catch {
+    return void 0;
+  }
+}
+function manualHistory(events) {
+  let latest;
+  let previous;
+  const handoffs = [];
+  for (const event of [...events].sort((a, b) => a.id - b.id)) {
+    const current = manualEvent(event);
+    if (!current) continue;
+    latest = current;
+    if (!current.session_id) continue;
+    if (previous && (previous.client !== current.client || previous.session_id !== current.session_id)) {
+      handoffs.push({
+        from_client: previous.client,
+        from_session_id: previous.session_id,
+        to_client: current.client,
+        to_session_id: current.session_id,
+        event_id: event.id,
+        at: event.created_at
+      });
+    }
+    previous = { client: current.client, session_id: current.session_id };
+  }
+  return { ...latest ? { manual_provenance: latest } : {}, handoffs };
+}
 var READY_SQL = `(status = 'new' AND blocked = 0 AND archived_at IS NULL AND kind <> 'research')`;
 function boardData(db, f = {}) {
   const where = [f.archived ? "archived_at IS NOT NULL" : "archived_at IS NULL"];
@@ -21961,7 +22051,17 @@ function taskDetail(db, id) {
       WHERE CAST(source.value AS INTEGER) = ?
       ORDER BY d.slug`
   ).all(id);
-  return { task, criteria, comments, events, links, decisions, files, agent_runs_total };
+  return {
+    task,
+    criteria,
+    comments,
+    events,
+    links,
+    decisions,
+    files,
+    agent_runs_total,
+    ...manualHistory(events)
+  };
 }
 function taskDetailCapped(db, id) {
   const d = taskDetail(db, id);
@@ -21985,7 +22085,10 @@ function taskDetailCapped(db, id) {
       ...f,
       description: f.description === null ? null : capText(f.description, CAPS.fileDescChars)
     })),
-    files_total: d.files.length
+    files_total: d.files.length,
+    ...d.manual_provenance ? { manual_provenance: d.manual_provenance } : {},
+    handoffs: d.handoffs.slice(-CAPS.events),
+    handoffs_total: d.handoffs.length
   };
 }
 function syncedTaskDetail(db, decisionsDir, id, full = false) {
@@ -22112,6 +22215,7 @@ function fitBrief(brief, sources, errorSource) {
   drain(brief, brief.files);
   drain(brief, brief.links);
   drain(brief, brief.decisions);
+  drain(brief, brief.handoffs);
   if (briefBytes(brief) > CAPS.briefBytes && brief.provenance?.error && errorSource) {
     for (const cap of [128, 64, 32, 16]) {
       brief.provenance.error = capText(errorSource, cap);
@@ -22119,7 +22223,11 @@ function fitBrief(brief, sources, errorSource) {
     }
     delete brief.provenance.error;
   }
-  if (briefBytes(brief) > CAPS.briefBytes && brief.provenance) delete brief.provenance;
+  for (const source of [brief.manual_provenance, brief.provenance]) {
+    for (const field of ["worktree", "branch"]) {
+      if (briefBytes(brief) > CAPS.briefBytes && source?.[field]) delete source[field];
+    }
+  }
   const caps = {
     block_reason: CAPS.blockReasonChars,
     goal: 512,
@@ -22146,6 +22254,13 @@ function fitBrief(brief, sources, errorSource) {
       tighten(key);
       if (briefBytes(brief) <= CAPS.briefBytes) return brief;
     }
+  }
+  while (briefBytes(brief) > CAPS.briefBytes && brief.criteria.items.at(-1)?.checked_at !== null && brief.criteria.items.length > 0) {
+    omitLastItem(brief.criteria);
+  }
+  if (briefBytes(brief) > CAPS.briefBytes && brief.provenance) {
+    delete brief.provenance;
+    brief.worker_provenance_omitted = true;
   }
   drain(brief, brief.criteria);
   if (briefBytes(brief) > CAPS.briefBytes) {
@@ -22228,6 +22343,11 @@ function taskBrief(db, decisionsDir, id) {
         path: file.path
       })).sort((a, b) => a.id - b.id),
       omitted: 0
+    },
+    ...detail.manual_provenance ? { manual_provenance: detail.manual_provenance } : {},
+    handoffs: {
+      items: detail.handoffs.slice(-3).reverse(),
+      omitted: Math.max(0, detail.handoffs.length - 3)
     },
     ...provenance ? { provenance } : {},
     next_action: action,
@@ -22454,12 +22574,18 @@ var mcpWorkspace = (meta) => {
   return Object.keys(workspaces).find(Boolean);
 };
 var mcpActor = (meta) => {
+  const hasTurnMetadata = !!meta && Object.hasOwn(meta, "x-codex-turn-metadata");
   const values = codexTurn(meta);
+  const cwd = mcpWorkspace(meta) ?? process.cwd();
+  const normalizedTurnId = normalizeSessionId(values?.session_id) ?? normalizeSessionId(values?.thread_id) ?? normalizeSessionId(values?.threadId);
+  const manualSession = process.env.KDD_SESSION ? void 0 : normalizedTurnId ? { client: "codex", sessionId: normalizedTurnId, cwd } : hasTurnMetadata ? { client: "codex", cwd } : manualSessionFromEnv(cwd);
   if (values) {
     const id = values.session_id ?? values.thread_id ?? values.threadId;
-    if (typeof id === "string" && id) return { type: "ai", id: `codex:${id}` };
+    if (typeof id === "string" && id) {
+      return { type: "ai", id: "codex:" + id, ...manualSession ? { manualSession } : {} };
+    }
   }
-  return { type: "ai", id: agentId() ?? "mcp" };
+  return { type: "ai", id: agentId() ?? "mcp", ...manualSession ? { manualSession } : {} };
 };
 async function startServer() {
   await createServer(lazyCtx()).connect(new StdioServerTransport());

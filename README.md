@@ -114,6 +114,8 @@ Full command set: `add`, `board`, `show`, `brief`, `attention`, `move`, `edit`, 
 `decide`, `decision`, `recall`, `status`, `rebuild`, `projects`, `export`, `ui`. Add
 `--json` to most for machine-readable output.
 
+`kdd export` writes a versioned JSON board snapshot; see the [export v1 contract](docs/export-v1.md).
+
 On the board itself, a task's dialog has a **Files** tab: drop a file, or
 paste/drop an image straight into the body's markdown editor to attach it and
 insert `![…](…)` inline. `kdd attach <taskId> <path> [--desc "<text>"]` does

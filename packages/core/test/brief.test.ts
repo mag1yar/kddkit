@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   CAPS, addCriterion, addTask, appendAgentEvent, attachFile, blockTask, capText, commentTask,
+  editTask,
   linkTasks, openDb, setCriterionChecked, taskBrief, taskDetail,
 } from '../src/index.js';
 
@@ -158,6 +159,76 @@ describe('taskBrief', () => {
       after_commit: 'new-b',
       error: 'last error',
     });
+  });
+
+  it('shows manual and worker provenance side by side with separate commit meanings', () => {
+    const { db, decisionsDir } = setup();
+    const task = addTask(db, { title: 'both sources' }, user);
+    const actor = (sessionId: string) => ({
+      type: 'ai' as const, id: 'codex:short',
+      manualSession: { client: 'codex' as const, sessionId, cwd: process.cwd() },
+    });
+    editTask(db, task.id, { area: 'first' }, actor('session-A'));
+    editTask(db, task.id, { area: 'second' }, actor('session-B'));
+    appendAgentEvent(db, task.id, 'worker-1', 'run_start', { detail: { head: 'before-worker' } });
+    appendAgentEvent(db, task.id, 'worker-1', 'run_end', { detail: { head: 'after-worker' } });
+
+    const brief = taskBrief(db, decisionsDir, task.id);
+    expect(brief.manual_provenance).toMatchObject({
+      client: 'codex', session_id: 'session-B',
+      head_commit: expect.stringMatching(/^[0-9a-f]{40}$/),
+    });
+    expect(brief.provenance).toEqual({
+      worker_id: 'worker-1', before_commit: 'before-worker', after_commit: 'after-worker',
+    });
+    expect(brief.handoffs).toMatchObject({
+      items: [{ from_session_id: 'session-A', to_session_id: 'session-B' }], omitted: 0,
+    });
+    expect(Buffer.byteLength(JSON.stringify(brief), 'utf8')).toBeLessThanOrEqual(4096);
+  });
+
+  it('keeps compact manual identity when two individually fitting sources compete', () => {
+    const make = (manual: boolean, worker: boolean) => {
+      const { db, decisionsDir } = setup();
+      const task = addTask(db, { title: 'competing sources' }, user);
+      if (manual) editTask(db, task.id, { area: 'manual' }, {
+        type: 'ai', id: 'codex:short',
+        manualSession: { client: 'codex', sessionId: 's'.repeat(256), cwd: '/not-a-repo' },
+      });
+      if (worker) appendAgentEvent(db, task.id, 'w'.repeat(3500), 'run_start');
+      return taskBrief(db, decisionsDir, task.id);
+    };
+    expect(make(true, false).manual_provenance?.session_id).toBe('s'.repeat(256));
+    expect(make(false, true).provenance?.worker_id).toBe('w'.repeat(3500));
+    const both = make(true, true);
+    expect(both.manual_provenance?.session_id).toBe('s'.repeat(256));
+    expect(both.provenance).toBeUndefined();
+    expect(both.worker_provenance_omitted).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(both), 'utf8')).toBeLessThanOrEqual(4096);
+  });
+
+  it('drops oversized optional Git fields whole and counts omitted handoffs', () => {
+    const { db, decisionsDir } = setup();
+    const task = addTask(db, { title: 'long Git fields' }, user);
+    for (let i = 0; i < 5; i++) editTask(db, task.id, { area: String(i) }, {
+      type: 'ai', id: 'codex:actor',
+      manualSession: { client: 'codex', sessionId: 'session-' + i, cwd: '/not-a-repo' },
+    });
+    const row = db.prepare("SELECT id, detail FROM events WHERE task_id = ? AND action = 'edited' ORDER BY id DESC LIMIT 1")
+      .get(task.id) as { id: number; detail: string };
+    const detail = JSON.parse(row.detail);
+    detail.manual_provenance.worktree = '/' + 'w'.repeat(4500);
+    detail.manual_provenance.branch = 'b'.repeat(4500);
+    detail.manual_provenance.head_commit = 'a'.repeat(40);
+    db.prepare('UPDATE events SET detail = ? WHERE id = ?').run(JSON.stringify(detail), row.id);
+
+    const brief = taskBrief(db, decisionsDir, task.id);
+    expect(brief.manual_provenance).toEqual({
+      client: 'codex', session_id: 'session-4', head_commit: 'a'.repeat(40),
+    });
+    expect(brief.handoffs.omitted + brief.handoffs.items.length).toBe(4);
+    expect(brief.handoffs.items.length).toBeLessThanOrEqual(3);
+    expect(Buffer.byteLength(JSON.stringify(brief), 'utf8')).toBeLessThanOrEqual(4096);
   });
 
   it.each([

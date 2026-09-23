@@ -415,6 +415,24 @@ var STATUSES = ["backlog", "new", "in_progress", "review", "done"];
 var MAX_FAILED_ATTEMPTS = 3;
 var PRIORITIES = ["low", "medium", "high", "urgent"];
 var KINDS = ["feature", "bug", "chore", "research"];
+function normalizeSessionId(raw) {
+  return typeof raw === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(raw) ? raw : void 0;
+}
+function manualSessionFromEnv(cwd = process.cwd()) {
+  const e = process.env;
+  if (e.KDD_SESSION) return void 0;
+  if (e.CLAUDECODE === "1" || e.CLAUDE_CODE_SESSION_ID) {
+    return { client: "claude", sessionId: normalizeSessionId(e.CLAUDE_CODE_SESSION_ID), cwd };
+  }
+  if (e.CODEX_SESSION_ID || e.CODEX_THREAD_ID) {
+    return {
+      client: "codex",
+      sessionId: normalizeSessionId(e.CODEX_SESSION_ID) ?? normalizeSessionId(e.CODEX_THREAD_ID),
+      cwd
+    };
+  }
+  return void 0;
+}
 var TRANSITIONS = {
   backlog: ["new"],
   new: ["backlog", "in_progress"],
@@ -459,6 +477,9 @@ function checkMove(from, to, actor, reason, openCriteria2 = 0, claimedBy = null,
   }
   return { ok: true };
 }
+
+// src/ops.ts
+import { execFileSync as execFileSync2 } from "child_process";
 
 // src/agent_events.ts
 function parseClaudeStreamLine(line) {
@@ -688,6 +709,34 @@ function appendEvent(db, taskId, actor, action, detail, opts) {
   );
   return Number(r.lastInsertRowid);
 }
+function appendTaskMutationEvent(db, taskId, actor, action, detail, opts) {
+  const session = actor.type === "ai" ? actor.manualSession : void 0;
+  if (!session) return appendEvent(db, taskId, actor, action, detail, opts);
+  const git2 = (args) => {
+    try {
+      return execFileSync2("git", args, {
+        cwd: session.cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"]
+      }).trim() || void 0;
+    } catch {
+      return void 0;
+    }
+  };
+  const worktree = git2(["rev-parse", "--show-toplevel"]);
+  const branch = worktree ? git2(["symbolic-ref", "--quiet", "--short", "HEAD"]) : void 0;
+  const head = worktree ? git2(["rev-parse", "--verify", "HEAD"]) : void 0;
+  return appendEvent(db, taskId, actor, action, {
+    ...detail ?? {},
+    manual_provenance: {
+      client: session.client,
+      ...normalizeSessionId(session.sessionId) ? { session_id: session.sessionId } : {},
+      ...worktree ? { worktree } : {},
+      ...branch ? { branch } : {},
+      ...head ? { head_commit: head } : {}
+    }
+  }, opts);
+}
 function mustGetTask(db, id) {
   const t = db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id);
   if (!t) throw new KddError(`task #${id} not found`);
@@ -735,7 +784,7 @@ function addTask(db, input, actor) {
       `INSERT INTO criteria (task_id, text, position, created_at) VALUES (?, ?, ?, ?)`
     );
     (input.criteria ?? []).forEach((text, i) => ins.run(id, text, i, ts));
-    appendEvent(db, id, actor, "created");
+    appendTaskMutationEvent(db, id, actor, "created");
     return mustGetTask(db, id);
   })();
 }
@@ -749,7 +798,7 @@ function editTask(db, id, patch, actor) {
     mustGetTask(db, id);
     const sets = fields.map((f) => `${f} = ?`).join(", ");
     db.prepare(`UPDATE tasks SET ${sets}, updated_at = ? WHERE id = ?`).run(...fields.map((f) => patch[f]), now(), id);
-    appendEvent(db, id, actor, "edited", { fields });
+    appendTaskMutationEvent(db, id, actor, "edited", { fields });
     return mustGetTask(db, id);
   })();
 }
@@ -761,7 +810,7 @@ function commentTask(db, id, body, actor) {
     const r = db.prepare(
       `INSERT INTO comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)`
     ).run(id, authorOf(actor), text, now());
-    appendEvent(db, id, actor, "commented");
+    appendTaskMutationEvent(db, id, actor, "commented");
     return db.prepare(`SELECT * FROM comments WHERE id = ?`).get(Number(r.lastInsertRowid));
   })();
 }
@@ -803,7 +852,7 @@ function moveTask(db, id, to, actor, reason) {
       `UPDATE tasks SET status = ?, position = ?, updated_at = ?${leaving ? ", claimed_by = NULL, claim_expires = NULL" : ""}${reset ? ", failed_attempts = 0" : ""}
        WHERE id = ?`
     ).run(to, nextPosition(db, to), now(), id);
-    appendEvent(db, id, actor, "moved", {
+    appendTaskMutationEvent(db, id, actor, "moved", {
       from: t.status,
       to,
       ...reason ? { reason } : {},
@@ -832,7 +881,7 @@ function placeTask(db, id, to, orderedIds, actor) {
         t.status === "review" ? submittedBy(db, id) : null
       );
       if (!res.ok) throw new KddError(res.error);
-      appendEvent(db, id, actor, "moved", { from: t.status, to });
+      appendTaskMutationEvent(db, id, actor, "moved", { from: t.status, to });
     }
     const setPos = db.prepare(`UPDATE tasks SET position = ? WHERE id = ?`);
     orderedIds.forEach((tid, i) => setPos.run(i, tid));
@@ -850,7 +899,7 @@ function blockTask(db, id, reason, actor) {
   return db.transaction(() => {
     mustGetTask(db, id);
     db.prepare(`UPDATE tasks SET blocked = 1, block_reason = ?, updated_at = ? WHERE id = ?`).run(reason, now(), id);
-    appendEvent(db, id, actor, "blocked", { reason });
+    appendTaskMutationEvent(db, id, actor, "blocked", { reason });
     return mustGetTask(db, id);
   })();
 }
@@ -858,7 +907,7 @@ function unblockTask(db, id, actor) {
   return db.transaction(() => {
     mustGetTask(db, id);
     db.prepare(`UPDATE tasks SET blocked = 0, block_reason = NULL, updated_at = ? WHERE id = ?`).run(now(), id);
-    appendEvent(db, id, actor, "unblocked");
+    appendTaskMutationEvent(db, id, actor, "unblocked");
     return mustGetTask(db, id);
   })();
 }
@@ -869,14 +918,14 @@ function linkTasks(db, fromId, toId, kind, actor) {
     const r = db.prepare(
       `INSERT OR IGNORE INTO task_links (from_id, to_id, kind) VALUES (?, ?, ?)`
     ).run(fromId, toId, kind);
-    if (r.changes > 0) appendEvent(db, fromId, actor, "linked", { to: toId, kind });
+    if (r.changes > 0) appendTaskMutationEvent(db, fromId, actor, "linked", { to: toId, kind });
   })();
 }
 function archiveTask(db, id, actor) {
   return db.transaction(() => {
     mustGetTask(db, id);
     db.prepare(`UPDATE tasks SET archived_at = ?, updated_at = ? WHERE id = ?`).run(now(), now(), id);
-    appendEvent(db, id, actor, "archived");
+    appendTaskMutationEvent(db, id, actor, "archived");
     return mustGetTask(db, id);
   })();
 }
@@ -884,7 +933,7 @@ function unarchiveTask(db, id, actor) {
   return db.transaction(() => {
     mustGetTask(db, id);
     db.prepare(`UPDATE tasks SET archived_at = NULL, updated_at = ? WHERE id = ?`).run(now(), id);
-    appendEvent(db, id, actor, "unarchived");
+    appendTaskMutationEvent(db, id, actor, "unarchived");
     return mustGetTask(db, id);
   })();
 }
@@ -914,7 +963,7 @@ function addCriterion(db, taskId, text, actor) {
       `INSERT INTO criteria (task_id, text, position, created_at) VALUES (?, ?, ?, ?)`
     ).run(taskId, text, pos, now());
     const id = Number(r.lastInsertRowid);
-    appendEvent(db, taskId, actor, "criterion_added", { id, text });
+    appendTaskMutationEvent(db, taskId, actor, "criterion_added", { id, text });
     touchTask(db, taskId);
     return mustGetCriterion(db, taskId, id);
   })();
@@ -933,7 +982,7 @@ function setCriterionChecked(db, taskId, id, checked, actor, evidence) {
       checked ? authorOf(actor) : null,
       id
     );
-    appendEvent(
+    appendTaskMutationEvent(
       db,
       taskId,
       actor,
@@ -948,7 +997,7 @@ function removeCriterion(db, taskId, id, actor) {
   db.transaction(() => {
     const c = mustGetCriterion(db, taskId, id);
     db.prepare(`DELETE FROM criteria WHERE id = ?`).run(id);
-    appendEvent(db, taskId, actor, "criterion_removed", { id, text: c.text });
+    appendTaskMutationEvent(db, taskId, actor, "criterion_removed", { id, text: c.text });
     touchTask(db, taskId);
   })();
 }
@@ -1049,13 +1098,13 @@ function attachFile(db, dbPath, taskId, srcPath, opts, actor) {
     if (r.changes === 0) {
       if (opts.description && opts.description !== row.description) {
         db.prepare(`UPDATE files SET description = ? WHERE id = ?`).run(opts.description, row.id);
-        appendEvent(db, taskId, actor, "file_attached", { id: row.id, name, described: true });
+        appendTaskMutationEvent(db, taskId, actor, "file_attached", { id: row.id, name, described: true });
         db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
         return { ...row, description: opts.description };
       }
       return row;
     }
-    appendEvent(db, taskId, actor, "file_attached", { id: row.id, name });
+    appendTaskMutationEvent(db, taskId, actor, "file_attached", { id: row.id, name });
     db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
     return row;
   }).immediate();
@@ -1065,7 +1114,7 @@ function detachFile(db, dbPath, fileId, actor) {
   if (!f) throw new KddError(`file #${fileId} not found`);
   db.transaction(() => {
     db.prepare(`DELETE FROM files WHERE id = ?`).run(fileId);
-    appendEvent(db, f.task_id, actor, "file_detached", { id: fileId, name: f.original_name });
+    appendTaskMutationEvent(db, f.task_id, actor, "file_detached", { id: fileId, name: f.original_name });
     db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), f.task_id);
     const left = db.prepare(`SELECT COUNT(*) AS c FROM files WHERE sha256 = ? AND ext = ?`).get(f.sha256, f.ext).c;
     if (left === 0) rmSync2(filePath(dbPath, f), { force: true });
@@ -1241,7 +1290,7 @@ function syncIndex(db, decisionsDir) {
     const files = existsSync4(decisionsDir) ? readdirSync3(decisionsDir).filter((f) => f.endsWith(".md")) : [];
     const inDb = new Map(
       db.prepare(
-        `SELECT slug, path, content_hash, superseded_by, source_tasks FROM decisions`
+        `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`
       ).all().map((r) => [r.slug, r])
     );
     const seen = /* @__PURE__ */ new Set();
@@ -1255,8 +1304,8 @@ function syncIndex(db, decisionsDir) {
       const sourceTasks = JSON.stringify(doc.sourceTasks);
       const row = inDb.get(slug);
       if (row && row.content_hash === doc.hash && (row.superseded_by ?? null) === (supersededBy ?? null)) {
-        if (row.path !== path || row.source_tasks !== sourceTasks) {
-          db.prepare(`UPDATE decisions SET path = ?, source_tasks = ? WHERE slug = ?`).run(path, sourceTasks, slug);
+        if (row.path !== path || row.source_tasks !== sourceTasks || row.created !== (doc.created || null)) {
+          db.prepare(`UPDATE decisions SET path = ?, source_tasks = ?, created = ? WHERE slug = ?`).run(path, sourceTasks, doc.created || null, slug);
         }
         continue;
       }
@@ -1350,6 +1399,49 @@ function rebuild(db, decisionsDir) {
 // src/queries.ts
 import { readFileSync as readFileSync4 } from "fs";
 var PRIORITY_ORDER = `CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
+function manualEvent(event) {
+  if (event.actor_type !== "ai" || !event.detail) return void 0;
+  try {
+    const detail = JSON.parse(event.detail);
+    if (!detail || typeof detail !== "object") return void 0;
+    const raw = detail.manual_provenance;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return void 0;
+    const p = raw;
+    if (p.client !== "claude" && p.client !== "codex") return void 0;
+    return {
+      client: p.client,
+      ...normalizeSessionId(p.session_id) ? { session_id: p.session_id } : {},
+      ...typeof p.worktree === "string" ? { worktree: p.worktree } : {},
+      ...typeof p.branch === "string" ? { branch: p.branch } : {},
+      ...typeof p.head_commit === "string" ? { head_commit: p.head_commit } : {}
+    };
+  } catch {
+    return void 0;
+  }
+}
+function manualHistory(events) {
+  let latest;
+  let previous;
+  const handoffs = [];
+  for (const event of [...events].sort((a, b) => a.id - b.id)) {
+    const current = manualEvent(event);
+    if (!current) continue;
+    latest = current;
+    if (!current.session_id) continue;
+    if (previous && (previous.client !== current.client || previous.session_id !== current.session_id)) {
+      handoffs.push({
+        from_client: previous.client,
+        from_session_id: previous.session_id,
+        to_client: current.client,
+        to_session_id: current.session_id,
+        event_id: event.id,
+        at: event.created_at
+      });
+    }
+    previous = { client: current.client, session_id: current.session_id };
+  }
+  return { ...latest ? { manual_provenance: latest } : {}, handoffs };
+}
 var READY_SQL = `(status = 'new' AND blocked = 0 AND archived_at IS NULL AND kind <> 'research')`;
 function boardData(db, f = {}) {
   const where = [f.archived ? "archived_at IS NOT NULL" : "archived_at IS NULL"];
@@ -1408,7 +1500,17 @@ function taskDetail(db, id) {
       WHERE CAST(source.value AS INTEGER) = ?
       ORDER BY d.slug`
   ).all(id);
-  return { task, criteria, comments, events, links, decisions, files, agent_runs_total };
+  return {
+    task,
+    criteria,
+    comments,
+    events,
+    links,
+    decisions,
+    files,
+    agent_runs_total,
+    ...manualHistory(events)
+  };
 }
 function taskDetailCapped(db, id) {
   const d = taskDetail(db, id);
@@ -1432,7 +1534,10 @@ function taskDetailCapped(db, id) {
       ...f,
       description: f.description === null ? null : capText(f.description, CAPS.fileDescChars)
     })),
-    files_total: d.files.length
+    files_total: d.files.length,
+    ...d.manual_provenance ? { manual_provenance: d.manual_provenance } : {},
+    handoffs: d.handoffs.slice(-CAPS.events),
+    handoffs_total: d.handoffs.length
   };
 }
 function syncedTaskDetail(db, decisionsDir, id, full = false) {
@@ -1539,13 +1644,79 @@ function attentionData(db, nowSeconds) {
   }));
   return { items, omitted: total - items.length };
 }
-function exportBoard(db) {
-  return {
-    tasks: db.prepare(`SELECT * FROM tasks ORDER BY id`).all(),
-    comments: db.prepare(`SELECT * FROM comments ORDER BY id`).all(),
-    links: db.prepare(`SELECT * FROM task_links`).all(),
-    events: db.prepare(`SELECT * FROM events ORDER BY id`).all()
-  };
+function exportEventDetail(detail, includeSensitive) {
+  if (detail === null) return null;
+  try {
+    const decoded = JSON.stringify(JSON.parse(detail));
+    let marker = "__KDD_EXPORT_NUMBER_";
+    while (detail.includes(marker) || decoded.includes(marker)) marker += "_";
+    const numbers = [];
+    const protectedDetail = detail.replace(
+      /"(?:\\.|[^"\\])*"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/g,
+      (token) => token.startsWith('"') ? token : `"${marker}${numbers.push(token) - 1}__"`
+    );
+    const value = JSON.parse(protectedDetail);
+    const restoreNumbers = (json) => json.replace(
+      new RegExp(`"${marker}(\\d+)__"`, "g"),
+      (_match, id) => numbers[Number(id)]
+    );
+    let changed = false;
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const provenance = value.manual_provenance;
+      if (provenance && typeof provenance === "object" && !Array.isArray(provenance) && Object.hasOwn(provenance, "worktree")) {
+        delete provenance.worktree;
+        changed = true;
+      }
+    }
+    if (includeSensitive) return changed ? restoreNumbers(JSON.stringify(value)) : detail;
+    const redacted = JSON.stringify(value, (_key, text) => {
+      if (typeof text !== "string") return text;
+      const safe = redact(text);
+      if (safe !== text) changed = true;
+      return safe;
+    });
+    return changed ? restoreNumbers(redacted) : detail;
+  } catch {
+    return includeSensitive ? detail : redact(detail);
+  }
+}
+function exportBoard(db, decisionsDir, opts = {}) {
+  syncIndex(db, decisionsDir);
+  return db.transaction(() => {
+    const tasks = db.prepare(`SELECT id,title,body,status,blocked,block_reason,priority,area,kind,
+      track_id,position,archived_at,created_at,updated_at FROM tasks ORDER BY id`).all();
+    const tracks = db.prepare(`SELECT id,name,description,status,created_at FROM tracks ORDER BY id`).all();
+    const criteria = db.prepare(`SELECT id,task_id,text,checked_at,evidence,checked_by,position,
+      created_at FROM criteria ORDER BY id`).all();
+    const comments = db.prepare(`SELECT id,task_id,author,body,created_at FROM comments ORDER BY id`).all();
+    const task_links = db.prepare(`SELECT from_id,to_id,kind FROM task_links
+      ORDER BY from_id,to_id,kind`).all();
+    const decisions = db.prepare(`SELECT d.slug,d.title,d.created,d.superseded_by,
+      d.source_tasks,s.body FROM decisions d LEFT JOIN search_index s
+      ON s.kind='decision' AND s.ref=d.slug ORDER BY d.slug`).all().map(({ source_tasks, body, ...row }) => {
+      if (body === null) throw new KddError(`decision '${row.slug}' has no indexed body`);
+      return { ...row, source_task_ids: JSON.parse(source_tasks), body };
+    });
+    const events = db.prepare(`SELECT id,task_id,actor_type,actor_id,action,detail,
+      created_at,parent_id,type,level FROM events ORDER BY id`).all().map((row) => ({ ...row, detail: exportEventDetail(row.detail, !!opts.includeSensitive) }));
+    const files = db.prepare(`SELECT id,task_id,sha256,ext,original_name,mime_type,
+      size_bytes,description,created_at FROM files ORDER BY id`).all();
+    const snapshot = {
+      schema_version: 1,
+      tasks,
+      tracks,
+      criteria,
+      comments,
+      task_links,
+      decisions,
+      events,
+      files
+    };
+    return opts.includeSensitive ? snapshot : JSON.parse(JSON.stringify(
+      snapshot,
+      (_key, value) => typeof value === "string" ? redact(value) : value
+    ));
+  })();
 }
 function unsubmitted(db, author) {
   const ids = db.prepare(
@@ -1767,7 +1938,7 @@ function claimTask(db, id, actor, ttl = DEFAULT_TTL, opts = {}) {
         error: `#${id} is not claimable (status ${t.status}${t.claimed_by ? `, held by ${t.claimed_by}` : ""})`
       };
     }
-    appendEvent(db, id, actor, "claimed", { ttl, expires }, { type: "claim" });
+    appendTaskMutationEvent(db, id, actor, "claimed", { ttl, expires }, { type: "claim" });
     return { ok: true, task: mustGetTask(db, id) };
   })();
 }
@@ -1785,7 +1956,7 @@ function claimNext(db, actor, ttl = DEFAULT_TTL, opts = {}) {
          WHERE id=? AND status='new' AND blocked=0 AND archived_at IS NULL AND claimed_by IS NULL`
       ).run(authorOf(actor), expires, now(), id);
       if (r.changes === 1) {
-        appendEvent(db, id, actor, "claimed", { ttl, expires }, { type: "claim" });
+        appendTaskMutationEvent(db, id, actor, "claimed", { ttl, expires }, { type: "claim" });
         return mustGetTask(db, id);
       }
     }
@@ -1848,14 +2019,14 @@ function tick(db, opts) {
 }
 
 // src/worktree.ts
-import { execFileSync as execFileSync2 } from "child_process";
+import { execFileSync as execFileSync3 } from "child_process";
 import { existsSync as existsSync5, realpathSync, rmSync as rmSync3 } from "fs";
 import { dirname as dirname3, join as join5 } from "path";
 var branchName = (taskId) => `kdd/task-${taskId}`;
 var BRANCH_RE = /^refs\/heads\/kdd\/task-(\d+)$/;
 function git(repoRoot, args) {
   try {
-    return execFileSync2("git", args, {
+    return execFileSync3("git", args, {
       cwd: repoRoot,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"]
@@ -2267,6 +2438,7 @@ function fitBrief(brief, sources, errorSource) {
   drain(brief, brief.files);
   drain(brief, brief.links);
   drain(brief, brief.decisions);
+  drain(brief, brief.handoffs);
   if (briefBytes(brief) > CAPS.briefBytes && brief.provenance?.error && errorSource) {
     for (const cap of [128, 64, 32, 16]) {
       brief.provenance.error = capText(errorSource, cap);
@@ -2274,7 +2446,11 @@ function fitBrief(brief, sources, errorSource) {
     }
     delete brief.provenance.error;
   }
-  if (briefBytes(brief) > CAPS.briefBytes && brief.provenance) delete brief.provenance;
+  for (const source of [brief.manual_provenance, brief.provenance]) {
+    for (const field of ["worktree", "branch"]) {
+      if (briefBytes(brief) > CAPS.briefBytes && source?.[field]) delete source[field];
+    }
+  }
   const caps = {
     block_reason: CAPS.blockReasonChars,
     goal: 512,
@@ -2301,6 +2477,13 @@ function fitBrief(brief, sources, errorSource) {
       tighten(key);
       if (briefBytes(brief) <= CAPS.briefBytes) return brief;
     }
+  }
+  while (briefBytes(brief) > CAPS.briefBytes && brief.criteria.items.at(-1)?.checked_at !== null && brief.criteria.items.length > 0) {
+    omitLastItem(brief.criteria);
+  }
+  if (briefBytes(brief) > CAPS.briefBytes && brief.provenance) {
+    delete brief.provenance;
+    brief.worker_provenance_omitted = true;
   }
   drain(brief, brief.criteria);
   if (briefBytes(brief) > CAPS.briefBytes) {
@@ -2384,6 +2567,11 @@ function taskBrief(db, decisionsDir, id) {
       })).sort((a, b) => a.id - b.id),
       omitted: 0
     },
+    ...detail.manual_provenance ? { manual_provenance: detail.manual_provenance } : {},
+    handoffs: {
+      items: detail.handoffs.slice(-3).reverse(),
+      omitted: Math.max(0, detail.handoffs.length - 3)
+    },
     ...provenance ? { provenance } : {},
     next_action: action,
     budget: { max_bytes: CAPS.briefBytes }
@@ -2418,6 +2606,7 @@ export {
   agentId,
   appendAgentEvent,
   appendEvent,
+  appendTaskMutationEvent,
   archiveTask,
   attachFile,
   attentionData,
@@ -2461,11 +2650,13 @@ export {
   listProjects,
   listTracks,
   logError,
+  manualSessionFromEnv,
   maxWorkers,
   maxWorkersEnvLocked,
   moveTask,
   mustGetTask,
   mustGetTrack,
+  normalizeSessionId,
   normalizeSourceTasks,
   now,
   openDb,

@@ -67,10 +67,18 @@ type Priority = 'low' | 'medium' | 'high' | 'urgent';
 declare const PRIORITIES: Priority[];
 type Kind = 'feature' | 'bug' | 'chore' | 'research';
 declare const KINDS: Kind[];
+interface ManualSession {
+    client: 'claude' | 'codex';
+    sessionId?: string;
+    cwd: string;
+}
 type Actor = {
     type: 'user' | 'ai';
     id?: string;
+    manualSession?: ManualSession;
 };
+declare function normalizeSessionId(raw: unknown): string | undefined;
+declare function manualSessionFromEnv(cwd?: string): ManualSession | undefined;
 declare const TRANSITIONS: Record<Status, Status[]>;
 declare const authorOf: (a: Actor) => string;
 /**
@@ -176,6 +184,21 @@ interface EventRow {
     type: string | null;
     level: 'info' | 'warn' | 'error';
 }
+interface ManualProvenance {
+    client: 'claude' | 'codex';
+    session_id?: string;
+    worktree?: string;
+    branch?: string;
+    head_commit?: string;
+}
+interface SessionHandoff {
+    from_client: 'claude' | 'codex';
+    from_session_id: string;
+    to_client: 'claude' | 'codex';
+    to_session_id: string;
+    event_id: number;
+    at: number;
+}
 interface DecisionSummary {
     slug: string;
     title: string;
@@ -196,6 +219,11 @@ interface DecisionDetail extends DecisionSummary {
 }
 
 declare function appendEvent(db: Database.Database, taskId: number | null, actor: Actor, action: string, detail?: object, opts?: {
+    parent_id?: number;
+    type?: string;
+    level?: 'info' | 'warn' | 'error';
+}): number;
+declare function appendTaskMutationEvent(db: Database.Database, taskId: number, actor: Actor, action: string, detail?: object, opts?: {
     parent_id?: number;
     type?: string;
     level?: 'info' | 'warn' | 'error';
@@ -334,6 +362,8 @@ declare function taskDetail(db: Database.Database, id: number): {
         path: string;
     })[];
     agent_runs_total: number;
+    manual_provenance?: ManualProvenance;
+    handoffs: SessionHandoff[];
 };
 interface TaskDetailCapped {
     task: Task;
@@ -353,6 +383,9 @@ interface TaskDetailCapped {
         path: string;
     })[];
     files_total: number;
+    manual_provenance?: ManualProvenance;
+    handoffs: SessionHandoff[];
+    handoffs_total: number;
 }
 declare function taskDetailCapped(db: Database.Database, id: number): TaskDetailCapped;
 declare function syncedTaskDetail(db: Database.Database, decisionsDir: string, id: number, full: true): ReturnType<typeof taskDetail>;
@@ -366,11 +399,40 @@ declare function statusDigest(db: Database.Database): {
     recent: EventRow[];
 };
 declare function attentionData(db: Database.Database, nowSeconds: number): AttentionInbox;
-declare function exportBoard(db: Database.Database): {
-    tasks: Task[];
+declare function exportBoard(db: Database.Database, decisionsDir: string, opts?: {
+    includeSensitive?: boolean;
+}): {
+    schema_version: 1;
+    tasks: Omit<Task, "claimed_by" | "claim_expires" | "failed_attempts">[];
+    tracks: Track[];
+    criteria: Criterion[];
     comments: Comment[];
-    links: unknown[];
-    events: EventRow[];
+    task_links: {
+        from_id: number;
+        to_id: number;
+        kind: string;
+    }[];
+    decisions: {
+        source_task_ids: number[];
+        body: string;
+        slug: string;
+        title: string;
+        created: string | null;
+        superseded_by: string | null;
+    }[];
+    events: {
+        detail: string | null;
+        id: number;
+        task_id: number | null;
+        actor_type: "user" | "ai";
+        actor_id: string | null;
+        action: string;
+        created_at: number;
+        parent_id: number | null;
+        type: string | null;
+        level: "info" | "warn" | "error";
+    }[];
+    files: FileRow[];
 };
 /**
  * Задачи, где работа выглядит законченной, а статус — нет: все критерии закрыты, задача
@@ -646,6 +708,8 @@ interface TaskBrief {
         description: string | null;
         path: string;
     }>;
+    manual_provenance?: ManualProvenance;
+    handoffs: BriefSection<SessionHandoff>;
     provenance?: {
         worker_id?: string;
         session_id?: string;
@@ -655,6 +719,7 @@ interface TaskBrief {
         after_commit?: string;
         error?: string;
     };
+    worker_provenance_omitted?: boolean;
     next_action: NextAction;
     budget: {
         max_bytes: 4096;
@@ -662,4 +727,4 @@ interface TaskBrief {
 }
 declare function taskBrief(db: Database.Database, decisionsDir: string, id: number): TaskBrief;
 
-export { type Actor, type AgentEvent, type AgentEventKind, type AttentionInbox, type AttentionItem, type AttentionReason, type AutoTick, BUG_BODY_TEMPLATE, type BriefSection, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type EventRow, type FileRow, KINDS, KddError, type KillFn, type KillOutcome, type Kind, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, type NextAction, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RunResult, STATUSES, type SpawnFn, type Status, type StopResult, TICK_INTERVALS, TRANSITIONS, type Task, type TaskBrief, type TaskDetailCapped, type TaskListRow, type TickResult, type TickRun, type Track, _cacheUntil, _resetCache, addCriterion, addDecision, addTask, agentId, appendAgentEvent, appendEvent, archiveTask, attachFile, attentionData, authorOf, blockTask, boardData, capDetail, capText, checkMove, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, contentHash, createTrack, decisionDetail, deleteTrack, detachFile, editTask, editTrack, ensureWorktree, expiredLeases, exportBoard, filePath, filesDir, getAutoTick, getFile, getLastRun, getReminded, headCommit, isInlineMime, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listFiles, listProjects, listTracks, logError, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, normalizeSourceTasks, now, openDb, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, projectPathOf, projectToplevelOf, pruneAgentEvents, reapExpired, rebuild, recall, reclaimExpired, recordFailedAttempt, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, setReminded, slugify, statusDigest, stopWorkers, sweepWorktrees, syncIndex, syncedTaskDetail, taskBranchHead, taskBrief, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, unsubmitted, worktreePath };
+export { type Actor, type AgentEvent, type AgentEventKind, type AttentionInbox, type AttentionItem, type AttentionReason, type AutoTick, BUG_BODY_TEMPLATE, type BriefSection, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type EventRow, type FileRow, KINDS, KddError, type KillFn, type KillOutcome, type Kind, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, type ManualProvenance, type ManualSession, type NextAction, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RunResult, STATUSES, type SessionHandoff, type SpawnFn, type Status, type StopResult, TICK_INTERVALS, TRANSITIONS, type Task, type TaskBrief, type TaskDetailCapped, type TaskListRow, type TickResult, type TickRun, type Track, _cacheUntil, _resetCache, addCriterion, addDecision, addTask, agentId, appendAgentEvent, appendEvent, appendTaskMutationEvent, archiveTask, attachFile, attentionData, authorOf, blockTask, boardData, capDetail, capText, checkMove, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, contentHash, createTrack, decisionDetail, deleteTrack, detachFile, editTask, editTrack, ensureWorktree, expiredLeases, exportBoard, filePath, filesDir, getAutoTick, getFile, getLastRun, getReminded, headCommit, isInlineMime, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listFiles, listProjects, listTracks, logError, manualSessionFromEnv, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, normalizeSessionId, normalizeSourceTasks, now, openDb, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, projectPathOf, projectToplevelOf, pruneAgentEvents, reapExpired, rebuild, recall, reclaimExpired, recordFailedAttempt, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, setReminded, slugify, statusDigest, stopWorkers, sweepWorktrees, syncIndex, syncedTaskDetail, taskBranchHead, taskBrief, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, unsubmitted, worktreePath };

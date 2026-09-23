@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createServer, lazyCtx, mcpActor } from '../src/server.js';
 
 const ai = { type: 'ai', id: 'smoke' } as const;
@@ -32,6 +33,44 @@ const textOf = (res: any) => JSON.parse(res.content[0].text);
 const rawText = (res: any): string => res.content[0].text;
 
 describe('mcp server over a real transport', () => {
+  it('shares handoff history with a fresh CLI process on one board', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kdd-cli-mcp-'));
+    const dbPath = join(dir, 'board.db');
+    const decisionsDir = join(dir, 'decisions');
+    const seed = openDb(dbPath, 'integration');
+    const task = addTask(seed, { title: 'cross transport' }, { type: 'user' });
+    seed.close();
+    const cli = fileURLToPath(new URL('../../cli/dist/index.js', import.meta.url));
+    const env = {
+      ...process.env, KDD_DB: dbPath, KDD_DECISIONS_DIR: decisionsDir,
+      CLAUDECODE: '', CLAUDE_CODE_SESSION_ID: '', KDD_SESSION: '', CODEX_THREAD_ID: '',
+      CODEX_SESSION_ID: 'session-a',
+    };
+    execFileSync('node', [cli, 'edit', String(task.id), '--area', 'cli'], { env });
+
+    const db = openDb(dbPath, 'integration');
+    const client = await connectTo(() => ({ db, dir: decisionsDir }));
+    const changed = await client.callTool({
+      name: 'update_task', arguments: { id: task.id, edit: { area: 'mcp' } },
+      _meta: { 'x-codex-turn-metadata': { session_id: 'session-b' } },
+    });
+    expect(changed.isError).not.toBe(true);
+    const mcp = textOf(await client.callTool({ name: 'get_task', arguments: { id: task.id } }));
+    const show = JSON.parse(execFileSync('node', [cli, 'show', String(task.id), '--json'], {
+      env, encoding: 'utf8',
+    }));
+    const brief = JSON.parse(execFileSync('node', [cli, 'brief', String(task.id), '--json'], {
+      env, encoding: 'utf8',
+    }));
+    expect(show.manual_provenance).toEqual(mcp.manual_provenance);
+    expect(show.handoffs).toEqual(mcp.handoffs);
+    expect(show.handoffs).toEqual([expect.objectContaining({
+      from_session_id: 'session-a', to_session_id: 'session-b',
+    })]);
+    expect(brief.manual_provenance).toEqual(show.manual_provenance);
+    db.close();
+  });
+
   it('lists the five tools', async () => {
     const client = await connect(openDb(':memory:', 'x'));
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
@@ -114,7 +153,10 @@ describe('actor identity', () => {
     const prev = process.env.CLAUDE_CODE_SESSION_ID;
     process.env.CLAUDE_CODE_SESSION_ID = 'abcdef12-3456-7890';
     try {
-      expect(mcpActor()).toEqual({ type: 'ai', id: agentId() });
+      expect(mcpActor()).toMatchObject({
+        type: 'ai', id: agentId(),
+        manualSession: { client: 'claude', sessionId: 'abcdef12-3456-7890' },
+      });
       expect(mcpActor().id).toBe('cc:abcdef12');
     } finally {
       if (prev === undefined) delete process.env.CLAUDE_CODE_SESSION_ID;
@@ -124,17 +166,75 @@ describe('actor identity', () => {
 
   it('uses Codex turn metadata per request, accepting object and JSON forms', () => {
     expect(mcpActor({ 'x-codex-turn-metadata': { session_id: 'full-session' } }))
-      .toEqual({ type: 'ai', id: 'codex:full-session' });
+      .toMatchObject({
+        type: 'ai', id: 'codex:full-session',
+        manualSession: { client: 'codex', sessionId: 'full-session', cwd: process.cwd() },
+      });
     expect(mcpActor({ 'x-codex-turn-metadata': '{"threadId":"full-thread"}' }))
-      .toEqual({ type: 'ai', id: 'codex:full-thread' });
+      .toMatchObject({
+        type: 'ai', id: 'codex:full-thread',
+        manualSession: { client: 'codex', sessionId: 'full-thread' },
+      });
   });
 
-  it('falls back safely for malformed Codex metadata', () => {
+  it('uses the next valid turn ID while leaving actor attribution unchanged', () => {
+    expect(mcpActor({ 'x-codex-turn-metadata': {
+      session_id: 'invalid/session', thread_id: 'valid-thread',
+    } })).toMatchObject({
+      type: 'ai', id: 'codex:invalid/session',
+      manualSession: { client: 'codex', sessionId: 'valid-thread' },
+    });
+    expect(mcpActor({ 'x-codex-turn-metadata': {
+      session_id: 'x'.repeat(257), thread_id: 'invalid/thread', threadId: 'valid-last',
+    } })).toMatchObject({
+      manualSession: { client: 'codex', sessionId: 'valid-last' },
+    });
+  });
+
+  it('uses the environment only when turn metadata is absent', () => {
     const previous = process.env.CODEX_SESSION_ID;
     process.env.CODEX_SESSION_ID = 'env-session';
     try {
+      expect(mcpActor({})).toMatchObject({
+        manualSession: { client: 'codex', sessionId: 'env-session' },
+      });
       expect(mcpActor({ 'x-codex-turn-metadata': '{bad json' }))
-        .toEqual({ type: 'ai', id: 'codex:env-session' });
+        .toMatchObject({
+          type: 'ai', id: 'codex:env-session',
+          manualSession: { client: 'codex', cwd: process.cwd() },
+        });
+      expect(mcpActor({ 'x-codex-turn-metadata': '{bad json' }).manualSession)
+        .not.toHaveProperty('sessionId');
+    } finally {
+      if (previous === undefined) delete process.env.CODEX_SESSION_ID;
+      else process.env.CODEX_SESSION_ID = previous;
+    }
+  });
+
+  it('does not turn a stale environment ID into a handoff for invalid turn IDs', async () => {
+    const previous = process.env.CODEX_SESSION_ID;
+    process.env.CODEX_SESSION_ID = 'stale-session';
+    try {
+      const db = openDb(':memory:', 'x');
+      const task = addTask(db, { title: 'stale environment' }, { type: 'user' });
+      const client = await connect(db);
+      for (const [session_id, area] of [['current-session', 'first'], ['invalid/session', 'second']]) {
+        const changed = await client.callTool({
+          name: 'update_task', arguments: { id: task.id, edit: { area } },
+          _meta: { 'x-codex-turn-metadata': { session_id } },
+        });
+        expect(changed.isError).not.toBe(true);
+      }
+      const detail = textOf(await client.callTool({ name: 'get_task', arguments: { id: task.id } }));
+      expect(detail.handoffs).toEqual([]);
+      expect(detail.manual_provenance).toMatchObject({
+        client: 'codex',
+        worktree: execFileSync('git', ['rev-parse', '--show-toplevel'], {
+          encoding: 'utf8',
+        }).trim(),
+        head_commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+      });
+      expect(detail.manual_provenance).not.toHaveProperty('session_id');
     } finally {
       if (previous === undefined) delete process.env.CODEX_SESSION_ID;
       else process.env.CODEX_SESSION_ID = previous;
@@ -152,6 +252,29 @@ describe('actor identity', () => {
     });
     expect(db.prepare("SELECT actor_id FROM events WHERE action = 'moved' ORDER BY id DESC LIMIT 1").get())
       .toEqual({ actor_id: 'codex:request-session' });
+  });
+
+  it('exposes full manual provenance and one handoff through get_task', async () => {
+    const db = openDb(':memory:', 'x');
+    const task = addTask(db, { title: 'handoff' }, { type: 'user' });
+    const client = await connect(db);
+    for (const [session_id, area] of [['session-a', 'one'], ['session-b', 'two']]) {
+      const changed = await client.callTool({
+        name: 'update_task', arguments: { id: task.id, edit: { area } },
+        _meta: { 'x-codex-turn-metadata': { session_id } },
+      });
+      expect(changed.isError).not.toBe(true);
+    }
+    const detail = textOf(await client.callTool({ name: 'get_task', arguments: { id: task.id } }));
+    const brief = textOf(await client.callTool({
+      name: 'get_task', arguments: { id: task.id, brief: true },
+    }));
+    expect(detail.manual_provenance).toMatchObject({ client: 'codex', session_id: 'session-b' });
+    expect(detail.handoffs).toEqual([expect.objectContaining({
+      from_session_id: 'session-a', to_session_id: 'session-b',
+    })]);
+    expect(brief.manual_provenance).toEqual(detail.manual_provenance);
+    expect(brief.handoffs.items).toEqual(detail.handoffs);
   });
 });
 

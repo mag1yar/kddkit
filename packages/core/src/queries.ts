@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs';
 import type Database from 'better-sqlite3';
 import { CAPS, capText } from './caps.js';
-import { authorOf, MAX_FAILED_ATTEMPTS, STATUSES, type Kind, type Status } from './state.js';
+import { authorOf, MAX_FAILED_ATTEMPTS, normalizeSessionId, STATUSES, type Kind, type Status } from './state.js';
 import type {
   AttentionInbox, AttentionItem, Comment, Criterion, DecisionDetail, DecisionSummary,
-  EventRow, FileRow, Task, TaskListRow,
+  EventRow, FileRow, ManualProvenance, SessionHandoff, Task, TaskListRow, Track,
 } from './types.js';
 import { mustGetTask } from './ops.js';
 import { listCriteria } from './criteria.js';
@@ -12,9 +12,53 @@ import { filePath, listFiles } from './files.js';
 import { parseDecisionMd } from './decisions.js';
 import { KddError } from './errors.js';
 import { syncIndex } from './recall.js';
+import { redact } from './agent_events.js';
 
 export const PRIORITY_ORDER =
   `CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
+
+function manualEvent(event: EventRow): ManualProvenance | undefined {
+  if (event.actor_type !== 'ai' || !event.detail) return undefined;
+  try {
+    const detail: unknown = JSON.parse(event.detail);
+    if (!detail || typeof detail !== 'object') return undefined;
+    const raw = (detail as Record<string, unknown>).manual_provenance;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+    const p = raw as Record<string, unknown>;
+    if (p.client !== 'claude' && p.client !== 'codex') return undefined;
+    return {
+      client: p.client,
+      ...(normalizeSessionId(p.session_id) ? { session_id: p.session_id as string } : {}),
+      ...(typeof p.worktree === 'string' ? { worktree: p.worktree } : {}),
+      ...(typeof p.branch === 'string' ? { branch: p.branch } : {}),
+      ...(typeof p.head_commit === 'string' ? { head_commit: p.head_commit } : {}),
+    };
+  } catch { return undefined; }
+}
+
+function manualHistory(events: EventRow[]): {
+  manual_provenance?: ManualProvenance; handoffs: SessionHandoff[];
+} {
+  let latest: ManualProvenance | undefined;
+  let previous: { client: 'claude' | 'codex'; session_id: string } | undefined;
+  const handoffs: SessionHandoff[] = [];
+  for (const event of [...events].sort((a, b) => a.id - b.id)) {
+    const current = manualEvent(event);
+    if (!current) continue;
+    latest = current;
+    if (!current.session_id) continue;
+    if (previous && (previous.client !== current.client ||
+      previous.session_id !== current.session_id)) {
+      handoffs.push({
+        from_client: previous.client, from_session_id: previous.session_id,
+        to_client: current.client, to_session_id: current.session_id,
+        event_id: event.id, at: event.created_at,
+      });
+    }
+    previous = { client: current.client, session_id: current.session_id };
+  }
+  return { ...(latest ? { manual_provenance: latest } : {}), handoffs };
+}
 
 // takeable «прямо сейчас»: new-очередь, не заблокирована, не в архиве, и это работа с кодом —
 // kind='research' исключён тем же условием, что CLAIMABLE_SQL (core/claim.ts), иначе ready
@@ -60,6 +104,8 @@ export function taskDetail(db: Database.Database, id: number): {
   // по since=<id>), а вкладке нужно лишь знать, будили ли по задаче агента и сколько раз.
   // Сырые события считать бесполезно — «30» не соответствует ничему, что видно глазами.
   agent_runs_total: number;
+  manual_provenance?: ManualProvenance;
+  handoffs: SessionHandoff[];
 } {
   const task = mustGetTask(db, id);
   const criteria = listCriteria(db, id);
@@ -82,7 +128,8 @@ export function taskDetail(db: Database.Database, id: number): {
       WHERE CAST(source.value AS INTEGER) = ?
       ORDER BY d.slug`,
   ).all(id) as DecisionSummary[];
-  return { task, criteria, comments, events, links, decisions, files, agent_runs_total };
+  return { task, criteria, comments, events, links, decisions, files, agent_runs_total,
+    ...manualHistory(events) };
 }
 
 export interface TaskDetailCapped {
@@ -97,6 +144,9 @@ export interface TaskDetailCapped {
   decisions_total: number;
   files: (FileRow & { path: string })[];
   files_total: number;
+  manual_provenance?: ManualProvenance;
+  handoffs: SessionHandoff[];
+  handoffs_total: number;
 }
 
 // Единственный источник trim-политики show/get_task: последние N с честными totals.
@@ -125,6 +175,9 @@ export function taskDetailCapped(db: Database.Database, id: number): TaskDetailC
       description: f.description === null ? null : capText(f.description, CAPS.fileDescChars),
     })),
     files_total: d.files.length,
+    ...(d.manual_provenance ? { manual_provenance: d.manual_provenance } : {}),
+    handoffs: d.handoffs.slice(-CAPS.events),
+    handoffs_total: d.handoffs.length,
   };
 }
 
@@ -253,15 +306,74 @@ export function attentionData(db: Database.Database, nowSeconds: number): Attent
   return { items, omitted: total - items.length };
 }
 
-export function exportBoard(db: Database.Database): {
-  tasks: Task[]; comments: Comment[]; links: unknown[]; events: EventRow[];
-} {
-  return {
-    tasks: db.prepare(`SELECT * FROM tasks ORDER BY id`).all() as Task[],
-    comments: db.prepare(`SELECT * FROM comments ORDER BY id`).all() as Comment[],
-    links: db.prepare(`SELECT * FROM task_links`).all(),
-    events: db.prepare(`SELECT * FROM events ORDER BY id`).all() as EventRow[],
-  };
+function exportEventDetail(detail: string | null, includeSensitive: boolean): string | null {
+  if (detail === null) return null;
+  try {
+    const decoded = JSON.stringify(JSON.parse(detail)); // validate and expose escaped markers
+    let marker = '__KDD_EXPORT_NUMBER_';
+    while (detail.includes(marker) || decoded.includes(marker)) marker += '_';
+    const numbers: string[] = [];
+    const protectedDetail = detail.replace(
+      /"(?:\\.|[^"\\])*"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/g,
+      (token) => token.startsWith('"') ? token : `"${marker}${numbers.push(token) - 1}__"`,
+    );
+    const value: unknown = JSON.parse(protectedDetail);
+    const restoreNumbers = (json: string): string => json.replace(
+      new RegExp(`"${marker}(\\d+)__"`, 'g'), (_match, id: string) => numbers[Number(id)],
+    );
+    let changed = false;
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const provenance = (value as Record<string, unknown>).manual_provenance;
+      if (provenance && typeof provenance === 'object' && !Array.isArray(provenance)
+          && Object.hasOwn(provenance, 'worktree')) {
+        delete (provenance as Record<string, unknown>).worktree;
+        changed = true;
+      }
+    }
+    if (includeSensitive) return changed ? restoreNumbers(JSON.stringify(value)) : detail;
+    const redacted = JSON.stringify(value, (_key, text) => {
+      if (typeof text !== 'string') return text;
+      const safe = redact(text);
+      if (safe !== text) changed = true;
+      return safe;
+    });
+    return changed ? restoreNumbers(redacted) : detail;
+  } catch { return includeSensitive ? detail : redact(detail); }
+}
+
+export function exportBoard(
+  db: Database.Database, decisionsDir: string, opts: { includeSensitive?: boolean } = {},
+) {
+  syncIndex(db, decisionsDir);
+  return db.transaction(() => {
+    const tasks = db.prepare(`SELECT id,title,body,status,blocked,block_reason,priority,area,kind,
+      track_id,position,archived_at,created_at,updated_at FROM tasks ORDER BY id`).all() as
+      Omit<Task, 'claimed_by' | 'claim_expires' | 'failed_attempts'>[];
+    const tracks = db.prepare(`SELECT id,name,description,status,created_at FROM tracks ORDER BY id`).all() as Track[];
+    const criteria = db.prepare(`SELECT id,task_id,text,checked_at,evidence,checked_by,position,
+      created_at FROM criteria ORDER BY id`).all() as Criterion[];
+    const comments = db.prepare(`SELECT id,task_id,author,body,created_at FROM comments ORDER BY id`).all() as Comment[];
+    const task_links = db.prepare(`SELECT from_id,to_id,kind FROM task_links
+      ORDER BY from_id,to_id,kind`).all() as { from_id: number; to_id: number; kind: string }[];
+    const decisions = (db.prepare(`SELECT d.slug,d.title,d.created,d.superseded_by,
+      d.source_tasks,s.body FROM decisions d LEFT JOIN search_index s
+      ON s.kind='decision' AND s.ref=d.slug ORDER BY d.slug`).all() as {
+      slug: string; title: string; created: string | null; superseded_by: string | null;
+      source_tasks: string; body: string | null;
+    }[]).map(({ source_tasks, body, ...row }) => {
+      if (body === null) throw new KddError(`decision '${row.slug}' has no indexed body`);
+      return { ...row, source_task_ids: JSON.parse(source_tasks) as number[], body };
+    });
+    const events = (db.prepare(`SELECT id,task_id,actor_type,actor_id,action,detail,
+      created_at,parent_id,type,level FROM events ORDER BY id`).all() as EventRow[])
+      .map((row) => ({ ...row, detail: exportEventDetail(row.detail, !!opts.includeSensitive) }));
+    const files = db.prepare(`SELECT id,task_id,sha256,ext,original_name,mime_type,
+      size_bytes,description,created_at FROM files ORDER BY id`).all() as FileRow[];
+    const snapshot = { schema_version: 1 as const, tasks, tracks, criteria, comments,
+      task_links, decisions, events, files };
+    return opts.includeSensitive ? snapshot : JSON.parse(JSON.stringify(snapshot,
+      (_key, value) => typeof value === 'string' ? redact(value) : value)) as typeof snapshot;
+  })();
 }
 
 /**

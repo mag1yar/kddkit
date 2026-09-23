@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdtempSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import type Database from 'better-sqlite3';
 import { openDb } from '../src/db.js';
-import { addTask, moveTask, blockTask, archiveTask } from '../src/ops.js';
+import { addTask, editTask, moveTask, blockTask, archiveTask } from '../src/ops.js';
 import {
   boardData, decisionDetail, exportBoard, statusDigest, syncedTaskDetail,
   taskDetail, taskDetailCapped, unsubmitted,
@@ -72,6 +72,35 @@ describe('boardData', () => {
 });
 
 describe('taskDetail', () => {
+  it('derives handoffs only between known normalized sessions', () => {
+    const touch = (client: 'claude' | 'codex', sessionId: string | undefined, actorId: string) =>
+      editTask(db, 1, { area: [client, sessionId ?? 'missing', actorId].join('-') }, {
+        type: 'ai', id: actorId, manualSession: { client, sessionId, cwd: '/not-a-repo' },
+      });
+    touch('codex', 'A', 'codex:A');
+    touch('codex', 'A', 'mcp');
+    touch('codex', undefined, 'mcp');
+    touch('claude', 'B', 'cc:12345678');
+    touch('claude', 'B', 'cc:12345678');
+    touch('codex', 'A', 'mcp');
+
+    const detail = taskDetail(db, 1);
+    expect(detail.manual_provenance).toEqual({ client: 'codex', session_id: 'A' });
+    expect(detail.handoffs.map((h) => [
+      h.from_client, h.from_session_id, h.to_client, h.to_session_id,
+    ])).toEqual([
+      ['codex', 'A', 'claude', 'B'],
+      ['claude', 'B', 'codex', 'A'],
+    ]);
+    const edits = detail.events.filter((e) => e.action === 'edited');
+    expect(detail.handoffs.map((h) => h.event_id)).toEqual([edits[3].id, edits[5].id]);
+    expect(taskDetailCapped(db, 1).handoffs_total).toBe(2);
+    for (let i = 0; i < 12; i++) touch('codex', i % 2 ? 'A' : 'C', 'mcp');
+    const capped = taskDetailCapped(db, 1);
+    expect(capped.handoffs_total).toBe(14);
+    expect(capped.handoffs).toEqual(taskDetail(db, 1).handoffs.slice(-CAPS.events));
+  });
+
   it('returns task with comments, events and links both ways', () => {
     linkTasks(db, 2, 1, 'relates_to', user);
     const d1 = taskDetail(db, 1);
@@ -154,11 +183,155 @@ describe('statusDigest', () => {
 });
 
 describe('exportBoard', () => {
-  it('dumps everything including archived', () => {
+  const dir = () => mkdtempSync(join(tmpdir(), 'kdd-export-decisions-'));
+  const secret = 'ghp_abcdefghijklmnopqrstuvwxyz';
+
+  it('projects public fields and includes archived tasks', () => {
     archiveTask(db, 1, user);
-    const dump = exportBoard(db);
+    const dump = exportBoard(db, dir());
+    expect(dump.schema_version).toBe(1);
+    expect(Object.keys(dump)).toEqual([
+      'schema_version', 'tasks', 'tracks', 'criteria', 'comments',
+      'task_links', 'decisions', 'events', 'files',
+    ]);
     expect(dump.tasks).toHaveLength(3);
+    expect(dump.tasks[0].archived_at).not.toBeNull();
+    expect(dump.tasks[0]).not.toHaveProperty('claimed_by');
     expect(dump.events.length).toBeGreaterThan(3);
+  });
+
+  it('removes only the local worktree from real mutation provenance in both modes', () => {
+    editTask(db, 1, { area: 'changed' }, {
+      type: 'ai', id: 'codex:test',
+      manualSession: { client: 'codex', sessionId: 'session-142', cwd: process.cwd() },
+    });
+    const raw = (db.prepare('SELECT detail FROM events ORDER BY id DESC LIMIT 1').get() as
+      { detail: string }).detail;
+    const originalProvenance = JSON.parse(raw).manual_provenance;
+    const worktree = originalProvenance.worktree;
+    expect(isAbsolute(worktree)).toBe(true);
+    for (const includeSensitive of [false, true]) {
+      const dump = exportBoard(db, dir(), { includeSensitive });
+      const detail = JSON.parse(dump.events.at(-1)!.detail!);
+      expect(detail.manual_provenance).toMatchObject({
+        client: 'codex', session_id: 'session-142', head_commit: expect.any(String),
+      });
+      expect(detail.manual_provenance.branch).toBe(originalProvenance.branch);
+      expect(detail.manual_provenance).not.toHaveProperty('worktree');
+      expect(dump.events.at(-1)!.detail).not.toContain(worktree);
+      expect(detail).toMatchObject({ fields: ['area'] });
+    }
+    expect((db.prepare('SELECT detail FROM events ORDER BY id DESC LIMIT 1').get() as
+      { detail: string }).detail).toBe(raw);
+  });
+
+  it('preserves legacy detail and redacts known secrets across text fields', () => {
+    const decisionsDir = dir();
+    const decision = addDecision(db, decisionsDir, {
+      title: 'Secret decision', decision: secret, sourceTasks: [1],
+    });
+    const criterion = addCriterion(db, 1, 'secret evidence', user);
+    setCriterionChecked(db, 1, criterion.id, true, user, secret);
+    db.prepare('INSERT INTO comments (task_id,author,body,created_at) VALUES (1,?,?,1)')
+      .run('user', secret);
+    for (const detail of [null, 'legacy plain text', '["legacy"]', '{"other":1}', secret]) {
+      db.prepare(`INSERT INTO events (task_id,actor_type,action,detail,created_at)
+        VALUES (1,'user','legacy',?,1)`).run(detail);
+    }
+    const safe = exportBoard(db, decisionsDir);
+    const sensitive = exportBoard(db, decisionsDir, { includeSensitive: true });
+    expect(safe.decisions[0].slug).toBe(decision.slug);
+    expect(safe.decisions[0].source_task_ids).toEqual([1]);
+    expect(safe.comments.at(-1)!.body).toBe('[redacted]');
+    expect(safe.criteria[0].evidence).toBe('[redacted]');
+    expect(safe.decisions[0].body).toContain('[redacted]');
+    expect(safe.events.at(-1)!.detail).toBe('[redacted]');
+    expect(sensitive.comments.at(-1)!.body).toBe(secret);
+    expect(sensitive.criteria[0].evidence).toBe(secret);
+    expect(sensitive.decisions[0].body).toContain(secret);
+    expect(sensitive.events.at(-1)!.detail).toBe(secret);
+    expect(safe.events.slice(-5).map((e) => e.detail)).toEqual([
+      null, 'legacy plain text', '["legacy"]', '{"other":1}', '[redacted]',
+    ]);
+  });
+
+  it('redacts known secret lines nested in JSON event detail', () => {
+    const raw = JSON.stringify({ text: 'MY_API_KEY=abcdefghijk' });
+    db.prepare(`INSERT INTO events (task_id,actor_type,action,detail,created_at)
+      VALUES (1,'user','legacy',?,1)`).run(raw);
+    expect(JSON.parse(exportBoard(db, dir()).events.at(-1)!.detail!)).toEqual({
+      text: 'MY_API_KEY=[redacted]',
+    });
+    expect(exportBoard(db, dir(), { includeSensitive: true }).events.at(-1)!.detail).toBe(raw);
+  });
+
+  it('preserves exact JSON number tokens when projecting and redacting detail', () => {
+    const raw = '{"manual_provenance":{"client":"codex","worktree":"/private/tmp/local","branch":"main"},' +
+      '"large":9007199254740993,"negative":-0,"exponent":1.234e+56,' +
+      '"nested":{"values":[9007199254740995,"MY_API_KEY=abcdefghijk"]}}';
+    db.prepare(`INSERT INTO events (task_id,actor_type,action,detail,created_at)
+      VALUES (1,'user','legacy',?,1)`).run(raw);
+    for (const includeSensitive of [false, true]) {
+      const detail = exportBoard(db, dir(), { includeSensitive }).events.at(-1)!.detail!;
+      for (const number of ['9007199254740993', '9007199254740995', '-0', '1.234e+56']) {
+        expect(detail).toContain(number);
+      }
+      expect(detail).not.toContain('/private/tmp/local');
+      expect(detail).toContain('"branch":"main"');
+      expect(detail).toContain(includeSensitive
+        ? 'MY_API_KEY=abcdefghijk' : 'MY_API_KEY=[redacted]');
+    }
+    expect((db.prepare('SELECT detail FROM events ORDER BY id DESC LIMIT 1').get() as
+      { detail: string }).detail).toBe(raw);
+  });
+
+  it('keeps a decoded number marker as a JSON string value', () => {
+    const raw = '{"manual_provenance":{"worktree":"/private/tmp/local"},"n":7,' +
+      '"s":"\\u005f_KDD_EXPORT_NUMBER_0__"}';
+    db.prepare(`INSERT INTO events (task_id,actor_type,action,detail,created_at)
+      VALUES (1,'user','legacy',?,1)`).run(raw);
+    for (const includeSensitive of [false, true]) {
+      const detail = exportBoard(db, dir(), { includeSensitive }).events.at(-1)!.detail!;
+      expect(JSON.parse(detail)).toEqual({
+        manual_provenance: {}, n: 7, s: '__KDD_EXPORT_NUMBER_0__',
+      });
+    }
+  });
+
+  it('keeps a decoded number marker as a JSON object key', () => {
+    const raw = '{"manual_provenance":{"worktree":"/private/tmp/local"},"n":7,' +
+      '"\\u005f_KDD_EXPORT_NUMBER_0__":"kept"}';
+    db.prepare(`INSERT INTO events (task_id,actor_type,action,detail,created_at)
+      VALUES (1,'user','legacy',?,1)`).run(raw);
+    for (const includeSensitive of [false, true]) {
+      const detail = exportBoard(db, dir(), { includeSensitive }).events.at(-1)!.detail!;
+      expect(JSON.parse(detail)).toEqual({
+        manual_provenance: {}, n: 7, __KDD_EXPORT_NUMBER_0__: 'kept',
+      });
+    }
+  });
+
+  it('resyncs decision frontmatter even when its body is unchanged', () => {
+    const decisionsDir = dir();
+    const decision = addDecision(db, decisionsDir, {
+      title: 'Linked choice', decision: 'Use it', sourceTasks: [1],
+    });
+    const path = join(decisionsDir, `${decision.slug}.md`);
+    const original = readFileSync(path, 'utf8');
+    exportBoard(db, decisionsDir);
+    writeFileSync(path, original.replace(/^created:.*$/m, 'created: 2026-09-23')
+      .replace(/^source_tasks:.*$/m, 'source_tasks: [2]'));
+    expect(exportBoard(db, decisionsDir).decisions[0]).toMatchObject({
+      created: '2026-09-23', source_task_ids: [2],
+    });
+  });
+
+  it('fails explicitly when a decision has no synchronized body row', () => {
+    const decisionsDir = dir();
+    const decision = addDecision(db, decisionsDir, { title: 'Choice', decision: 'Use it' });
+    exportBoard(db, decisionsDir);
+    db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref=?`).run(decision.slug);
+    expect(() => exportBoard(db, decisionsDir)).toThrow(/decision.*body|index/i);
   });
 });
 

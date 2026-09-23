@@ -4,7 +4,7 @@ import type Database from 'better-sqlite3';
 import { CAPS, capText } from './caps.js';
 import { parseDecisionMd } from './decisions.js';
 import { taskDetail } from './queries.js';
-import type { Criterion } from './types.js';
+import type { Criterion, ManualProvenance, SessionHandoff } from './types.js';
 import type { Kind, Priority, Status } from './state.js';
 
 export interface BriefSection<T> {
@@ -68,6 +68,8 @@ export interface TaskBrief {
     description: string | null;
     path: string;
   }>;
+  manual_provenance?: ManualProvenance;
+  handoffs: BriefSection<SessionHandoff>;
   provenance?: {
     worker_id?: string;
     session_id?: string;
@@ -77,6 +79,7 @@ export interface TaskBrief {
     after_commit?: string;
     error?: string;
   };
+  worker_provenance_omitted?: boolean;
   next_action: NextAction;
   budget: { max_bytes: 4096 };
 }
@@ -235,6 +238,7 @@ function fitBrief(brief: TaskBrief, sources: ScalarSources, errorSource?: string
   drain(brief, brief.files);
   drain(brief, brief.links);
   drain(brief, brief.decisions);
+  drain(brief, brief.handoffs);
 
   if (briefBytes(brief) > CAPS.briefBytes && brief.provenance?.error && errorSource) {
     for (const cap of [128, 64, 32, 16]) {
@@ -243,7 +247,11 @@ function fitBrief(brief: TaskBrief, sources: ScalarSources, errorSource?: string
     }
     delete brief.provenance.error;
   }
-  if (briefBytes(brief) > CAPS.briefBytes && brief.provenance) delete brief.provenance;
+  for (const source of [brief.manual_provenance, brief.provenance]) {
+    for (const field of ['worktree', 'branch'] as const) {
+      if (briefBytes(brief) > CAPS.briefBytes && source?.[field]) delete source[field];
+    }
+  }
 
   const caps: Record<keyof ScalarSources, number> = {
     block_reason: CAPS.blockReasonChars,
@@ -270,6 +278,15 @@ function fitBrief(brief: TaskBrief, sources: ScalarSources, errorSource?: string
     }
   }
 
+  while (briefBytes(brief) > CAPS.briefBytes &&
+    brief.criteria.items.at(-1)?.checked_at !== null &&
+    brief.criteria.items.length > 0) {
+    omitLastItem(brief.criteria);
+  }
+  if (briefBytes(brief) > CAPS.briefBytes && brief.provenance) {
+    delete brief.provenance;
+    brief.worker_provenance_omitted = true;
+  }
   drain(brief, brief.criteria);
   if (briefBytes(brief) > CAPS.briefBytes) {
     throw new Error('task brief cannot fit the 4096-byte JSON budget');
@@ -358,6 +375,11 @@ export function taskBrief(
         path: file.path,
       })).sort((a, b) => a.id - b.id),
       omitted: 0,
+    },
+    ...(detail.manual_provenance ? { manual_provenance: detail.manual_provenance } : {}),
+    handoffs: {
+      items: detail.handoffs.slice(-3).reverse(),
+      omitted: Math.max(0, detail.handoffs.length - 3),
     },
     ...(provenance ? { provenance } : {}),
     next_action: action,

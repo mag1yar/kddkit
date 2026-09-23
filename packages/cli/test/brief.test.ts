@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import {
   addCriterion, addTask, appendAgentEvent, attachFile, blockTask, commentTask, linkTasks,
@@ -11,6 +12,32 @@ import { kdd, makeEnv } from './run.js';
 const user = { type: 'user' as const };
 
 describe('kdd brief', () => {
+  it('records full sessions and a handoff across fresh CLI processes', () => {
+    const env = makeEnv();
+    env.CLAUDE_CODE_SESSION_ID = '';
+    env.KDD_SESSION = '';
+    const db = openDb(env.KDD_DB!, 'brief-cli');
+    const task = addTask(db, { title: 'two sessions' }, user);
+    db.close();
+    kdd({ ...env, CODEX_SESSION_ID: 'session-a' }, 'edit', String(task.id), '--area', 'one');
+    kdd({ ...env, CODEX_SESSION_ID: 'session-b' }, 'edit', String(task.id), '--area', 'two');
+
+    const show = JSON.parse(kdd(env, 'show', String(task.id), '--json'));
+    const briefText = kdd(env, 'brief', String(task.id), '--json').trim();
+    const brief = JSON.parse(briefText);
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    expect(show.manual_provenance).toMatchObject({
+      client: 'codex', session_id: 'session-b', head_commit: head,
+    });
+    expect(show.handoffs).toEqual([expect.objectContaining({
+      from_session_id: 'session-a', to_session_id: 'session-b',
+    })]);
+    expect(brief.manual_provenance).toEqual(show.manual_provenance);
+    expect(brief.handoffs.items).toEqual(show.handoffs);
+    expect(Buffer.byteLength(briefText, 'utf8')).toBeLessThanOrEqual(4096);
+    expect(kdd(env, 'show', String(task.id))).toContain('session-a -> codex:session-b');
+  });
+
   it('prints the exact bounded core JSON from a fresh child process', () => {
     const env = makeEnv();
     const db = openDb(env.KDD_DB!, 'brief-cli');
@@ -85,6 +112,14 @@ describe('kdd brief', () => {
     brief.next_action = {
       kind: 'complete_criterion', criterion_id: criterion.id, text: 'Complete it.',
     };
+    brief.manual_provenance = {
+      client: 'codex', session_id: 'full-manual-session', head_commit: 'snapshot',
+    };
+    brief.handoffs = { items: [{
+      from_client: 'claude', from_session_id: 'prior-session',
+      to_client: 'codex', to_session_id: 'full-manual-session', event_id: 42, at: 124,
+    }], omitted: 1 };
+    brief.provenance = { worker_id: 'worker-1', before_commit: 'before' };
 
     const rendered = renderBrief(brief);
 
@@ -104,5 +139,11 @@ describe('kdd brief', () => {
     expect(rendered).toContain('(+2 omitted)');
     expect(rendered).toContain(`next [complete_criterion criterion #${criterion.id}]: Complete it.`);
     expect(rendered).toContain('budget: 4096 bytes');
+    expect(rendered).toContain('manual provenance:');
+    expect(rendered).toContain('session_id: full-manual-session');
+    expect(rendered).toContain('worker provenance:');
+    expect(rendered).toContain('worker_id: worker-1');
+    expect(rendered).toContain('claude:prior-session -> codex:full-manual-session');
+    expect(rendered).toContain('(+1 omitted)');
   });
 });

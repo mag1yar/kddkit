@@ -3,7 +3,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import {
-  agentId, CAPS, KddError, logError, openDb, resolveDbPath, resolveDecisionsDir,
+  agentId, CAPS, KddError, logError, manualSessionFromEnv, normalizeSessionId,
+  openDb, resolveDbPath, resolveDecisionsDir,
   PRIORITIES, STATUSES, KINDS, type Actor, type Status, type Kind,
 } from '@kddkit/core';
 import * as h from './handlers.js';
@@ -173,12 +174,23 @@ const mcpWorkspace = (meta?: Meta): string | undefined => {
  * ради теста — расхождение с CLI уже было баг.
  */
 export const mcpActor = (meta?: Record<string, unknown>): Actor => {
+  const hasTurnMetadata = !!meta && Object.hasOwn(meta, 'x-codex-turn-metadata');
   const values = codexTurn(meta);
+  const cwd = mcpWorkspace(meta) ?? process.cwd();
+  const normalizedTurnId = normalizeSessionId(values?.session_id)
+    ?? normalizeSessionId(values?.thread_id)
+    ?? normalizeSessionId(values?.threadId);
+  const manualSession = process.env.KDD_SESSION ? undefined
+    : normalizedTurnId
+      ? { client: 'codex' as const, sessionId: normalizedTurnId, cwd }
+      : hasTurnMetadata ? { client: 'codex' as const, cwd } : manualSessionFromEnv(cwd);
   if (values) {
     const id = values.session_id ?? values.thread_id ?? values.threadId;
-    if (typeof id === 'string' && id) return { type: 'ai', id: `codex:${id}` };
+    if (typeof id === 'string' && id) {
+      return { type: 'ai', id: 'codex:' + id, ...(manualSession ? { manualSession } : {}) };
+    }
   }
-  return { type: 'ai', id: agentId() ?? 'mcp' };
+  return { type: 'ai', id: agentId() ?? 'mcp', ...(manualSession ? { manualSession } : {}) };
 };
 
 export async function startServer(): Promise<void> {

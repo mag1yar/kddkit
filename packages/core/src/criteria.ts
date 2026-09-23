@@ -4,7 +4,7 @@ import { now } from './db.js';
 import { KddError } from './errors.js';
 import { authorOf, type Actor } from './state.js';
 import type { Criterion } from './types.js';
-import { appendEvent, mustGetTask } from './ops.js';
+import { appendTaskMutationEvent, mustGetTask } from './ops.js';
 
 export function listCriteria(db: Database.Database, taskId: number): Criterion[] {
   return db.prepare(
@@ -36,7 +36,7 @@ export function addCriterion(
       `INSERT INTO criteria (task_id, text, position, created_at) VALUES (?, ?, ?, ?)`,
     ).run(taskId, text, pos, now());
     const id = Number(r.lastInsertRowid);
-    appendEvent(db, taskId, actor, 'criterion_added', { id, text });
+    appendTaskMutationEvent(db, taskId, actor, 'criterion_added', { id, text });
     touchTask(db, taskId);
     return mustGetCriterion(db, taskId, id);
   })();
@@ -55,7 +55,7 @@ export function setCriterionChecked(
       `UPDATE criteria SET checked_at = ?, evidence = ?, checked_by = ? WHERE id = ?`,
     ).run(checked ? now() : null, checked ? stored : null,
       checked ? authorOf(actor) : null, id);
-    appendEvent(db, taskId, actor, checked ? 'criterion_checked' : 'criterion_unchecked',
+    appendTaskMutationEvent(db, taskId, actor, checked ? 'criterion_checked' : 'criterion_unchecked',
       { id, text: c.text, ...(checked && stored ? { evidence: stored } : {}) });
     touchTask(db, taskId);
     return mustGetCriterion(db, taskId, id);
@@ -68,7 +68,7 @@ export function removeCriterion(
   db.transaction(() => {
     const c = mustGetCriterion(db, taskId, id);
     db.prepare(`DELETE FROM criteria WHERE id = ?`).run(id);
-    appendEvent(db, taskId, actor, 'criterion_removed', { id, text: c.text });
+    appendTaskMutationEvent(db, taskId, actor, 'criterion_removed', { id, text: c.text });
     touchTask(db, taskId);
   })();
 }

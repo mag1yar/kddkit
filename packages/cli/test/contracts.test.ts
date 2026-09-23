@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  CAPS, addTask, openDb, taskDetailCapped, type DecisionDetail,
+  CAPS, addTask, editTask, openDb, taskDetailCapped, type DecisionDetail,
 } from '@kddkit/core';
 import { makeEnv, kdd } from './run.js';
 import { renderDecision, renderShow } from '../src/render.js';
@@ -28,6 +28,20 @@ function seed100(): void {
 }
 
 describe('output contracts (CLI-05)', () => {
+  it('shows latest manual provenance and known handoffs', () => {
+    const db = openDb(':memory:', 'x');
+    const task = addTask(db, { title: 'manual' }, { type: 'user' });
+    const actor = (sessionId: string) => ({
+      type: 'ai' as const, id: 'transport',
+      manualSession: { client: 'codex' as const, sessionId, cwd: '/not-a-repo' },
+    });
+    editTask(db, task.id, { area: 'one' }, actor('session-a'));
+    editTask(db, task.id, { area: 'two' }, actor('session-b'));
+    const out = renderShow(taskDetailCapped(db, task.id));
+    expect(out).toContain('manual provenance:');
+    expect(out).toContain('session_id: session-b');
+    expect(out).toContain('codex:session-a -> codex:session-b');
+  });
   it('caps task backlinks and reports their total', () => {
     const db = openDb(':memory:', 'x');
     const task = addTask(db, { title: 'source' }, { type: 'user' });

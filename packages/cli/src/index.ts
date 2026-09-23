@@ -907,8 +907,10 @@ program.command('projects')
   }));
 
 program.command('export')
-  .action(() => run(true, () => {
-    const dump = withDb((db) => exportBoard(db));
+  .option('--include-sensitive')
+  .action((o) => run(true, () => {
+    const dump = withDb((db) => exportBoard(db, resolveDecisionsDir(),
+      { includeSensitive: !!o.includeSensitive }));
     console.log(JSON.stringify(dump));
   }));
 

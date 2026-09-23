@@ -57,6 +57,18 @@ export interface EventRow {
   actor_id: string | null; action: string; detail: string | null; created_at: number;
   parent_id: number | null; type: string | null; level: 'info' | 'warn' | 'error';
 }
+export interface ManualProvenance {
+  client: 'claude' | 'codex';
+  session_id?: string;
+  worktree?: string;
+  branch?: string;
+  head_commit?: string;
+}
+export interface SessionHandoff {
+  from_client: 'claude' | 'codex'; from_session_id: string;
+  to_client: 'claude' | 'codex'; to_session_id: string;
+  event_id: number; at: number;
+}
 export interface DecisionSummary {
   slug: string; title: string; created: string | null; superseded_by: string | null;
 }

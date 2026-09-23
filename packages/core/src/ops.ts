@@ -1,8 +1,9 @@
+import { execFileSync } from 'node:child_process';
 import type Database from 'better-sqlite3';
 import { redact } from './agent_events.js';
 import { now } from './db.js';
 import { KddError } from './errors.js';
-import { authorOf, checkMove, KINDS, PRIORITIES, STATUSES, type Actor, type Kind, type Priority, type Status } from './state.js';
+import { authorOf, checkMove, KINDS, normalizeSessionId, PRIORITIES, STATUSES, type Actor, type Kind, type Priority, type Status } from './state.js';
 import type { Comment, Task } from './types.js';
 import { mustGetTrack } from './tracks.js';
 
@@ -21,6 +22,37 @@ export function appendEvent(
     detail ? JSON.stringify(detail) : null, now(),
     opts?.parent_id ?? null, opts?.type ?? null, opts?.level ?? 'info');
   return Number(r.lastInsertRowid);
+}
+
+// Only explicit successful mutations use this path. Audit events for failed claims,
+// lease maintenance, and system work keep their original detail.
+export function appendTaskMutationEvent(
+  db: Database.Database, taskId: number, actor: Actor,
+  action: string, detail?: object,
+  opts?: { parent_id?: number; type?: string; level?: 'info' | 'warn' | 'error' },
+): number {
+  const session = actor.type === 'ai' ? actor.manualSession : undefined;
+  if (!session) return appendEvent(db, taskId, actor, action, detail, opts);
+  const git = (args: string[]): string | undefined => {
+    try {
+      return execFileSync('git', args, {
+        cwd: session.cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim() || undefined;
+    } catch { return undefined; }
+  };
+  const worktree = git(['rev-parse', '--show-toplevel']);
+  const branch = worktree ? git(['symbolic-ref', '--quiet', '--short', 'HEAD']) : undefined;
+  const head = worktree ? git(['rev-parse', '--verify', 'HEAD']) : undefined;
+  return appendEvent(db, taskId, actor, action, {
+    ...(detail ?? {}),
+    manual_provenance: {
+      client: session.client,
+      ...(normalizeSessionId(session.sessionId) ? { session_id: session.sessionId } : {}),
+      ...(worktree ? { worktree } : {}),
+      ...(branch ? { branch } : {}),
+      ...(head ? { head_commit: head } : {}),
+    },
+  }, opts);
 }
 
 export function mustGetTask(db: Database.Database, id: number): Task {
@@ -75,7 +107,7 @@ export function addTask(
     const ins = db.prepare(
       `INSERT INTO criteria (task_id, text, position, created_at) VALUES (?, ?, ?, ?)`);
     (input.criteria ?? []).forEach((text, i) => ins.run(id, text, i, ts));
-    appendEvent(db, id, actor, 'created');
+    appendTaskMutationEvent(db, id, actor, 'created');
     return mustGetTask(db, id);
   })();
 }
@@ -99,7 +131,7 @@ export function editTask(
     const sets = fields.map((f) => `${f} = ?`).join(', ');
     db.prepare(`UPDATE tasks SET ${sets}, updated_at = ? WHERE id = ?`)
       .run(...fields.map((f) => patch[f]), now(), id);
-    appendEvent(db, id, actor, 'edited', { fields });
+    appendTaskMutationEvent(db, id, actor, 'edited', { fields });
     return mustGetTask(db, id);
   })();
 }
@@ -117,7 +149,7 @@ export function commentTask(
     const r = db.prepare(
       `INSERT INTO comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)`,
     ).run(id, authorOf(actor), text, now());
-    appendEvent(db, id, actor, 'commented');
+    appendTaskMutationEvent(db, id, actor, 'commented');
     return db.prepare(`SELECT * FROM comments WHERE id = ?`)
       .get(Number(r.lastInsertRowid)) as Comment;
   })();
@@ -177,7 +209,7 @@ export function moveTask(
       `UPDATE tasks SET status = ?, position = ?, updated_at = ?${leaving ? ', claimed_by = NULL, claim_expires = NULL' : ''}${reset ? ', failed_attempts = 0' : ''}
        WHERE id = ?`,
     ).run(to, nextPosition(db, to), now(), id); // CLI-move дописывает в конец колонки; выход из in_progress снимает claim
-    appendEvent(db, id, actor, 'moved', {
+    appendTaskMutationEvent(db, id, actor, 'moved', {
       from: t.status, to, ...(reason ? { reason } : {}), ...(self ? { self_accepted: true } : {}),
     });
     if (reason) {
@@ -201,7 +233,7 @@ export function placeTask(
       const res = checkMove(t.status, to, actor, undefined, openCriteria(db, id), t.claimed_by,
         t.status === 'review' ? submittedBy(db, id) : null);
       if (!res.ok) throw new KddError(res.error);
-      appendEvent(db, id, actor, 'moved', { from: t.status, to });
+      appendTaskMutationEvent(db, id, actor, 'moved', { from: t.status, to });
     }
     const setPos = db.prepare(`UPDATE tasks SET position = ? WHERE id = ?`);
     orderedIds.forEach((tid, i) => setPos.run(i, tid));
@@ -223,7 +255,7 @@ export function blockTask(
     mustGetTask(db, id);
     db.prepare(`UPDATE tasks SET blocked = 1, block_reason = ?, updated_at = ? WHERE id = ?`)
       .run(reason, now(), id);
-    appendEvent(db, id, actor, 'blocked', { reason });
+    appendTaskMutationEvent(db, id, actor, 'blocked', { reason });
     return mustGetTask(db, id);
   })();
 }
@@ -233,7 +265,7 @@ export function unblockTask(db: Database.Database, id: number, actor: Actor): Ta
     mustGetTask(db, id);
     db.prepare(`UPDATE tasks SET blocked = 0, block_reason = NULL, updated_at = ? WHERE id = ?`)
       .run(now(), id);
-    appendEvent(db, id, actor, 'unblocked');
+    appendTaskMutationEvent(db, id, actor, 'unblocked');
     return mustGetTask(db, id);
   })();
 }
@@ -247,7 +279,7 @@ export function linkTasks(
     const r = db.prepare(
       `INSERT OR IGNORE INTO task_links (from_id, to_id, kind) VALUES (?, ?, ?)`,
     ).run(fromId, toId, kind);
-    if (r.changes > 0) appendEvent(db, fromId, actor, 'linked', { to: toId, kind });
+    if (r.changes > 0) appendTaskMutationEvent(db, fromId, actor, 'linked', { to: toId, kind });
   })();
 }
 
@@ -256,7 +288,7 @@ export function archiveTask(db: Database.Database, id: number, actor: Actor): Ta
     mustGetTask(db, id);
     db.prepare(`UPDATE tasks SET archived_at = ?, updated_at = ? WHERE id = ?`)
       .run(now(), now(), id);
-    appendEvent(db, id, actor, 'archived');
+    appendTaskMutationEvent(db, id, actor, 'archived');
     return mustGetTask(db, id);
   })();
 }
@@ -266,7 +298,7 @@ export function unarchiveTask(db: Database.Database, id: number, actor: Actor): 
     mustGetTask(db, id);
     db.prepare(`UPDATE tasks SET archived_at = NULL, updated_at = ? WHERE id = ?`)
       .run(now(), id);
-    appendEvent(db, id, actor, 'unarchived');
+    appendTaskMutationEvent(db, id, actor, 'unarchived');
     return mustGetTask(db, id);
   })();
 }
