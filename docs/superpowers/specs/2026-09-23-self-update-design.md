@@ -45,7 +45,15 @@ client restart before the new MCP server and skills take effect.
    global package root. Update the CLI only if the running `dist/index.js` is
    the real file under that root's `@kddkit/cli` package, the package is a
    registry install rather than a symlink or `file:` link, and its version is
-   older than the release. Use that same npm CLI, under `process.execPath`, to
+   older than the release. If npm omits the installation source, skip it as
+   unknown: global registry and local tarball installs can have the same
+   `npm ls` output. An explicit source must match the published npm registry
+   tarball URL for that package and version; other URLs are skipped. The explicit
+   `--replace-cli-from-registry` flag permits replacing an older unknown-source
+   CLI with the registry package. It never bypasses prefix, realpath, symlink,
+   `npx`, or known non-registry source checks, and the agent skill does not add
+   it unless the user specifically requests that replacement. Use that
+   same npm CLI, under `process.execPath`, to
    install `@kddkit/cli@<release version>` globally. If npm is unavailable for
    this Node, a different npm prefix owns the installation, or the command is
    running from `npx` or a source checkout, skip the CLI and explain how to
@@ -128,8 +136,9 @@ not bypass client approval or managed-plugin policy.
   global package, an unchanged PATH `kdd` after npm succeeds, Claude's
   non-TTY approval refusal, Codex refresh with and without a required `add`,
   failure continuation, and argument arrays passed to update subprocesses.
-  Stub external commands and GitHub in tests; never mutate the developer's
-  global installations in a test.
+  Stub external commands, GitHub, and background worker launch in unit tests;
+  also run built CLI subprocess tests with temporary state. Never mutate the
+  developer's global installations in a test.
 - Build, type-check, and run CLI/core tests. Check the generated CLI bundle and
   Codex artifact sync. Verify `kdd --help` and update the CLI command table.
 - Observe a built CLI process with a temporary KDD home: a cache miss starts a

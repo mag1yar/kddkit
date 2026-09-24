@@ -111,8 +111,15 @@ kdd recall "recall ranking"   # search decisions + tasks
 
 Full command set: `add`, `board`, `show`, `brief`, `attention`, `move`, `edit`, `comment`,
 `block` / `unblock`, `attach` / `detach`, `link`, `archive` / `unarchive`,
-`decide`, `decision`, `recall`, `status`, `rebuild`, `projects`, `export`, `ui`. Add
+`decide`, `decision`, `recall`, `status`, `rebuild`, `projects`, `export`, `ui`,
+`update`. Add
 `--json` to most for machine-readable output.
+
+Use [`kdd update`](packages/cli/README.md#update) to refresh installed CLI and
+Claude Code or Codex plugins. It works outside a Git repository; restart the
+client after a plugin update.
+If npm cannot identify the CLI's source, it is skipped unless you explicitly run
+`kdd update --replace-cli-from-registry` to replace it from the registry.
 
 `kdd export` writes a versioned JSON board snapshot; see the [export v1 contract](docs/export-v1.md).
 

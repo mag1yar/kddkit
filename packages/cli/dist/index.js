@@ -2,12 +2,12 @@
 
 // src/index.ts
 import { Command } from "commander";
-import { readFileSync } from "fs";
-import { basename, delimiter, dirname as dirname2, join } from "path";
+import { readFileSync as readFileSync2 } from "fs";
+import { basename as basename2, delimiter, dirname as dirname3, join as join3 } from "path";
 import { spawn as spawnProcess2 } from "child_process";
 import { networkInterfaces } from "os";
 import { createInterface } from "readline";
-import { fileURLToPath } from "url";
+import { fileURLToPath as fileURLToPath2 } from "url";
 import lockfile from "proper-lockfile";
 import {
   KddError as KddError2,
@@ -37,7 +37,7 @@ import {
   exportBoard,
   filesDir,
   headCommit,
-  kddVersion,
+  kddVersion as kddVersion2,
   KINDS,
   linkTasks,
   listAgentEvents,
@@ -64,6 +64,7 @@ import {
   statusDigest,
   stopWorkers,
   storeIdentity,
+  releaseInfo,
   sweepWorktrees,
   syncedTaskDetail,
   taskBrief,
@@ -589,20 +590,362 @@ function workerPrompt(kind, area) {
   return `You are a kdd agent worker. Read your task: run \`kdd show $KDD_TASK_ID\`. Do the work in this repository. ${BODY[kind]} Commit your work as \`${COMMIT_TYPE[kind]}${scopeOf(area)}: <subject>\` \u2014 the changelog is generated from commit subjects, and a non-conventional subject is silently dropped. When done, leave ONE concise summary comment (\`kdd comment $KDD_TASK_ID "<what you changed and why; caveats or follow-ups>"\`) \u2014 this is the durable note humans and future sessions read, so keep it tight, not a log. Then check acceptance criteria (\`kdd criteria ls $KDD_TASK_ID\`, then \`kdd criteria check $KDD_TASK_ID <criterionId> --evidence "<test command, URL, commit, attachment, or note>"\` when evidence is available) and \`kdd move $KDD_TASK_ID review\`. If you get blocked or must stop early, comment the reason first.`;
 }
 
+// src/update-notifier.ts
+import { spawn } from "child_process";
+import { readFileSync } from "fs";
+import { join } from "path";
+import { fileURLToPath } from "url";
+import { compareVersions, kddHome, kddVersion } from "@kddkit/core";
+function readUpdateCache(path) {
+  try {
+    const value = JSON.parse(readFileSync(path, "utf8"));
+    if (!value || typeof value !== "object") return null;
+    const { latest, checkedAt } = value;
+    if (latest !== null && (typeof latest !== "string" || !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(latest))) return null;
+    if (typeof checkedAt !== "number" || !Number.isFinite(checkedAt) || checkedAt < 0) return null;
+    return { latest, checkedAt };
+  } catch {
+    return null;
+  }
+}
+function shouldRefresh(cache, now4) {
+  if (!cache || cache.checkedAt > now4) return true;
+  return now4 - cache.checkedAt >= (cache.latest ? 24 * 60 * 6e4 : 5 * 6e4);
+}
+function eligible(argv, env) {
+  if (env.CI || env.NO_UPDATE_NOTIFIER || env.CLAUDECODE === "1" || env.CODEX_SESSION_ID || env.CODEX_THREAD_ID || env.KDD_ACTOR === "ai" || env.npm_command === "exec") return false;
+  if (argv.some((arg) => ["--json", "--help", "-h", "--version", "-V"].includes(arg))) return false;
+  return !["update", "worker", "help"].includes(argv[0] ?? "");
+}
+function noticeOnStartup(argv = process.argv.slice(2), env = process.env) {
+  if (!eligible(argv, env)) return;
+  const path = join(kddHome(), "update-check.json");
+  const cache = readUpdateCache(path);
+  if (cache?.latest && compareVersions(cache.latest, kddVersion()) > 0)
+    process.stderr.write(`kdd: v${cache.latest} available; run kdd update
+`);
+  if (!shouldRefresh(cache, Date.now())) return;
+  try {
+    const worker = fileURLToPath(new URL("./update-check-worker.js", import.meta.url));
+    const child = spawn(process.execPath, [worker], { detached: true, stdio: "ignore" });
+    child.on("error", () => {
+    });
+    child.unref();
+  } catch {
+  }
+}
+
+// src/update.ts
+import { execFileSync as execFileSync2, spawnSync } from "child_process";
+import { existsSync, lstatSync, realpathSync } from "fs";
+import { basename, dirname as dirname2, isAbsolute, join as join2 } from "path";
+import { compareVersions as compareVersions2 } from "@kddkit/core";
+var runCommand = (file, args, cwd) => {
+  const result = spawnSync(file, args, {
+    cwd,
+    encoding: "utf8",
+    timeout: 5 * 6e4,
+    maxBuffer: 1024 * 1024
+  });
+  return {
+    status: result.status,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+    ...result.error ? { error: result.error } : {}
+  };
+};
+function npmCliFor(nodePath) {
+  const candidates = [nodePath];
+  try {
+    candidates.push(realpathSync(nodePath));
+  } catch {
+  }
+  for (const executable of candidates) {
+    for (const path of [
+      join2(dirname2(dirname2(executable)), "lib/node_modules/npm/bin/npm-cli.js"),
+      join2(dirname2(executable), "node_modules/npm/bin/npm-cli.js")
+    ]) if (existsSync(path)) return path;
+    try {
+      const sibling = realpathSync(join2(dirname2(executable), "npm"));
+      if (basename(sibling) === "npm-cli.js" && basename(dirname2(dirname2(sibling))) === "npm")
+        return sibling;
+    } catch {
+    }
+  }
+  return null;
+}
+function updateCli(latest, run2, cliFile, nodePath, replaceUnknownSource = false) {
+  const name = "cli";
+  if (process.env.npm_command === "exec") return {
+    name,
+    status: "skipped",
+    detail: "This is an npm exec/npx run; update the installed CLI separately."
+  };
+  const npmCli = npmCliFor(nodePath);
+  if (!npmCli) return {
+    name,
+    status: "skipped",
+    detail: `This Node has no npm CLI; use its package manager to install @kddkit/cli@${latest}.`
+  };
+  const root = run2(nodePath, [npmCli, "root", "-g"]);
+  const npmRoot = root.stdout.trim();
+  if (root.status !== 0 || !isAbsolute(npmRoot)) return {
+    name,
+    status: "failed",
+    detail: `npm root -g failed: ${root.stderr.trim() || root.error?.message || root.stdout.trim()}`
+  };
+  const scopeDir = join2(npmRoot, "@kddkit");
+  const packageDir = join2(scopeDir, "cli");
+  const distDir = join2(packageDir, "dist");
+  const expectedFile = join2(distDir, "index.js");
+  try {
+    if ([scopeDir, packageDir, distDir, expectedFile].some((path) => lstatSync(path).isSymbolicLink()) || realpathSync(cliFile) !== realpathSync(expectedFile)) return {
+      name,
+      status: "skipped",
+      detail: `This kdd is not the CLI owned by npm at ${npmRoot}; update its source or owning installation manually.`
+    };
+  } catch {
+    return {
+      name,
+      status: "skipped",
+      detail: `This kdd is outside npm's global root ${npmRoot}; update its source or owning installation manually.`
+    };
+  }
+  const listed = run2(nodePath, [npmCli, "ls", "-g", "@kddkit/cli", "--json", "--long"]);
+  if (listed.status !== 0) return {
+    name,
+    status: "failed",
+    detail: `npm ls -g @kddkit/cli failed: ${listed.stderr.trim() || listed.error?.message || listed.stdout.trim()}`
+  };
+  let installed;
+  try {
+    const tree = JSON.parse(listed.stdout);
+    const row = tree?.dependencies?.["@kddkit/cli"];
+    if (!row || typeof row !== "object") throw new Error("package missing");
+    installed = row;
+  } catch {
+    return { name, status: "failed", detail: "npm ls -g @kddkit/cli returned invalid installation data." };
+  }
+  const current = installed.version;
+  const source = installed.resolved;
+  if (typeof current !== "string" || !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(current) || source !== void 0 && typeof source !== "string") return {
+    name,
+    status: "failed",
+    detail: "npm ls -g @kddkit/cli returned invalid version or source data."
+  };
+  if (compareVersions2(current, latest) >= 0) return {
+    name,
+    status: "current",
+    detail: `CLI is already ${current}.`
+  };
+  if (source === void 0 && !replaceUnknownSource) return {
+    name,
+    status: "skipped",
+    detail: "npm did not report this CLI installation source; use --replace-cli-from-registry only if you want to replace it from npm."
+  };
+  if (source !== void 0 && source !== `https://registry.npmjs.org/@kddkit/cli/-/cli-${current}.tgz`) return {
+    name,
+    status: "skipped",
+    detail: "This CLI source is not the published npm registry tarball; update its source manually."
+  };
+  const install = run2(nodePath, [npmCli, "install", "-g", `@kddkit/cli@${latest}`]);
+  if (install.status !== 0) return {
+    name,
+    status: "failed",
+    detail: `npm install failed: ${install.stderr.trim() || install.error?.message || install.stdout.trim()}`
+  };
+  const invoked = run2("kdd", ["--version"]);
+  const observed = invoked.stdout.trim() || invoked.stderr.trim() || invoked.error?.message || "(unavailable)";
+  if (invoked.status !== 0 || observed !== latest) return {
+    name,
+    status: "failed",
+    detail: `npm installed ${latest} from ${current}, but kdd --version reports ${observed}; check your PATH and npm prefix.`
+  };
+  return { name, status: "updated", detail: `${current} \u2192 ${latest}; ${source === void 0 ? "unknown source replaced explicitly; " : ""}kdd --version verified.` };
+}
+function missingExecutable(result) {
+  return result.error?.code === "ENOENT";
+}
+function commandError(result) {
+  return (result.stderr.trim() || result.error?.message || result.stdout.trim() || "unknown error").slice(0, 500);
+}
+function validVersion(version) {
+  return typeof version === "string" && /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(version);
+}
+function inspectClaude(run2, cwd) {
+  const listed = run2("claude", ["plugin", "list", "--json"], cwd);
+  if (missingExecutable(listed)) return {
+    error: { name: "claude", status: "skipped", detail: "Claude Code CLI is not installed." }
+  };
+  if (listed.status !== 0) return {
+    error: { name: "claude", status: "failed", detail: `claude plugin list failed: ${commandError(listed)}` }
+  };
+  try {
+    const parsed = JSON.parse(listed.stdout);
+    if (!Array.isArray(parsed)) throw new Error("expected an array");
+    const rows = parsed.filter((item) => item?.id === "kddkit@kddkit");
+    if (rows.some((row) => !validVersion(row.version) || typeof row.scope !== "string"))
+      throw new Error("invalid kddkit row");
+    return { rows };
+  } catch {
+    return { error: { name: "claude", status: "failed", detail: "claude plugin list returned invalid JSON or plugin data." } };
+  }
+}
+function gitRoot(cwd) {
+  try {
+    return realpathSync(execFileSync2("git", ["rev-parse", "--show-toplevel"], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim());
+  } catch {
+    return null;
+  }
+}
+function sameProject(path, root) {
+  if (!root || !path) return false;
+  try {
+    return realpathSync(path) === root;
+  } catch {
+    return false;
+  }
+}
+function updateClaude(latest, run2, cwd) {
+  const first = inspectClaude(run2, cwd);
+  if ("error" in first) return [first.error];
+  if (first.rows.length === 0) return [{ name: "claude", status: "skipped", detail: "kddkit is not installed in Claude Code." }];
+  const root = gitRoot(cwd);
+  let refresh = null;
+  return first.rows.map((row) => {
+    const scope = row.scope;
+    const label = `Claude ${scope} scope`;
+    if (scope === "managed") return {
+      name: "claude",
+      status: "skipped",
+      detail: `${label} is managed by policy.`
+    };
+    if (scope !== "user" && !(scope === "project" || scope === "local")) return {
+      name: "claude",
+      status: "skipped",
+      detail: `${label} is not an updatable scope.`
+    };
+    if (scope !== "user" && !sameProject(row.projectPath, root)) return {
+      name: "claude",
+      status: "skipped",
+      detail: `${label} belongs to another project or no Git repository is active.`
+    };
+    if (compareVersions2(row.version, latest) >= 0) return {
+      name: "claude",
+      status: "current",
+      detail: `${label} is already ${row.version}.`
+    };
+    refresh ??= run2("claude", ["plugin", "marketplace", "update", "kddkit"], cwd);
+    if (refresh.status !== 0) return {
+      name: "claude",
+      status: "failed",
+      detail: `${label}: marketplace refresh failed: ${commandError(refresh)}`
+    };
+    const args = ["plugin", "update", "kddkit@kddkit", "--scope", scope];
+    const updated = run2("claude", args, cwd);
+    if (updated.status !== 0) {
+      const approval = /confirm|approv|\btty\b|-y\b/i.test(`${updated.stderr} ${updated.stdout}`);
+      return {
+        name: "claude",
+        status: "failed",
+        detail: approval ? `${label}: interactive approval required; run claude ${args.join(" ")} in a terminal.` : `${label}: update failed: ${commandError(updated)}`
+      };
+    }
+    const checked = inspectClaude(run2, cwd);
+    if ("error" in checked) return {
+      name: "claude",
+      status: "failed",
+      detail: `${label}: could not verify update: ${checked.error.detail}`
+    };
+    const observed = checked.rows.find((item) => item.scope === scope && (scope === "user" || item.projectPath === row.projectPath));
+    if (!observed || compareVersions2(observed.version, latest) < 0) return {
+      name: "claude",
+      status: "failed",
+      detail: `${label}: expected ${latest}, observed ${observed?.version ?? "absent"} after update.`
+    };
+    return { name: "claude", status: "updated", detail: `${label}: ${row.version} \u2192 ${observed.version}; verified.` };
+  });
+}
+function inspectCodex(run2) {
+  const listed = run2("codex", ["plugin", "list", "--json"]);
+  if (missingExecutable(listed)) return {
+    error: { name: "codex", status: "skipped", detail: "Codex CLI is not installed." }
+  };
+  if (listed.status !== 0) return {
+    error: { name: "codex", status: "failed", detail: `codex plugin list failed: ${commandError(listed)}` }
+  };
+  try {
+    const parsed = JSON.parse(listed.stdout);
+    if (!parsed || typeof parsed !== "object" || !("installed" in parsed) || !Array.isArray(parsed.installed)) throw new Error("expected installed array");
+    const row = parsed.installed.find((item) => item?.pluginId === "kddkit@kddkit");
+    if (row && (!validVersion(row.version) || row.installed !== true || typeof row.marketplaceSource?.sourceType !== "string")) throw new Error("invalid kddkit row");
+    return { row: row ?? null };
+  } catch {
+    return { error: { name: "codex", status: "failed", detail: "codex plugin list returned invalid JSON or plugin data." } };
+  }
+}
+function updateCodex(latest, run2) {
+  const first = inspectCodex(run2);
+  if ("error" in first) return first.error;
+  if (!first.row) return { name: "codex", status: "skipped", detail: "kddkit is not installed in Codex." };
+  const current = first.row.version;
+  if (first.row.marketplaceSource.sourceType !== "git") return {
+    name: "codex",
+    status: "skipped",
+    detail: `Codex marketplace is ${first.row.marketplaceSource.sourceType}; update its source manually.`
+  };
+  if (compareVersions2(current, latest) >= 0) return {
+    name: "codex",
+    status: "current",
+    detail: `Codex plugin is already ${current}.`
+  };
+  const upgraded = run2("codex", ["plugin", "marketplace", "upgrade", "kddkit"]);
+  if (upgraded.status !== 0) return {
+    name: "codex",
+    status: "failed",
+    detail: `Codex marketplace upgrade failed: ${commandError(upgraded)}`
+  };
+  const refreshed = inspectCodex(run2);
+  if ("error" in refreshed) return { name: "codex", status: "failed", detail: `Could not verify Codex refresh: ${refreshed.error.detail}` };
+  if (!refreshed.row) return { name: "codex", status: "failed", detail: "Codex plugin disappeared after marketplace refresh." };
+  let observed = refreshed.row.version;
+  if (compareVersions2(observed, latest) < 0) {
+    const added = run2("codex", ["plugin", "add", "kddkit@kddkit"]);
+    if (added.status !== 0) return {
+      name: "codex",
+      status: "failed",
+      detail: `Codex plugin add failed: ${commandError(added)}`
+    };
+    const checked = inspectCodex(run2);
+    if ("error" in checked) return { name: "codex", status: "failed", detail: `Could not verify Codex update: ${checked.error.detail}` };
+    observed = checked.row?.version ?? "absent";
+  }
+  if (!validVersion(observed) || compareVersions2(observed, latest) < 0) return {
+    name: "codex",
+    status: "failed",
+    detail: `Codex plugin stayed at ${observed}; expected ${latest}.`
+  };
+  return { name: "codex", status: "updated", detail: `${current} \u2192 ${observed}; verified.` };
+}
+
 // src/index.ts
-var program = new Command().name("kdd").description("kanban substrate for humans and Claude").version(kddVersion());
+var program = new Command().name("kdd").description("kanban substrate for humans and Claude").version(kddVersion2());
 function out(json, obj, text) {
   console.log(json ? JSON.stringify(obj) : text());
 }
 function readBody(opts) {
-  if (opts.bodyFile) return readFileSync(opts.bodyFile, "utf8");
-  if (opts.body === "-") return readFileSync(0, "utf8");
+  if (opts.bodyFile) return readFileSync2(opts.bodyFile, "utf8");
+  if (opts.body === "-") return readFileSync2(0, "utf8");
   return opts.body;
 }
 var runMarker = (tag) => ` Ignore this run marker, it is not part of your task: ${tag}`;
 var sq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
-var defaultSpawnCmd = (taskId, tag) => `${sq(process.execPath)} ${sq(fileURLToPath(import.meta.url))} worker ${taskId} --tag ${tag}`;
-var nodeFirstPath = () => [dirname2(process.execPath), process.env.PATH].filter(Boolean).join(delimiter);
+var defaultSpawnCmd = (taskId, tag) => `${sq(process.execPath)} ${sq(fileURLToPath2(import.meta.url))} worker ${taskId} --tag ${tag}`;
+var nodeFirstPath = () => [dirname3(process.execPath), process.env.PATH].filter(Boolean).join(delimiter);
 var TICK_LOCK_STALE = 10 * 60 * 1e3;
 var TICK_KILL_TIMEOUT = 5 * 60 * 1e3;
 function spawnWorker(taskId, workerId, projectDir, tag) {
@@ -621,8 +964,8 @@ function spawnWorker(taskId, workerId, projectDir, tag) {
   });
   child.unref();
 }
-var tickRunner = createTickRunner(fileURLToPath(import.meta.url), TICK_KILL_TIMEOUT);
-var stopRunner = createStopRunner(fileURLToPath(import.meta.url));
+var tickRunner = createTickRunner(fileURLToPath2(import.meta.url), TICK_KILL_TIMEOUT);
+var stopRunner = createStopRunner(fileURLToPath2(import.meta.url));
 var killerFor = (dbPath) => (taskIds) => killWorkers(new Map(taskIds.map((id) => [id, workerTag(id, dbPath)])));
 var secondsError = (name, v) => Number.isFinite(v) && v > 0 ? null : `invalid ${name} '${process.env[name]}' (seconds > 0)`;
 var ttlError = (ttl) => secondsError("KDD_WORKER_TTL", ttl);
@@ -746,7 +1089,7 @@ program.command("tick").description("agent-mode: reclaim expired leases, claim r
     const { dbPath, projectPath } = resolveDbPath2();
     let release;
     try {
-      release = lockfile.lockSync(join(dirname2(dbPath), "tick"), { stale: TICK_LOCK_STALE, realpath: false });
+      release = lockfile.lockSync(join3(dirname3(dbPath), "tick"), { stale: TICK_LOCK_STALE, realpath: false });
     } catch (e) {
       if (e.code === "ELOCKED") return { skipped: true };
       throw e;
@@ -822,7 +1165,7 @@ program.command("tick").description("agent-mode: reclaim expired leases, claim r
 program.command("stop").description("agent-mode: kill live workers, release the leases of those that died").option("--json").action(async (o) => {
   try {
     const { dbPath, projectPath } = resolveDbPath2();
-    const release = await lockfile.lock(join(dirname2(dbPath), "tick"), {
+    const release = await lockfile.lock(join3(dirname3(dbPath), "tick"), {
       stale: TICK_LOCK_STALE,
       realpath: false,
       retries: { retries: 8, minTimeout: 250, maxTimeout: 4e3 }
@@ -1072,7 +1415,7 @@ program.command("ui").option("--port <n>", "port", "4499").option("--host <addr>
 }));
 async function uiStart(port, host = "127.0.0.1", token) {
   const { dbPath, projectPath } = resolveDbPath2();
-  const hash = basename(dirname2(dbPath));
+  const hash = basename2(dirname3(dbPath));
   const db = openDb2(dbPath, projectPath);
   try {
     setProjectToplevel(db, resolveToplevel());
@@ -1187,4 +1530,22 @@ program.command("export").option("--include-sensitive").action((o) => run(true, 
   ));
   console.log(JSON.stringify(dump));
 }));
-program.parse();
+program.command("update").description("update installed kddkit CLI and plugins").option("--replace-cli-from-registry", "allow updating an older unknown-source CLI from npm registry (may replace a local tarball)").action(async (o) => {
+  const release = await releaseInfo();
+  if (release.error || !release.latest) {
+    console.error(`kdd update: ${release.error ?? "no stable release available"}`);
+    process.exitCode = 1;
+    return;
+  }
+  const results = [
+    ...updateClaude(release.latest, runCommand, process.cwd()),
+    updateCodex(release.latest, runCommand),
+    updateCli(release.latest, runCommand, fileURLToPath2(import.meta.url), process.execPath, !!o.replaceCliFromRegistry)
+  ];
+  for (const result of results) console.log(`${result.name}: ${result.status} \u2014 ${result.detail}`);
+  if (results.some((result) => result.name !== "cli" && result.status === "updated"))
+    console.log("Restart Claude Code or Codex to load updated plugins.");
+  if (results.some((result) => result.status === "failed")) process.exitCode = 1;
+});
+noticeOnStartup();
+await program.parseAsync();

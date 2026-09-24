@@ -1,7 +1,8 @@
 # @kddkit/cli — `kdd`
 
-**The command line for [kddkit](https://github.com/mag1yar/kddkit).** Run it
-inside the target Git repository. Use `kdd <command> --help` for options.
+**The command line for [kddkit](https://github.com/mag1yar/kddkit).** Run board
+commands inside the target Git repository. `kdd update` works anywhere. Use
+`kdd <command> --help` for options.
 
 ## Install
 
@@ -11,7 +12,26 @@ npm i -g @kddkit/cli      # puts `kdd` on your PATH
 npx @kddkit/cli ui
 ```
 
-Requires **Node ≥ 22** and **git**.
+Requires **Node ≥ 22**; board commands also require **git**.
+
+## Update
+
+Run `kdd update` to check the latest stable GitHub Release and update installed
+kddkit components: the npm-owned global CLI and eligible Claude Code and Codex
+plugins. Absent, linked, managed, or locally sourced components are reported
+without changing them. The command verifies each installed version after its
+manager runs and reports partial failures. Restart Claude Code or Codex after a
+plugin update. An agent can use `/kddkit:kdd-update` or `$kddkit:kdd-update`.
+If npm does not report a global CLI installation's source, the CLI is skipped
+even when it came from the registry; update it manually with its owning npm.
+Other tarball URLs and registry mirrors are also skipped.
+Run `kdd update --replace-cli-from-registry` to explicitly replace an older CLI
+with the registry package when npm does not report its source. This may replace
+a local tarball installation; the flag does not bypass npm prefix or symlink checks.
+
+On ordinary human commands, a short stderr notice appears when a cached newer
+release is available. The check refreshes in the background; set
+`NO_UPDATE_NOTIFIER=1` to disable it.
 
 ## Command reference
 
@@ -42,6 +62,7 @@ Requires **Node ≥ 22** and **git**.
 | `recall` | Search decisions and tasks. | `kdd recall "auth"` |
 | `rebuild` | Rebuild the search index. | `kdd rebuild` |
 | `status` | Show an in-progress and blocked digest. | `kdd status` |
+| `update` | Update installed kddkit CLI and plugins. | `kdd update` |
 | `ui` | Open the local web board. | `kdd ui` |
 | `criteria` | Manage task acceptance criteria. | `kdd criteria --help` |
 | `criteria add` | Add a criterion. | `kdd criteria add 12 "Tests pass"` |

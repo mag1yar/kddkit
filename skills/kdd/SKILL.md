@@ -42,9 +42,9 @@ from Claude Code or Codex are still attributed to `ai`.
 
 ### CLI reference — the whole surface, no `--help` needed
 
-**Every command takes `--json`** for a machine-readable object. Add it when you
-will parse the result; omit it to show the human plain text. Never scrape the
-pretty text — `--json` is the contract.
+**Use `--json` when a board command supports it** and you will parse the
+result; omit it to show the human plain text. `kdd update` reports human text.
+Never scrape pretty board text — `--json` is the board data contract.
 
 Read-only (safe, no author written — use freely, though the MCP reads above are
 usually enough):
@@ -79,6 +79,7 @@ kdd link <from> <to> [--kind relates_to]   # kind = link type here, not task kin
 kdd track add "<name>" --description "use when: …"
 kdd track edit <id> [--name …] [--description …]
 kdd track done <id>   /   kdd track reopen <id>   /   kdd track rm <id>
+kdd update                 # update installed kddkit components; explicit user request only
 ```
 
 Worked example — block a task, then read the board as JSON to act on it:

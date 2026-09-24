@@ -17,7 +17,7 @@ import {
   listTracks, maxWorkers, moveTask, mustGetTask, now, openDb, parseClaudeStreamLine,
   rebuild, recall, removeCriterion,
   renewClaim, resolveDbPath, resolveDecisionsDir, resolveToplevel, setAutoTick, setCriterionChecked,
-  setProjectToplevel, statusDigest, stopWorkers, storeIdentity,
+  setProjectToplevel, statusDigest, stopWorkers, storeIdentity, releaseInfo,
   sweepWorktrees, syncedTaskDetail, taskBrief, tick, unarchiveTask, unblockTask,
   type KillFn, type Kind, type Status,
 } from '@kddkit/core';
@@ -33,6 +33,8 @@ import {
 } from './render.js';
 import { createStopRunner, createTickRunner } from './tick-runner.js';
 import { workerPrompt } from './prompt.js';
+import { noticeOnStartup } from './update-notifier.js';
+import { runCommand, updateCli, updateClaude, updateCodex } from './update.js';
 
 const program = new Command()
   .name('kdd')
@@ -931,4 +933,26 @@ program.command('export')
     console.log(JSON.stringify(dump));
   }));
 
-program.parse();
+program.command('update')
+  .description('update installed kddkit CLI and plugins')
+  .option('--replace-cli-from-registry', 'allow updating an older unknown-source CLI from npm registry (may replace a local tarball)')
+  .action(async (o: { replaceCliFromRegistry?: boolean }) => {
+    const release = await releaseInfo();
+    if (release.error || !release.latest) {
+      console.error(`kdd update: ${release.error ?? 'no stable release available'}`);
+      process.exitCode = 1;
+      return;
+    }
+    const results = [
+      ...updateClaude(release.latest, runCommand, process.cwd()),
+      updateCodex(release.latest, runCommand),
+      updateCli(release.latest, runCommand, fileURLToPath(import.meta.url), process.execPath, !!o.replaceCliFromRegistry),
+    ];
+    for (const result of results) console.log(`${result.name}: ${result.status} — ${result.detail}`);
+    if (results.some((result) => result.name !== 'cli' && result.status === 'updated'))
+      console.log('Restart Claude Code or Codex to load updated plugins.');
+    if (results.some((result) => result.status === 'failed')) process.exitCode = 1;
+  });
+
+noticeOnStartup();
+await program.parseAsync();

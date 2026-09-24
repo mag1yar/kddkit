@@ -13,6 +13,7 @@ export function makeEnv(): NodeJS.ProcessEnv {
     KDD_DB: join(dir, 'kdd.db'),
     KDD_DECISIONS_DIR: join(dir, 'decisions'),
     KDD_ACTOR: '',
+    NO_UPDATE_NOTIFIER: '1',
     // Иначе тесты, запущенные из-под Claude Code или Codex, получили бы ai-актора там,
     // где проверяется поведение человека (см. getActor).
     CLAUDECODE: '',

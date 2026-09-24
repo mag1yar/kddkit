@@ -66,7 +66,7 @@ Adding a task-related feature usually touches core (`ops.ts`/`queries.ts`) **plu
 - Core public API is exposed through `packages/core/src/index.ts` barrel only — consumers import `@kddkit/core`, never nested paths.
 - `db: Database.Database` is always the first parameter; ops return the full modified entity, not just an id.
 - Multi-case returns use discriminated unions (`{ok:true} | {ok:false; error}`), e.g. `checkMove`.
-- No mocks in tests — vitest with real `openDb(':memory:')`, real CLI via `execFileSync`, real temp dirs via `mkdtempSync`. Tests co-located in `packages/*/test/*.test.ts`. CLI test helpers in `packages/cli/test/run.ts`.
+- Test KDD state and CLI integration without mocks: use real `openDb(':memory:')`, CLI subprocesses via `execFileSync`, and temp dirs via `mkdtempSync`. Self-update unit tests may stub subprocesses (`npm`, `claude`, `codex`, `kdd --version`), release fetches, and background worker launch so tests never change global installations or rely on the network. Tests co-located in `packages/*/test/*.test.ts`. CLI test helpers in `packages/cli/test/run.ts`.
 - Comments are mixed Russian (domain/business rules) and English (mechanics); comment *why*, not *what*.
 - Сообщения коммитов конвенциональные (`feat(scope): …`, `fix(core): …`) — из них генерируется тело GitHub Release. Неконвенциональный коммит не ломает сборку, он **молча выпадает** из changelog.
 - Не ссылаться на id задач доски kdd из сообщений коммитов: GitHub превратит `#N` в ссылку на свой issue с тем же номером. Правило касается и агентских коммитов — воркер коммитит в свою ветку сам.

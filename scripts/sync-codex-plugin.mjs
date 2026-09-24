@@ -8,8 +8,9 @@ const copies = [
   ['packages/core/dist/index.js', 'runtime/core.js'],
   ['packages/mcp/dist/main.js', 'runtime/mcp.js'],
   ['skills/kdd/SKILL.md', 'skills/kdd/SKILL.md'],
+  ['skills/kdd-update/SKILL.md', 'skills/kdd-update/SKILL.md'],
 ];
-const generatedDirs = ['runtime', 'skills/kdd'];
+const generatedDirs = ['runtime', 'skills/kdd', 'skills/kdd-update'];
 const check = process.argv.includes('--check');
 let bad = false;
 
