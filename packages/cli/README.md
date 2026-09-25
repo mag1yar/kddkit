@@ -22,12 +22,26 @@ plugins. Absent, linked, managed, or locally sourced components are reported
 without changing them. The command verifies each installed version after its
 manager runs and reports partial failures. Restart Claude Code or Codex after a
 plugin update. An agent can use `/kddkit:kdd-update` or `$kddkit:kdd-update`.
+
+Run `kdd update --next` only when you want previews for all eligible installed
+parts. It pins Git plugin marketplaces to the moving `next` ref, so clients may
+receive later previews. A later plain `kdd update` returns them to stable
+`master`, even if the preview's version number is higher. The background update
+notice remains stable-only. The command refuses a missing or stale preview and
+checks the matching npm `next` or `latest` dist-tag before changing anything.
+
 If npm does not report a global CLI installation's source, the CLI is skipped
 even when it came from the registry; update it manually with its owning npm.
 Other tarball URLs and registry mirrors are also skipped.
 Run `kdd update --replace-cli-from-registry` to explicitly replace an older CLI
 with the registry package when npm does not report its source. This may replace
 a local tarball installation; the flag does not bypass npm prefix or symlink checks.
+After a verified install, the CLI stores a receipt at
+`<KDD_HOME>/update-cli-receipt.json` (default `~/.kdd/update-cli-receipt.json`).
+It grants continuing consent while the CLI path, npm root, and installed version
+match. A later local tarball of the same version at that path can be replaced.
+Delete the receipt to revoke consent. Codex plugins that are disabled are skipped:
+the Codex manager re-enables them on reinstall and has no native disable command.
 
 On ordinary human commands, a short stderr notice appears when a cached newer
 release is available. The check refreshes in the background; set
@@ -62,7 +76,7 @@ release is available. The check refreshes in the background; set
 | `recall` | Search decisions and tasks. | `kdd recall "auth"` |
 | `rebuild` | Rebuild the search index. | `kdd rebuild` |
 | `status` | Show an in-progress and blocked digest. | `kdd status` |
-| `update` | Update installed kddkit CLI and plugins. | `kdd update` |
+| `update` | Update installed kddkit CLI and plugins from stable or explicit preview. | `kdd update --next` |
 | `ui` | Open the local web board. | `kdd ui` |
 | `criteria` | Manage task acceptance criteria. | `kdd criteria --help` |
 | `criteria add` | Add a criterion. | `kdd criteria add 12 "Tests pass"` |

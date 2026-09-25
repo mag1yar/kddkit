@@ -1,7 +1,8 @@
-import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, realpathSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
-import { compareVersions } from '@kddkit/core';
+import { kddHome, updateDisposition, type UpdateChannel } from '@kddkit/core';
 
 export type ComponentResult = {
   name: 'cli' | 'claude' | 'codex';
@@ -25,6 +26,48 @@ export const runCommand: Runner = (file, args, cwd) => {
   };
 };
 
+export function preflightTarget(target: string, channel: UpdateChannel, run: Runner): string | null {
+  const tag = channel === 'stable' ? 'latest' : 'next';
+  const result = run('npm', ['view', '@kddkit/cli', 'dist-tags', '--json', '--registry=https://registry.npmjs.org']);
+  if (result.status !== 0) return `npm dist-tags check failed: ${result.stderr.trim() || result.error?.message || result.stdout.trim()}`;
+  try {
+    const tags = JSON.parse(result.stdout) as Record<string, unknown>;
+    if (!tags || typeof tags !== 'object' || typeof tags[tag] !== 'string')
+      return `npm dist-tags has no ${tag} version.`;
+    if (tags[tag] !== target) return `npm ${tag}=${tags[tag]} disagrees with GitHub Release ${target}.`;
+    return null;
+  } catch {
+    return 'npm dist-tags returned invalid JSON.';
+  }
+}
+
+type CliReceipt = { cliPath: string; npmRoot: string; version: string; channel: UpdateChannel };
+
+function receiptPath(): string { return join(kddHome(), 'update-cli-receipt.json'); }
+
+function readReceipt(): CliReceipt | null {
+  try {
+    const path = receiptPath();
+    if (statSync(path).size > 4096) return null;
+    const value = JSON.parse(readFileSync(path, 'utf8')) as CliReceipt;
+    return value && typeof value.cliPath === 'string' && typeof value.npmRoot === 'string'
+      && typeof value.version === 'string' && (value.channel === 'stable' || value.channel === 'next')
+      ? value : null;
+  } catch { return null; }
+}
+
+function writeReceipt(receipt: CliReceipt): void {
+  const path = receiptPath();
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(receipt), { mode: 0o600, flag: 'wx' });
+    renameSync(tmp, path);
+  } finally {
+    if (existsSync(tmp)) unlinkSync(tmp);
+  }
+}
+
 function npmCliFor(nodePath: string): string | null {
   const candidates = [nodePath];
   try { candidates.push(realpathSync(nodePath)); } catch { /* original path may still work */ }
@@ -43,7 +86,7 @@ function npmCliFor(nodePath: string): string | null {
 }
 
 export function updateCli(
-  latest: string, run: Runner, cliFile: string, nodePath: string,
+  latest: string, channel: UpdateChannel, run: Runner, cliFile: string, nodePath: string,
   replaceUnknownSource = false,
 ): ComponentResult {
   const name = 'cli';
@@ -100,11 +143,15 @@ export function updateCli(
     || (source !== undefined && typeof source !== 'string')) return {
     name, status: 'failed', detail: 'npm ls -g @kddkit/cli returned invalid version or source data.',
   };
-  if (compareVersions(current, latest) >= 0) return {
-    name, status: 'current', detail: `CLI is already ${current}.`,
-  };
+  const disposition = updateDisposition(current, latest, channel);
+  if (disposition !== 'install') return { name, status: 'current',
+    detail: disposition === 'ahead' ? `CLI ${current} is ahead of ${latest}; no downgrade within this channel.`
+      : `CLI is already ${current}.` };
   // npm can omit resolved for both registry and local tarball global installs.
-  if (source === undefined && !replaceUnknownSource) return {
+  const receipt = readReceipt();
+  const consent = receipt?.cliPath === realpathSync(cliFile) && receipt.npmRoot === npmRoot
+    && receipt.version === current;
+  if (source === undefined && !consent && !replaceUnknownSource) return {
     name, status: 'skipped',
     detail: 'npm did not report this CLI installation source; use --replace-cli-from-registry only if you want to replace it from npm.',
   };
@@ -123,165 +170,15 @@ export function updateCli(
     name, status: 'failed',
     detail: `npm installed ${latest} from ${current}, but kdd --version reports ${observed}; check your PATH and npm prefix.`,
   };
-  return { name, status: 'updated', detail: `${current} → ${latest}; ${source === undefined ? 'unknown source replaced explicitly; ' : ''}kdd --version verified.` };
-}
-
-type RunResult = ReturnType<Runner>;
-type ClaudeRow = { id: string; version: string; scope: string; projectPath?: string };
-type CodexRow = {
-  pluginId: string; version: string; installed: boolean;
-  marketplaceSource: { sourceType: string };
-};
-
-function missingExecutable(result: RunResult): boolean {
-  return (result.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
-}
-
-function commandError(result: RunResult): string {
-  return (result.stderr.trim() || result.error?.message || result.stdout.trim() || 'unknown error').slice(0, 500);
-}
-
-function validVersion(version: unknown): version is string {
-  return typeof version === 'string' && /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(version);
-}
-
-function inspectClaude(run: Runner, cwd: string): { rows: ClaudeRow[] } | { error: ComponentResult } {
-  const listed = run('claude', ['plugin', 'list', '--json'], cwd);
-  if (missingExecutable(listed)) return {
-    error: { name: 'claude', status: 'skipped', detail: 'Claude Code CLI is not installed.' },
-  };
-  if (listed.status !== 0) return {
-    error: { name: 'claude', status: 'failed', detail: `claude plugin list failed: ${commandError(listed)}` },
-  };
   try {
-    const parsed: unknown = JSON.parse(listed.stdout);
-    if (!Array.isArray(parsed)) throw new Error('expected an array');
-    const rows = parsed.filter((item) => item?.id === 'kddkit@kddkit') as ClaudeRow[];
-    if (rows.some((row) => !validVersion(row.version) || typeof row.scope !== 'string'))
-      throw new Error('invalid kddkit row');
-    return { rows };
-  } catch {
-    return { error: { name: 'claude', status: 'failed', detail: 'claude plugin list returned invalid JSON or plugin data.' } };
+    writeReceipt({ cliPath: realpathSync(cliFile), npmRoot, version: latest, channel });
+  } catch (error) {
+    return { name, status: 'failed',
+      detail: `kdd --version verified ${latest}, but could not save update consent receipt: ${error instanceof Error ? error.message : error}` };
   }
+  return { name, status: 'updated', detail: `${current} → ${latest}; ${source === undefined ? 'unknown source replaced explicitly or by receipt; ' : ''}kdd --version verified.` };
 }
 
-function gitRoot(cwd: string): string | null {
-  try {
-    return realpathSync(execFileSync('git', ['rev-parse', '--show-toplevel'], {
-      cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim());
-  } catch { return null; }
-}
+export { updateClaude } from './update-claude.js';
 
-function sameProject(path: string | undefined, root: string | null): boolean {
-  if (!root || !path) return false;
-  try { return realpathSync(path) === root; } catch { return false; }
-}
-
-export function updateClaude(latest: string, run: Runner, cwd: string): ComponentResult[] {
-  const first = inspectClaude(run, cwd);
-  if ('error' in first) return [first.error];
-  if (first.rows.length === 0) return [{ name: 'claude', status: 'skipped', detail: 'kddkit is not installed in Claude Code.' }];
-  const root = gitRoot(cwd);
-  let refresh: RunResult | null = null;
-  return first.rows.map((row) => {
-    const scope = row.scope;
-    const label = `Claude ${scope} scope`;
-    if (scope === 'managed') return {
-      name: 'claude', status: 'skipped', detail: `${label} is managed by policy.`,
-    };
-    if (scope !== 'user' && !(scope === 'project' || scope === 'local')) return {
-      name: 'claude', status: 'skipped', detail: `${label} is not an updatable scope.`,
-    };
-    if (scope !== 'user' && !sameProject(row.projectPath, root)) return {
-      name: 'claude', status: 'skipped', detail: `${label} belongs to another project or no Git repository is active.`,
-    };
-    if (compareVersions(row.version, latest) >= 0) return {
-      name: 'claude', status: 'current', detail: `${label} is already ${row.version}.`,
-    };
-
-    refresh ??= run('claude', ['plugin', 'marketplace', 'update', 'kddkit'], cwd);
-    if (refresh.status !== 0) return {
-      name: 'claude', status: 'failed', detail: `${label}: marketplace refresh failed: ${commandError(refresh)}`,
-    };
-    const args = ['plugin', 'update', 'kddkit@kddkit', '--scope', scope];
-    const updated = run('claude', args, cwd);
-    if (updated.status !== 0) {
-      const approval = /confirm|approv|\btty\b|-y\b/i.test(`${updated.stderr} ${updated.stdout}`);
-      return {
-        name: 'claude', status: 'failed',
-        detail: approval
-          ? `${label}: interactive approval required; run claude ${args.join(' ')} in a terminal.`
-          : `${label}: update failed: ${commandError(updated)}`,
-      };
-    }
-    const checked = inspectClaude(run, cwd);
-    if ('error' in checked) return {
-      name: 'claude', status: 'failed', detail: `${label}: could not verify update: ${checked.error.detail}`,
-    };
-    const observed = checked.rows.find((item) => item.scope === scope
-      && (scope === 'user' || item.projectPath === row.projectPath));
-    if (!observed || compareVersions(observed.version, latest) < 0) return {
-      name: 'claude', status: 'failed',
-      detail: `${label}: expected ${latest}, observed ${observed?.version ?? 'absent'} after update.`,
-    };
-    return { name: 'claude', status: 'updated', detail: `${label}: ${row.version} → ${observed.version}; verified.` };
-  });
-}
-
-function inspectCodex(run: Runner): { row: CodexRow | null } | { error: ComponentResult } {
-  const listed = run('codex', ['plugin', 'list', '--json']);
-  if (missingExecutable(listed)) return {
-    error: { name: 'codex', status: 'skipped', detail: 'Codex CLI is not installed.' },
-  };
-  if (listed.status !== 0) return {
-    error: { name: 'codex', status: 'failed', detail: `codex plugin list failed: ${commandError(listed)}` },
-  };
-  try {
-    const parsed: unknown = JSON.parse(listed.stdout);
-    if (!parsed || typeof parsed !== 'object' || !('installed' in parsed)
-      || !Array.isArray(parsed.installed)) throw new Error('expected installed array');
-    const row = parsed.installed.find((item) => item?.pluginId === 'kddkit@kddkit') as CodexRow | undefined;
-    if (row && (!validVersion(row.version) || row.installed !== true
-      || typeof row.marketplaceSource?.sourceType !== 'string')) throw new Error('invalid kddkit row');
-    return { row: row ?? null };
-  } catch {
-    return { error: { name: 'codex', status: 'failed', detail: 'codex plugin list returned invalid JSON or plugin data.' } };
-  }
-}
-
-export function updateCodex(latest: string, run: Runner): ComponentResult {
-  const first = inspectCodex(run);
-  if ('error' in first) return first.error;
-  if (!first.row) return { name: 'codex', status: 'skipped', detail: 'kddkit is not installed in Codex.' };
-  const current = first.row.version;
-  if (first.row.marketplaceSource.sourceType !== 'git') return {
-    name: 'codex', status: 'skipped',
-    detail: `Codex marketplace is ${first.row.marketplaceSource.sourceType}; update its source manually.`,
-  };
-  if (compareVersions(current, latest) >= 0) return {
-    name: 'codex', status: 'current', detail: `Codex plugin is already ${current}.`,
-  };
-
-  const upgraded = run('codex', ['plugin', 'marketplace', 'upgrade', 'kddkit']);
-  if (upgraded.status !== 0) return {
-    name: 'codex', status: 'failed', detail: `Codex marketplace upgrade failed: ${commandError(upgraded)}`,
-  };
-  const refreshed = inspectCodex(run);
-  if ('error' in refreshed) return { name: 'codex', status: 'failed', detail: `Could not verify Codex refresh: ${refreshed.error.detail}` };
-  if (!refreshed.row) return { name: 'codex', status: 'failed', detail: 'Codex plugin disappeared after marketplace refresh.' };
-  let observed = refreshed.row.version;
-  if (compareVersions(observed, latest) < 0) {
-    const added = run('codex', ['plugin', 'add', 'kddkit@kddkit']);
-    if (added.status !== 0) return {
-      name: 'codex', status: 'failed', detail: `Codex plugin add failed: ${commandError(added)}`,
-    };
-    const checked = inspectCodex(run);
-    if ('error' in checked) return { name: 'codex', status: 'failed', detail: `Could not verify Codex update: ${checked.error.detail}` };
-    observed = checked.row?.version ?? 'absent';
-  }
-  if (!validVersion(observed) || compareVersions(observed, latest) < 0) return {
-    name: 'codex', status: 'failed', detail: `Codex plugin stayed at ${observed}; expected ${latest}.`,
-  };
-  return { name: 'codex', status: 'updated', detail: `${current} → ${observed}; verified.` };
-}
+export { updateCodex } from './update-codex.js';

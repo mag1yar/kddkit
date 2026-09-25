@@ -60,7 +60,37 @@ export function compareVersions(a: string, b: string): number {
   for (let i = 0; i < 3; i++) if (A.core[i] !== B.core[i]) return A.core[i] - B.core[i];
   if (!A.pre && B.pre) return 1; // релиз старше prerelease при равном ядре
   if (A.pre && !B.pre) return -1;
-  return A.pre < B.pre ? -1 : A.pre > B.pre ? 1 : 0;
+  const left = A.pre.split('.');
+  const right = B.pre.split('.');
+  for (let i = 0; i < Math.max(left.length, right.length); i++) {
+    if (left[i] === undefined) return -1;
+    if (right[i] === undefined) return 1;
+    if (left[i] === right[i]) continue;
+    const ln = /^\d+$/.test(left[i]) ? Number(left[i]) : null;
+    const rn = /^\d+$/.test(right[i]) ? Number(right[i]) : null;
+    if (ln !== null && rn !== null) return ln - rn;
+    if (ln !== null) return -1;
+    if (rn !== null) return 1;
+    return left[i] < right[i] ? -1 : 1;
+  }
+  return 0;
+}
+
+export type UpdateChannel = 'stable' | 'next';
+
+export function versionChannel(version: string): UpdateChannel | null {
+  if (/^\d+\.\d+\.\d+$/.test(version)) return 'stable';
+  if (/^\d+\.\d+\.\d+-next\.\d+$/.test(version)) return 'next';
+  return null;
+}
+
+export function updateDisposition(
+  current: string, target: string, channel: UpdateChannel,
+): 'install' | 'current' | 'ahead' {
+  if (versionChannel(target) !== channel) return 'ahead';
+  if (current === target) return 'current';
+  if (versionChannel(current) === 'next' && channel === 'stable') return 'install';
+  return compareVersions(current, target) < 0 ? 'install' : 'ahead';
 }
 
 export interface Release {
@@ -74,6 +104,7 @@ export interface Release {
 export interface ReleaseInfo {
   current: string;
   latest: string | null;
+  next: string | null;
   hasUpdate: boolean;
   releases: Release[];
   repoUrl: string | null;
@@ -133,14 +164,15 @@ export function _cacheUntil(): number | null {
  * успехов. fetch пробрасывается параметром — так тесты идут без сети.
  */
 export async function releaseInfo(
-  opts: { fetch?: typeof globalThis.fetch } = {},
+  opts: { fetch?: typeof globalThis.fetch; fresh?: boolean } = {},
 ): Promise<ReleaseInfo> {
   // cache.info — синглтон, общий на все вызовы. Отдаём клон и на хите, и при записи:
   // сегодня единственный вызывающий — Hono-роут, который сразу JSON.stringify'ит
   // результат, так что мутировать общий объект in-process некому. Клон — дешёвая
   // страховка на будущего consumer (CLI), который может держать ссылку дольше
   // одного запроса, а не защита от существующего бага.
-  if (cache && Date.now() < cache.until) return structuredClone(cache.info);
+  if (!opts.fresh && cache && Date.now() < cache.until) return structuredClone(cache.info);
+  if (opts.fresh) return structuredClone(await load(opts));
 
   // Держим сам промис, а не только осевший результат: кэш пишется после await, поэтому
   // без этого N вкладок, открытых одновременно, промахивались бы мимо гарда и тратили
@@ -162,7 +194,7 @@ async function load(opts: { fetch?: typeof globalThis.fetch }): Promise<ReleaseI
   };
 
   const fail = (error: string, ttl = ERR_TTL): ReleaseInfo => store({
-    current, latest: null, hasUpdate: false, releases: [], repoUrl, error,
+    current, latest: null, next: null, hasUpdate: false, releases: [], repoUrl, error,
   }, ttl);
 
   if (!slug) return fail('no repository url in package.json');
@@ -206,14 +238,34 @@ async function load(opts: { fetch?: typeof globalThis.fetch }): Promise<ReleaseI
 
     // latest — старший стабильный. prerelease в баннер не идут: до переключателя канала
     // стабильному пользователю не должно прилетать «обновись на 0.6.0-next.3».
-    const latest = releases
-      .filter((r) => !r.prerelease)
+    let latest = releases
+      .filter((r) => !r.prerelease && versionChannel(r.version) === 'stable')
       .reduce<string | null>(
         (m, r) => (m === null || compareVersions(r.version, m) > 0 ? r.version : m), null);
+    const next = releases
+      .filter((r) => r.prerelease && versionChannel(r.version) === 'next')
+      .reduce<string | null>(
+        (m, r) => (m === null || compareVersions(r.version, m) > 0 ? r.version : m), null);
+    if (latest === null) {
+      try {
+        const stableRes = await f(
+          `https://api.github.com/repos/${slug.owner}/${slug.repo}/releases/latest`,
+          { headers: { Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(5000) },
+        );
+        if (stableRes.ok) {
+          const stable = (await stableRes.json()) as GhRelease;
+          if (stable && typeof stable.tag_name === 'string' && !stable.draft && !stable.prerelease) {
+            const version = stable.tag_name.replace(/^v/, '');
+            if (versionChannel(version) === 'stable') latest = version;
+          }
+        }
+      } catch { /* A failed stable lookup must not hide a valid preview. */ }
+    }
 
     return store({
       current,
       latest,
+      next,
       hasUpdate: latest !== null && compareVersions(latest, current) > 0,
       releases,
       repoUrl,

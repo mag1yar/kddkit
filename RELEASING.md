@@ -1,6 +1,42 @@
 # Releasing
 
 Versions move in lockstep: all `packages/*` + `.claude-plugin/plugin.json` share one version.
+The Codex plugin manifest shares that version too.
+
+## Preview channel
+
+Prepare previews on the local `next` branch. Keep `master` on stable contents:
+Git marketplace clients can follow either branch without running `kdd update`.
+
+```sh
+pnpm release:next
+```
+
+This runs bumpp, build, tests, typecheck, and Codex sync checks, then creates a
+local `vX.Y.Z-next.N` tag and prints draft notes. Review the commit, tag, and notes
+before publishing. The script never publishes or pushes.
+
+```sh
+node scripts/test-next-release.mjs
+pnpm -r publish --dry-run --tag next --no-git-checks
+pnpm release:next:publish
+```
+
+The publish command requires a clean tagged `next` commit, publishes public
+packages with `--tag next`, and checks each package's `next` and unchanged
+`latest` dist-tags. It also checks tags after a retry where npm skips an already
+published version. It does not push.
+
+After the npm checks pass, push **only the reviewed tag**, then verify the GitHub
+Release exists, is published, and says `prerelease: true`. Only then fast-forward
+the remote `next` branch to that same commit. A failed earlier step leaves the
+old remote preview ref in place.
+
+Promote to stable separately: merge the accepted preview changes into `master`,
+bump all manifests to `X.Y.Z`, use the stable release commands below, and verify
+npm `latest`, the published stable GitHub Release, and `master` agree.
+
+## Stable channel
 
 Release is two steps. The first lets you preview and abort; the second publishes for real.
 

@@ -17,9 +17,9 @@ import {
   listTracks, maxWorkers, moveTask, mustGetTask, now, openDb, parseClaudeStreamLine,
   rebuild, recall, removeCriterion,
   renewClaim, resolveDbPath, resolveDecisionsDir, resolveToplevel, setAutoTick, setCriterionChecked,
-  setProjectToplevel, statusDigest, stopWorkers, storeIdentity, releaseInfo,
+  setProjectToplevel, statusDigest, stopWorkers, storeIdentity, releaseInfo, compareVersions,
   sweepWorktrees, syncedTaskDetail, taskBrief, tick, unarchiveTask, unblockTask,
-  type KillFn, type Kind, type Status,
+  type KillFn, type Kind, type Status, type UpdateChannel,
 } from '@kddkit/core';
 import {
   createScheduler, projectPool, startUi, type TickRunner, type WorkerStopper,
@@ -34,7 +34,7 @@ import {
 import { createStopRunner, createTickRunner } from './tick-runner.js';
 import { workerPrompt } from './prompt.js';
 import { noticeOnStartup } from './update-notifier.js';
-import { runCommand, updateCli, updateClaude, updateCodex } from './update.js';
+import { preflightTarget, runCommand, updateCli, updateClaude, updateCodex } from './update.js';
 
 const program = new Command()
   .name('kdd')
@@ -935,18 +935,34 @@ program.command('export')
 
 program.command('update')
   .description('update installed kddkit CLI and plugins')
-  .option('--replace-cli-from-registry', 'allow updating an older unknown-source CLI from npm registry (may replace a local tarball)')
-  .action(async (o: { replaceCliFromRegistry?: boolean }) => {
-    const release = await releaseInfo();
-    if (release.error || !release.latest) {
-      console.error(`kdd update: ${release.error ?? 'no stable release available'}`);
+  .option('--next', 'explicitly subscribe installed components to the next preview channel')
+  .option('--replace-cli-from-registry', 'allow replacing an older unknown-source CLI from npm registry; verified updates keep this consent')
+  .addHelpText('after', '\nCLI consent receipt: <KDD_HOME>/update-cli-receipt.json (default ~/.kdd/update-cli-receipt.json). Delete it to revoke continuing consent. A same-version local tarball can be replaced while it remains valid.')
+  .action(async (o: { next?: boolean; replaceCliFromRegistry?: boolean }) => {
+    const channel: UpdateChannel = o.next ? 'next' : 'stable';
+    const release = await releaseInfo({ fresh: true });
+    const target = channel === 'next' ? release.next : release.latest;
+    if (release.error || !target) {
+      console.error(`kdd update: ${release.error ?? `no published ${channel} release available`}`);
       process.exitCode = 1;
       return;
     }
+    if (channel === 'next' && release.latest && compareVersions(target, release.latest) <= 0) {
+      console.error(`kdd update: no newer preview than stable ${release.latest} is published.`);
+      process.exitCode = 1;
+      return;
+    }
+    const preflight = preflightTarget(target, channel, runCommand);
+    if (preflight) {
+      console.error(`kdd update: ${preflight}`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`kdd update: ${channel} ${target}`);
     const results = [
-      ...updateClaude(release.latest, runCommand, process.cwd()),
-      updateCodex(release.latest, runCommand),
-      updateCli(release.latest, runCommand, fileURLToPath(import.meta.url), process.execPath, !!o.replaceCliFromRegistry),
+      ...updateClaude(target, channel, runCommand, process.cwd()),
+      updateCodex(target, channel, runCommand),
+      updateCli(target, channel, runCommand, fileURLToPath(import.meta.url), process.execPath, !!o.replaceCliFromRegistry),
     ];
     for (const result of results) console.log(`${result.name}: ${result.status} — ${result.detail}`);
     if (results.some((result) => result.name !== 'cli' && result.status === 'updated'))

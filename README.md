@@ -34,7 +34,7 @@ CLI and a local web board.
 Send these as **two separate prompts** in Claude Code:
 
 ```
-/plugin marketplace add mag1yar/kddkit
+/plugin marketplace add mag1yar/kddkit@master
 ```
 ```
 /plugin install kddkit@kddkit
@@ -49,7 +49,7 @@ pointer confirming the substrate is active.
 Run these in your terminal:
 
 ```bash
-codex plugin marketplace add mag1yar/kddkit
+codex plugin marketplace add mag1yar/kddkit --ref master
 codex plugin add kddkit@kddkit
 codex plugin list
 ```
@@ -118,8 +118,16 @@ Full command set: `add`, `board`, `show`, `brief`, `attention`, `move`, `edit`, 
 Use [`kdd update`](packages/cli/README.md#update) to refresh installed CLI and
 Claude Code or Codex plugins. It works outside a Git repository; restart the
 client after a plugin update.
+Use `kdd update --next` to opt into previews for all eligible installed parts;
+plain `kdd update` returns Git plugins to stable `master`. Preview Git refs may
+receive later previews automatically through the client. The background notice
+only announces stable releases.
 If npm cannot identify the CLI's source, it is skipped unless you explicitly run
 `kdd update --replace-cli-from-registry` to replace it from the registry.
+Verified replacements write `<KDD_HOME>/update-cli-receipt.json` (default
+`~/.kdd/update-cli-receipt.json`) as continuing consent; delete it to revoke.
+The receipt also permits replacing a later local tarball at the same path and
+version. Disabled Codex plugins are skipped to preserve their disabled state.
 
 `kdd export` writes a versioned JSON board snapshot; see the [export v1 contract](docs/export-v1.md).
 

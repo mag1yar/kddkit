@@ -579,6 +579,9 @@ declare function repoSlug(): {
  * зависимость ради этого не тянем.
  */
 declare function compareVersions(a: string, b: string): number;
+type UpdateChannel = 'stable' | 'next';
+declare function versionChannel(version: string): UpdateChannel | null;
+declare function updateDisposition(current: string, target: string, channel: UpdateChannel): 'install' | 'current' | 'ahead';
 interface Release {
     version: string;
     url: string;
@@ -589,6 +592,7 @@ interface Release {
 interface ReleaseInfo {
     current: string;
     latest: string | null;
+    next: string | null;
     hasUpdate: boolean;
     releases: Release[];
     repoUrl: string | null;
@@ -608,6 +612,7 @@ declare function _cacheUntil(): number | null;
  */
 declare function releaseInfo(opts?: {
     fetch?: typeof globalThis.fetch;
+    fresh?: boolean;
 }): Promise<ReleaseInfo>;
 
 declare const TICK_INTERVALS: readonly [30, 60, 300, 900];
@@ -728,4 +733,4 @@ interface TaskBrief {
 }
 declare function taskBrief(db: Database.Database, decisionsDir: string, id: number): TaskBrief;
 
-export { type Actor, type AgentEvent, type AgentEventKind, type AttentionInbox, type AttentionItem, type AttentionReason, type AutoTick, BUG_BODY_TEMPLATE, type BriefSection, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type EventRow, type FileRow, KINDS, KddError, type KillFn, type KillOutcome, type Kind, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, type ManualProvenance, type ManualSession, type NextAction, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RunResult, STATUSES, type SessionHandoff, type SpawnFn, type Status, type StopResult, TICK_INTERVALS, TRANSITIONS, type Task, type TaskBrief, type TaskDetailCapped, type TaskListRow, type TickResult, type TickRun, type Track, _cacheUntil, _resetCache, addCriterion, addDecision, addTask, agentId, appendAgentEvent, appendEvent, appendTaskMutationEvent, archiveTask, attachFile, attentionData, authorOf, blockTask, boardData, capDetail, capText, checkMove, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, contentHash, createTrack, decisionDetail, deleteTrack, detachFile, editTask, editTrack, ensureWorktree, expiredLeases, exportBoard, filePath, filesDir, getAutoTick, getFile, getLastRun, getReminded, headCommit, isInlineMime, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listFiles, listProjects, listTracks, logError, manualSessionFromEnv, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, normalizeSessionId, normalizeSourceTasks, now, openDb, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, projectPathOf, projectToplevelOf, pruneAgentEvents, reapExpired, rebuild, recall, reclaimExpired, recordFailedAttempt, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, setReminded, slugify, statusDigest, stopWorkers, storeIdentity, sweepWorktrees, syncIndex, syncedTaskDetail, taskBranchHead, taskBrief, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, unsubmitted, worktreePath };
+export { type Actor, type AgentEvent, type AgentEventKind, type AttentionInbox, type AttentionItem, type AttentionReason, type AutoTick, BUG_BODY_TEMPLATE, type BriefSection, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type EventRow, type FileRow, KINDS, KddError, type KillFn, type KillOutcome, type Kind, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, type ManualProvenance, type ManualSession, type NextAction, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RunResult, STATUSES, type SessionHandoff, type SpawnFn, type Status, type StopResult, TICK_INTERVALS, TRANSITIONS, type Task, type TaskBrief, type TaskDetailCapped, type TaskListRow, type TickResult, type TickRun, type Track, type UpdateChannel, _cacheUntil, _resetCache, addCriterion, addDecision, addTask, agentId, appendAgentEvent, appendEvent, appendTaskMutationEvent, archiveTask, attachFile, attentionData, authorOf, blockTask, boardData, capDetail, capText, checkMove, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, contentHash, createTrack, decisionDetail, deleteTrack, detachFile, editTask, editTrack, ensureWorktree, expiredLeases, exportBoard, filePath, filesDir, getAutoTick, getFile, getLastRun, getReminded, headCommit, isInlineMime, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listFiles, listProjects, listTracks, logError, manualSessionFromEnv, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, normalizeSessionId, normalizeSourceTasks, now, openDb, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, projectPathOf, projectToplevelOf, pruneAgentEvents, reapExpired, rebuild, recall, reclaimExpired, recordFailedAttempt, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, setReminded, slugify, statusDigest, stopWorkers, storeIdentity, sweepWorktrees, syncIndex, syncedTaskDetail, taskBranchHead, taskBrief, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, unsubmitted, updateDisposition, versionChannel, worktreePath };

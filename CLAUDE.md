@@ -30,6 +30,10 @@ pnpm dev:ui    # same store, UI on :4488
 ```
 
 Release in two steps: `pnpm release` (bumpp + build + test + tag + changelog preview, no push/publish), then `pnpm release:publish` (`pnpm -r publish` + `git push --follow-tags`). See `RELEASING.md`.
+For previews, work on `next`: `pnpm release:next` prepares a local `-next.N` tag;
+`pnpm release:next:publish` publishes with npm `--tag next` and checks that
+`latest` did not move. Push the reviewed tag, verify its published prerelease
+on GitHub, then advance remote `next`. Never push a preview manifest to `master`.
 
 ## Architecture
 

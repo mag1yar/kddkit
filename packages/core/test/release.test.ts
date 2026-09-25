@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   _cacheUntil, _resetCache, compareVersions, kddVersion, parseRepoUrl, releaseInfo, repoSlug,
+  updateDisposition, versionChannel,
   type Release,
 } from '../src/release.js';
 
@@ -37,6 +38,20 @@ describe('repoSlug', () => {
 });
 
 describe('compareVersions', () => {
+  it('orders numeric prerelease segments and channel moves', () => {
+    expect(compareVersions('1.0.0-next.10', '1.0.0-next.9')).toBeGreaterThan(0);
+    expect(compareVersions('1.0.0', '1.0.0-next.9')).toBeGreaterThan(0);
+    expect(versionChannel('1.0.0-next.2')).toBe('next');
+    expect(versionChannel('1.0.0-rc.2')).toBeNull();
+    expect(updateDisposition('1.0.0-next.10', '1.0.0-next.9', 'next')).toBe('ahead');
+    expect(updateDisposition('1.0.0-next.10', '0.9.0', 'stable')).toBe('install');
+    expect(updateDisposition('1.0.0', '1.0.0-next.9', 'next')).toBe('ahead');
+    expect(updateDisposition('1.0.0', '0.9.0', 'stable')).toBe('ahead');
+    expect(updateDisposition('1.0.0-next.9', '1.0.0-next.9', 'next')).toBe('current');
+    expect(updateDisposition('1.0.0-rc.2', '1.0.1-next.9', 'next')).toBe('install');
+    expect(updateDisposition('1.0.0-rc.2', '1.0.0-next.9', 'next')).toBe('ahead');
+    expect(updateDisposition('1.0.0-rc.2', '0.9.0', 'stable')).toBe('ahead');
+  });
   it('compares numerically, not lexicographically', () => {
     expect(compareVersions('0.10.0', '0.4.0')).toBeGreaterThan(0);
     expect(compareVersions('0.4.0', '0.10.0')).toBeLessThan(0);
@@ -88,6 +103,46 @@ const row = (over: Record<string, unknown> = {}) => ({
 
 describe('releaseInfo', () => {
   beforeEach(() => { _resetCache(); });
+
+  it('selects only published versions with matching channel metadata', async () => {
+    const { fetchImpl } = ghStub([
+      row({ tag_name: 'v1.0.0-next.10', prerelease: true }),
+      row({ tag_name: 'v1.0.0-next.9', prerelease: true }),
+      row({ tag_name: 'v1.0.0-rc.1', prerelease: true }),
+      row({ tag_name: 'v1.1.0', prerelease: true }),
+      row({ tag_name: 'v1.2.0-next.1', prerelease: false }),
+      row({ tag_name: 'v0.9.0' }),
+    ]);
+    const info = await releaseInfo({ fetch: fetchImpl });
+    expect(info.latest).toBe('0.9.0');
+    expect(info.next).toBe('1.0.0-next.10');
+  });
+
+  it('finds stable release beyond the first ten previews and refreshes on request', async () => {
+    let calls = 0;
+    const fetchImpl = (async (url: string) => {
+      calls++;
+      return new Response(JSON.stringify(url.endsWith('/latest')
+        ? row({ tag_name: 'v0.9.0' })
+        : Array.from({ length: 10 }, (_, i) => row({ tag_name: `v1.0.0-next.${i + 1}`, prerelease: true }))));
+    }) as typeof globalThis.fetch;
+    expect((await releaseInfo({ fetch: fetchImpl })).latest).toBe('0.9.0');
+    expect(calls).toBe(2);
+    await releaseInfo({ fetch: fetchImpl });
+    expect(calls).toBe(2);
+    await releaseInfo({ fetch: fetchImpl, fresh: true });
+    expect(calls).toBe(4);
+  });
+
+  it('keeps a published preview when the stable fallback lookup fails', async () => {
+    const fetchImpl = (async (url: string) => {
+      if (url.endsWith('/latest')) throw new Error('fallback unavailable');
+      return new Response(JSON.stringify([row({ tag_name: 'v1.0.0-next.2', prerelease: true })]));
+    }) as typeof globalThis.fetch;
+    const info = await releaseInfo({ fetch: fetchImpl });
+    expect(info.next).toBe('1.0.0-next.2');
+    expect(info.error).toBeNull();
+  });
 
   it('maps GitHub rows and strips the leading v', async () => {
     const { fetchImpl } = ghStub([row()]);

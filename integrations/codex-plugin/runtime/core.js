@@ -2149,7 +2149,31 @@ function compareVersions(a, b) {
   for (let i = 0; i < 3; i++) if (A.core[i] !== B.core[i]) return A.core[i] - B.core[i];
   if (!A.pre && B.pre) return 1;
   if (A.pre && !B.pre) return -1;
-  return A.pre < B.pre ? -1 : A.pre > B.pre ? 1 : 0;
+  const left = A.pre.split(".");
+  const right = B.pre.split(".");
+  for (let i = 0; i < Math.max(left.length, right.length); i++) {
+    if (left[i] === void 0) return -1;
+    if (right[i] === void 0) return 1;
+    if (left[i] === right[i]) continue;
+    const ln = /^\d+$/.test(left[i]) ? Number(left[i]) : null;
+    const rn = /^\d+$/.test(right[i]) ? Number(right[i]) : null;
+    if (ln !== null && rn !== null) return ln - rn;
+    if (ln !== null) return -1;
+    if (rn !== null) return 1;
+    return left[i] < right[i] ? -1 : 1;
+  }
+  return 0;
+}
+function versionChannel(version) {
+  if (/^\d+\.\d+\.\d+$/.test(version)) return "stable";
+  if (/^\d+\.\d+\.\d+-next\.\d+$/.test(version)) return "next";
+  return null;
+}
+function updateDisposition(current, target, channel) {
+  if (versionChannel(target) !== channel) return "ahead";
+  if (current === target) return "current";
+  if (versionChannel(current) === "next" && channel === "stable") return "install";
+  return compareVersions(current, target) < 0 ? "install" : "ahead";
 }
 var TAG_STRIP_RE = /<\/?(?:details|summary|br|hr|img|picture|source|video|audio|div|span|table|thead|tbody|tfoot|tr|td|th|caption|ul|ol|li|dl|dt|dd|h[1-6]|blockquote|pre|code|kbd|samp|var|sub|sup|em|strong|small|del|ins|mark|abbr|center|font)\b[^>]*>/gi;
 function stripHtml(md) {
@@ -2167,7 +2191,8 @@ function _cacheUntil() {
   return cache?.until ?? null;
 }
 async function releaseInfo(opts = {}) {
-  if (cache && Date.now() < cache.until) return structuredClone(cache.info);
+  if (!opts.fresh && cache && Date.now() < cache.until) return structuredClone(cache.info);
+  if (opts.fresh) return structuredClone(await load(opts));
   inflight ??= load(opts).finally(() => {
     inflight = null;
   });
@@ -2184,6 +2209,7 @@ async function load(opts) {
   const fail = (error, ttl = ERR_TTL) => store({
     current,
     latest: null,
+    next: null,
     hasUpdate: false,
     releases: [],
     repoUrl,
@@ -2210,13 +2236,34 @@ async function load(opts) {
       prerelease: Boolean(r.prerelease)
     }] : []);
     if (releases.length === 0) return fail("no published releases", OK_TTL);
-    const latest = releases.filter((r) => !r.prerelease).reduce(
+    let latest = releases.filter((r) => !r.prerelease && versionChannel(r.version) === "stable").reduce(
       (m, r) => m === null || compareVersions(r.version, m) > 0 ? r.version : m,
       null
     );
+    const next = releases.filter((r) => r.prerelease && versionChannel(r.version) === "next").reduce(
+      (m, r) => m === null || compareVersions(r.version, m) > 0 ? r.version : m,
+      null
+    );
+    if (latest === null) {
+      try {
+        const stableRes = await f(
+          `https://api.github.com/repos/${slug.owner}/${slug.repo}/releases/latest`,
+          { headers: { Accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(5e3) }
+        );
+        if (stableRes.ok) {
+          const stable = await stableRes.json();
+          if (stable && typeof stable.tag_name === "string" && !stable.draft && !stable.prerelease) {
+            const version = stable.tag_name.replace(/^v/, "");
+            if (versionChannel(version) === "stable") latest = version;
+          }
+        }
+      } catch {
+      }
+    }
     return store({
       current,
       latest,
+      next,
       hasUpdate: latest !== null && compareVersions(latest, current) > 0,
       releases,
       repoUrl,
@@ -2706,5 +2753,7 @@ export {
   unarchiveTask,
   unblockTask,
   unsubmitted,
+  updateDisposition,
+  versionChannel,
   worktreePath
 };
