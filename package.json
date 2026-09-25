@@ -28,7 +28,8 @@
     "test:codex-plugin": "node scripts/test-codex-plugin.mjs",
     "dev:cli": "KDD_HOME=$HOME/.kdd-dev node packages/cli/dist/index.js",
     "dev:ui": "KDD_HOME=$HOME/.kdd-dev node packages/cli/dist/index.js ui --port 4488",
-    "release": "bumpp package.json packages/*/package.json .claude-plugin/plugin.json integrations/codex-plugin/.codex-plugin/plugin.json --all --no-push --execute \"pnpm build && pnpm test && pnpm typecheck && pnpm test:codex-plugin\" && npx -y changelogithub@14 --dry",
+    "release": "bumpp package.json packages/*/package.json .claude-plugin/plugin.json integrations/codex-plugin/.codex-plugin/plugin.json --all --no-push --execute \"pnpm release:verify\" && npx -y changelogithub@14 --dry",
+    "release:verify": "pnpm build && pnpm test && pnpm typecheck && pnpm test:codex-plugin",
     "release:publish": "pnpm -r publish && git push --follow-tags",
     "release:next": "node scripts/release-next.mjs",
     "release:next:publish": "node scripts/publish-next.mjs"

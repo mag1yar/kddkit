@@ -46,9 +46,9 @@ Release is two steps. The first lets you preview and abort; the second publishes
 pnpm release
 ```
 
-1. **bumpp** prompts for the new version and writes it to the root `package.json`,
-   every `packages/*/package.json` and `.claude-plugin/plugin.json`
-2. runs `turbo run build test` (rebuilt `dist/` is tracked and lands in the commit)
+1. **bumpp** prompts for the new version and writes it to every
+   `packages/*/package.json` and both plugin manifests
+2. runs build, tests, typecheck, and the Codex plugin smoke test
 3. commits everything (`--all`) and tags `vX.Y.Z` — no push
 4. generates release notes via `npx changelogithub@14 --dry` and prints them
 
