@@ -65,6 +65,8 @@ try {
   const installError = join(temp, 'data', 'kdd-install-error.log');
   if (existsSync(installError)) throw new Error(readFileSync(installError, 'utf8'));
   const require = createRequire(join(plugin, 'package.json'));
+  if (!existsSync(join(plugin, 'node_modules', 'better-sqlite3')))
+    throw new Error(`smart-install left no local better-sqlite3; require resolves ${require.resolve('better-sqlite3')}`);
   const Database = require('better-sqlite3');
   new Database(':memory:').close();
   const core = await import(pathToFileURL(join(plugin, 'runtime/core.js')).href);

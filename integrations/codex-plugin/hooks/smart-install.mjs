@@ -19,6 +19,8 @@ function npmCli() {
 
 function healthy() {
   try {
+    // pnpm may expose the monorepo's copy via NODE_PATH; the plugin needs its own.
+    if (!existsSync(join(root, 'node_modules', 'better-sqlite3'))) return false;
     const require = createRequire(import.meta.url);
     const Database = require('better-sqlite3');
     new Database(':memory:').close();
