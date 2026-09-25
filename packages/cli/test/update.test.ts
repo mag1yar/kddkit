@@ -2,6 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { kddVersion } from '@kddkit/core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { preflightTarget, updateCli, updateCodex, type Runner } from '../src/update.js';
 import { BIN } from './run.js';
@@ -286,10 +287,10 @@ describe('npm-owned CLI update', () => {
 });
 
 describe('built kdd command', () => {
-  function environment() {
+  function environment(releaseVersion = '0.9.0') {
     const preloader = join(dir, 'release.mjs');
     writeFileSync(preloader, `globalThis.fetch = async () => new Response(process.env.KDD_TEST_RELEASES || JSON.stringify([{
-      tag_name: 'v0.9.0', html_url: 'https://github.com/mag1yar/kddkit/releases/tag/v0.9.0',
+      tag_name: 'v${releaseVersion}', html_url: 'https://github.com/mag1yar/kddkit/releases/tag/v${releaseVersion}',
       body: '', published_at: '2026-09-23T00:00:00Z', draft: false, prerelease: false,
     }]), { status: 200 });\n`);
     return {
@@ -304,7 +305,8 @@ describe('built kdd command', () => {
   }
 
   it('adds update help and shows a cached notice only on a later human invocation', async () => {
-    const env = environment();
+    const newer = `${Number(kddVersion().split('.')[0]) + 1}.0.0`;
+    const env = environment(newer);
     const help = spawnSync(process.execPath, [BIN, '--help'], { env, encoding: 'utf8' });
     expect(help.stdout).toMatch(/\bupdate\b/);
     expect(help.stderr).not.toContain('available; run kdd update');
@@ -326,11 +328,11 @@ describe('built kdd command', () => {
     const cacheFile = join(env.KDD_HOME, 'update-check.json');
     for (let i = 0; i < 80 && !existsSync(cacheFile); i++)
       await new Promise((resolve) => setTimeout(resolve, 25));
-    expect(JSON.parse(readFileSync(cacheFile, 'utf8')).latest).toBe('0.9.0');
+    expect(JSON.parse(readFileSync(cacheFile, 'utf8')).latest).toBe(newer);
 
     const human = spawnSync(process.execPath, [BIN, 'status'], { env, encoding: 'utf8' });
     expect(human.stderr.match(/available; run kdd update/g)).toHaveLength(1);
-    expect(human.stderr).toContain('kdd: v0.9.0 available; run kdd update');
+    expect(human.stderr).toContain(`kdd: v${newer} available; run kdd update`);
   });
 
   it('runs outside Git, reports a failed component, and continues to the others', () => {

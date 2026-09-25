@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { kddVersion } from '@kddkit/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eligible, noticeOnStartup, readUpdateCache, shouldRefresh } from '../src/update-notifier.js';
 
@@ -56,11 +57,12 @@ describe('update notice cache', () => {
   });
 
   it('prints one stderr line for a newer cached release without spawning', () => {
-    cache('0.9.0', now - 1_000);
+    const newer = `${Number(kddVersion().split('.')[0]) + 1}.0.0`;
+    cache(newer, now - 1_000);
     const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     noticeOnStartup(['status'], {});
     expect(write).toHaveBeenCalledOnce();
-    expect(write).toHaveBeenCalledWith('kdd: v0.9.0 available; run kdd update\n');
+    expect(write).toHaveBeenCalledWith(`kdd: v${newer} available; run kdd update\n`);
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
