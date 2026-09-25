@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -56,11 +56,14 @@ function rpc(child, request) {
 
 try {
   cpSync(source, plugin, { recursive: true, dereference: true, filter: (path) => !path.endsWith('node_modules') });
+  mkdirSync(join(temp, 'data'));
   execFileSync(process.execPath, ['hooks/smart-install.mjs'], {
     cwd: plugin,
     env: { ...process.env, PLUGIN_DATA: join(temp, 'data') },
     stdio: 'inherit',
   });
+  const installError = join(temp, 'data', 'kdd-install-error.log');
+  if (existsSync(installError)) throw new Error(readFileSync(installError, 'utf8'));
   const require = createRequire(join(plugin, 'package.json'));
   const Database = require('better-sqlite3');
   new Database(':memory:').close();
