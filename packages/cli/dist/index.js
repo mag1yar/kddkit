@@ -2,7 +2,7 @@
 
 // src/index.ts
 import { Command } from "commander";
-import { readFileSync as readFileSync6 } from "fs";
+import { existsSync as existsSync2, readFileSync as readFileSync6 } from "fs";
 import { basename as basename2, delimiter, dirname as dirname3, join as join6 } from "path";
 import { spawn as spawnProcess2 } from "child_process";
 import { networkInterfaces } from "os";
@@ -17,6 +17,13 @@ import {
   appendAgentEvent,
   archiveTask,
   attachFile,
+  addRepository,
+  bindRepository,
+  rebindRepository,
+  projectOf,
+  repositoriesOf,
+  bindingsOf,
+  kddHome as kddHome3,
   attentionData,
   authorOf,
   blockTask,
@@ -1721,6 +1728,28 @@ track.command("reopen").description("reactivate a completed track").argument("<i
 track.command("rm").description("delete a track and detach its tasks").argument("<id>").option("--json").action((id, o) => run(o.json, () => {
   withDb((db) => deleteTrack(db, parseId(id)));
   out(o.json, { ok: true }, () => `track #${parseId(id)} deleted`);
+}));
+var projectCommand = program.command("project").description("inspect and explicitly bind project repositories");
+function withProjectStore(fn) {
+  const { dbPath, projectPath } = resolveDbPath2();
+  if (!existsSync2(dbPath)) throw new KddError2(`unknown project store: ${dbPath}; open it before binding repositories`);
+  return withDbAt(dbPath, projectPath, (db) => fn(db, dbPath));
+}
+projectCommand.command("show").option("--json").action((o) => run(o.json, () => {
+  const result = withDb((db) => ({ project: projectOf(db), repositories: repositoriesOf(db), bindings: bindingsOf(db) }));
+  out(o.json, result, () => JSON.stringify(result, null, 2));
+}));
+projectCommand.command("add-repo").argument("<checkout>").requiredOption("--purpose <text>").requiredOption("--access <access>", "context_only|implementation").option("--json").action((cwd, o) => run(o.json, () => {
+  const result = withProjectStore((db, path) => addRepository(db, path, kddHome3(), { cwd, purpose: o.purpose, access: o.access }, getActor()));
+  out(o.json, result, () => JSON.stringify(result, null, 2));
+}));
+projectCommand.command("bind").argument("<checkout>").requiredOption("--repo <id>").requiredOption("--kind <kind>", "source|managed").option("--json").action((cwd, o) => run(o.json, () => {
+  const result = withProjectStore((db, path) => bindRepository(db, path, kddHome3(), { cwd, repoId: o.repo, kind: o.kind }, getActor()));
+  out(o.json, result, () => JSON.stringify(result, null, 2));
+}));
+projectCommand.command("rebind").argument("<old-common-dir>").argument("<checkout>").option("--json").action((fromCommonDir, cwd, o) => run(o.json, () => {
+  const result = withProjectStore((db, path) => rebindRepository(db, path, kddHome3(), { fromCommonDir, cwd }, getActor()));
+  out(o.json, result, () => JSON.stringify(result, null, 2));
 }));
 program.command("projects").option("--json").action((o) => run(o.json, () => {
   const ps = listProjects();

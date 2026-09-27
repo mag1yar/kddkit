@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { addTask, agentId, openDb, resolveDbPath, taskBrief } from '@kddkit/core';
+import { addTask, addDecision, addRepository, bindRepository, projectOf, agentId, openDb, resolveDbPath, taskBrief } from '@kddkit/core';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,6 +33,37 @@ const textOf = (res: any) => JSON.parse(res.content[0].text);
 const rawText = (res: any): string => res.content[0].text;
 
 describe('mcp server over a real transport', () => {
+  it('lists bound clone worktrees and preserves source decisions through backend recall', async () => {
+    const saved={...process.env};
+    const root=mkdtempSync(join(tmpdir(),'kdd-bound-mcp-'));
+    let client: Awaited<ReturnType<typeof connectLazy>> | undefined;
+    let db: ReturnType<typeof openDb> | undefined;
+    try {
+      process.env.KDD_HOME=join(root,'home');
+      delete process.env.KDD_DB;delete process.env.KDD_DECISIONS_DIR;
+      const git=(cwd: string,...args: string[]) => execFileSync('git',args,{cwd,encoding:'utf8',stdio:'pipe'}).trim();
+      const source=join(root,'source');const backend=join(root,'backend');
+      for(const cwd of [source,backend]) { mkdirSync(cwd);git(cwd,'init');git(cwd,'-c','user.name=Test','-c','user.email=test@example.invalid','commit','--allow-empty','-m','seed'); }
+      const resolved=resolveDbPath(source);db=openDb(resolved.dbPath,resolved.projectPath,source);
+      const task=addTask(db,{title:'shared MCP'},ai);
+      const decision=addDecision(db,join(source,'.planning','decisions'),{title:'Original',decision:'primarytoken',sourceTasks:[task.id]});
+      addRepository(db,resolved.dbPath,process.env.KDD_HOME,{cwd:backend,purpose:'backend',access:'context_only'},ai);
+      const clone=join(root,'clone');git(root,'clone','--no-hardlinks',source,clone);
+      bindRepository(db,resolved.dbPath,process.env.KDD_HOME,{cwd:clone,repoId:projectOf(db).primary_repo_id!,kind:'managed'},ai);
+      const wt=join(root,'worktree');git(clone,'worktree','add','-b','worker',wt);
+      client=await connectLazy();
+      const projects=textOf(await client.callTool({name:'list_projects',arguments:{}}));
+      expect(projects).toContain(realpathSync(wt));
+      expect(textOf(await client.callTool({name:'get_task',arguments:{id:task.id,project:wt}})).task.title).toBe('shared MCP');
+      const before=db.prepare('SELECT * FROM decisions ORDER BY slug').all();
+      for(const conflict of [false,true]) {
+        if(conflict) { const dir=join(backend,'.planning','decisions');mkdirSync(dir,{recursive:true});writeFileSync(join(dir,`${decision.slug}.md`),'# Conflict\n\nforeign'); }
+        const recalled=await client.callTool({name:'recall',arguments:{query:'primarytoken',kind:'decision',project:backend}});
+        expect(textOf(recalled)).toHaveLength(1);
+        expect(db.prepare('SELECT * FROM decisions ORDER BY slug').all()).toEqual(before);
+      }
+    } finally { await client?.close();db?.close();process.env=saved;rmSync(root,{recursive:true,force:true}); }
+  });
   it('shares handoff history with a fresh CLI process on one board', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'kdd-cli-mcp-'));
     const dbPath = join(dir, 'board.db');

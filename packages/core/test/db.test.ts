@@ -77,8 +77,8 @@ describe('openDb', () => {
   it('adds an empty verification snapshot without changing legacy criteria', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'kdd-criteria-mig-')), 'kdd.db');
     const raw = new Database(p);
-    for (let i = 0; i < MIGRATIONS.length - 1; i++) raw.exec(MIGRATIONS[i]);
-    raw.pragma(`user_version = ${MIGRATIONS.length - 1}`);
+    for (let i = 0; i < 10; i++) raw.exec(MIGRATIONS[i]);
+    raw.pragma(`user_version = ${10}`);
     raw.prepare(
       `INSERT INTO tasks (title, created_at, updated_at) VALUES ('legacy', 1, 1)`,
     ).run();
@@ -100,8 +100,8 @@ describe('openDb', () => {
   it('migration 12 preserves decisions with empty source tasks', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'kdd-decision-source-mig-')), 'kdd.db');
     const raw = new Database(p);
-    for (let i = 0; i < MIGRATIONS.length - 1; i++) raw.exec(MIGRATIONS[i]);
-    raw.pragma(`user_version = ${MIGRATIONS.length - 1}`);
+    for (let i = 0; i < 11; i++) raw.exec(MIGRATIONS[i]);
+    raw.pragma(`user_version = ${11}`);
     raw.prepare(
       `INSERT INTO decisions (slug, title, path, content_hash, created, superseded_by)
        VALUES ('legacy', 'Legacy', '/legacy.md', 'hash', '2026-01-01', NULL)`,

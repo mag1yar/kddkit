@@ -2,6 +2,7 @@ export * from './caps.js';
 export * from './db.js';
 export * from './errors.js';
 export * from './paths.js';
+export * from './project_store.js';
 export * from './state.js';
 export * from './types.js';
 export * from './ops.js';

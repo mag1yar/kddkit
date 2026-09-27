@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { dirname } from 'node:path';
 import type Database from 'better-sqlite3';
 import { CAPS, capText } from './caps.js';
 import { authorOf, MAX_FAILED_ATTEMPTS, normalizeSessionId, STATUSES, type Kind, type Status } from './state.js';
@@ -13,6 +14,7 @@ import { parseDecisionMd } from './decisions.js';
 import { KddError } from './errors.js';
 import { syncIndex } from './recall.js';
 import { redact } from './agent_events.js';
+import { canSyncLegacyDecisions } from './project_store.js';
 
 export const PRIORITY_ORDER =
   `CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
@@ -202,10 +204,17 @@ export function decisionDetail(
 ): DecisionDetail {
   syncIndex(db, decisionsDir);
   const row = db.prepare(
-    `SELECT slug, title, path, created, superseded_by FROM decisions WHERE slug = ?`,
-  ).get(slug) as (DecisionSummary & { path: string }) | undefined;
+    `SELECT slug, title, path, created, superseded_by, source_tasks FROM decisions WHERE slug = ?`,
+  ).get(slug) as (DecisionSummary & { path: string; source_tasks: string }) | undefined;
   if (!row) throw new KddError(`decision '${slug}' not found`);
-  const doc = parseDecisionMd(readFileSync(row.path, 'utf8'));
+  const trusted = canSyncLegacyDecisions(db,decisionsDir) && existsSync(row.path) &&
+    canSyncLegacyDecisions(db,dirname(realpathSync(row.path)));
+  const cached = trusted ? undefined : db.prepare("SELECT body FROM search_index WHERE kind='decision' AND ref=?").get(slug) as { body: string } | undefined;
+  if (!trusted && !cached) throw new KddError(`decision '${slug}' has no indexed body`);
+  const doc = trusted ? parseDecisionMd(readFileSync(row.path, 'utf8')) : {
+    status: row.superseded_by ? 'superseded' : 'active', indexBody: cached!.body,
+    sourceTasks: JSON.parse(row.source_tasks) as number[],
+  };
   return {
     ...row,
     status: doc.status,

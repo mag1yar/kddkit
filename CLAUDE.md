@@ -48,7 +48,7 @@ CLI  ·  Web UI (React)  ·  MCP (Claude/Codex)     ← clients, no business log
    SQLite + FTS5  +  .planning/decisions/*.md
 ```
 
-- **`packages/core`** — the only place business logic belongs. `ops.ts` (mutations), `queries.ts` (reads), `state.ts` (status transition matrix + `checkMove` gating), `db.ts` (schema + `MIGRATIONS` array), `recall.ts` (FTS5). Clients are thin adapters — never duplicate core logic in a client.
+- **`packages/core`** — the only place business logic belongs. `ops.ts` (mutations), `queries.ts` (reads), `state.ts` (status transition matrix + `checkMove` gating), `db.ts` (open/migrate) + `schema.ts` (`MIGRATIONS` array), `recall.ts` (FTS5). Clients are thin adapters — never duplicate core logic in a client.
 - **`packages/cli`** — commander CLI (`index.ts`) + text `render.ts` + `context.ts` (db/actor resolution).
 - **`packages/ui`** — `server.ts` is a Hono HTTP server that hosts both the REST API and the React SPA (`src/web/`), multiplexing projects via `?project=<hash>`. The CLI's `kdd ui` spawns this server.
 - **`packages/mcp`** — `server.ts` tool defs (zod-validated) + `handlers.ts` adapting core to the 5 tools (get_task, list_tasks, list_tracks, recall, update_task).
@@ -62,7 +62,7 @@ Adding a task-related feature usually touches core (`ops.ts`/`queries.ts`) **plu
 - **AI is gated by acceptance criteria.** `checkMove` blocks an `ai` actor from moving a task to `review` while criteria are unchecked; a `user` actor is not gated. This gate is a core rule, not UI logic.
 - **Whoever submitted a task for review does not accept it on their own.** `checkMove` blocks `review → done` for the actor whose `moved`-to-`review` event is the last one on that task. Another actor (human or a second session) accepts freely; the submitter needs `--reason` — the user saying "close it" is that reason — and such a move is stamped `self_accepted: true` in the event. Never reach for `KDD_ACTOR=user` instead: it also turns off the criteria gate, the lease fence and the transition matrix. See `.planning/decisions/2026-08-03-self-accept-needs-the-user-to-say-so.md`.
 - **Decisions index on demand.** Editing `.planning/decisions/*.md` is synchronized by `recall`, `show`, MCP `get_task`, `decision`, or `kdd rebuild`. FTS5 is watermark-incremental for tasks, full-rescan for decisions.
-- **Schema changes = append a migration** to `MIGRATIONS` in `packages/core/src/db.ts`. Don't edit existing migrations.
+- **Schema changes = append a migration** to `MIGRATIONS` in `packages/core/src/schema.ts`. Don't edit existing migrations.
 
 ## Conventions
 

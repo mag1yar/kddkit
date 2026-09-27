@@ -1,6 +1,7 @@
+import { assertLegacyDecisionSource } from './project_store.js';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type Database from 'better-sqlite3';
 import { KddError } from './errors.js';
 
@@ -110,6 +111,7 @@ export function parseDecisionMd(raw: string): ParsedDecision {
 function supersede(db: Database.Database, dir: string, oldSlug: string, newSlug: string): void {
   const p = join(dir, `${oldSlug}.md`);
   if (!existsSync(p)) throw new KddError(`decision '${oldSlug}' not found`);
+  assertLegacyDecisionSource(db, dirname(realpathSync(p)));
   let raw = readFileSync(p, 'utf8').replace(/\r\n/g, '\n');
   if (raw.startsWith('---\n') && /^status:/m.test(raw)) {
     raw = raw
@@ -127,6 +129,7 @@ function supersede(db: Database.Database, dir: string, oldSlug: string, newSlug:
 export function addDecision(
   db: Database.Database, decisionsDir: string, input: DecisionInput,
 ): { slug: string; path: string; created: boolean } {
+  assertLegacyDecisionSource(db, decisionsDir);
   if (!input.title.trim()) throw new KddError('title must not be empty');
   if (input.body !== undefined &&
       [input.decision, input.rationale, input.alternatives, input.outcome]
@@ -146,6 +149,7 @@ export function addDecision(
   if (existsSync(decisionsDir)) {
     for (const file of readdirSync(decisionsDir).filter((name) => name.endsWith('.md')).sort()) {
       const path = join(decisionsDir, file);
+      assertLegacyDecisionSource(db, dirname(realpathSync(path)));
       const doc = parseDecisionMd(readFileSync(path, 'utf8'));
       if (doc.hash !== hash) continue;
       const slug = file.slice(0, -3);
@@ -160,6 +164,7 @@ export function addDecision(
   const dup = db.prepare(`SELECT slug, path FROM decisions WHERE content_hash = ?`)
     .get(hash) as { slug: string; path: string } | undefined;
   if (dup) {
+    assertLegacyDecisionSource(db, dirname(realpathSync(dup.path)));
     const existing = parseDecisionMd(readFileSync(dup.path, 'utf8')).sourceTasks;
     if (JSON.stringify(existing) !== provenance) {
       throw new KddError(`decision '${dup.slug}' provenance mismatch`);

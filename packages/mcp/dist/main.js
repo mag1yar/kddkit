@@ -2230,10 +2230,10 @@ var require_resolve = __commonJS({
       }
       return count;
     }
-    function getFullPath(resolver, id = "", normalize2) {
+    function getFullPath(resolver, id2 = "", normalize2) {
       if (normalize2 !== false)
-        id = normalizeId(id);
-      const p = resolver.parse(id);
+        id2 = normalizeId(id2);
+      const p = resolver.parse(id2);
       return _getFullPath(resolver, p);
     }
     exports.getFullPath = getFullPath;
@@ -2243,13 +2243,13 @@ var require_resolve = __commonJS({
     }
     exports._getFullPath = _getFullPath;
     var TRAILING_SLASH_HASH = /#\/?$/;
-    function normalizeId(id) {
-      return id ? id.replace(TRAILING_SLASH_HASH, "") : "";
+    function normalizeId(id2) {
+      return id2 ? id2.replace(TRAILING_SLASH_HASH, "") : "";
     }
     exports.normalizeId = normalizeId;
-    function resolveUrl(resolver, baseId, id) {
-      id = normalizeId(id);
-      return resolver.resolve(baseId, id);
+    function resolveUrl(resolver, baseId, id2) {
+      id2 = normalizeId(id2);
+      return resolver.resolve(baseId, id2);
     }
     exports.resolveUrl = resolveUrl;
     var ANCHOR = /^[a-z_][-a-z0-9._]*$/i;
@@ -2979,7 +2979,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve2.call(this, root, ref);
+      let _sch = resolve3.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a = root.localRefs) === null || _a === void 0 ? void 0 : _a[ref];
         const { schemaId } = this.opts;
@@ -3006,7 +3006,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve2(root, ref) {
+    function resolve3(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3019,8 +3019,8 @@ var require_compile = __commonJS({
       if (Object.keys(root.schema).length > 0 && refPath === baseId) {
         return getJsonPointer.call(this, p, root);
       }
-      const id = (0, resolve_1.normalizeId)(refPath);
-      const schOrRef = this.refs[id] || this.schemas[id];
+      const id2 = (0, resolve_1.normalizeId)(refPath);
+      const schOrRef = this.refs[id2] || this.schemas[id2];
       if (typeof schOrRef == "string") {
         const sch = resolveSchema.call(this, root, schOrRef);
         if (typeof (sch === null || sch === void 0 ? void 0 : sch.schema) !== "object")
@@ -3031,7 +3031,7 @@ var require_compile = __commonJS({
         return;
       if (!schOrRef.validate)
         compileSchema.call(this, schOrRef);
-      if (id === (0, resolve_1.normalizeId)(ref)) {
+      if (id2 === (0, resolve_1.normalizeId)(ref)) {
         const { schema } = schOrRef;
         const { schemaId } = this.opts;
         const schId = schema[schemaId];
@@ -3637,7 +3637,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve2(baseURI, relativeURI, options) {
+    function resolve3(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const resolved = resolveComponent(parse3(baseURI, schemelessOptions), parse3(relativeURI, schemelessOptions), schemelessOptions, true);
       schemelessOptions.skipEscape = true;
@@ -3895,7 +3895,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize: normalize2,
-      resolve: resolve2,
+      resolve: resolve3,
       resolveComponent,
       equal,
       serialize,
@@ -4059,19 +4059,19 @@ var require_core = __commonJS({
         this.addKeyword("$async");
       }
       _addDefaultMetaSchema() {
-        const { $data, meta, schemaId } = this.opts;
+        const { $data, meta: meta2, schemaId } = this.opts;
         let _dataRefSchema = $dataRefSchema;
         if (schemaId === "id") {
           _dataRefSchema = { ...$dataRefSchema };
           _dataRefSchema.id = _dataRefSchema.$id;
           delete _dataRefSchema.$id;
         }
-        if (meta && $data)
+        if (meta2 && $data)
           this.addMetaSchema(_dataRefSchema, _dataRefSchema[schemaId], false);
       }
       defaultMeta() {
-        const { meta, schemaId } = this.opts;
-        return this.opts.defaultMeta = typeof meta == "object" ? meta[schemaId] || meta : void 0;
+        const { meta: meta2, schemaId } = this.opts;
+        return this.opts.defaultMeta = typeof meta2 == "object" ? meta2[schemaId] || meta2 : void 0;
       }
       validate(schemaKeyRef, data) {
         let v;
@@ -4091,12 +4091,12 @@ var require_core = __commonJS({
         const sch = this._addSchema(schema, _meta);
         return sch.validate || this._compileSchemaEnv(sch);
       }
-      compileAsync(schema, meta) {
+      compileAsync(schema, meta2) {
         if (typeof this.opts.loadSchema != "function") {
           throw new Error("options.loadSchema should be a function");
         }
         const { loadSchema } = this.opts;
-        return runCompileAsync.call(this, schema, meta);
+        return runCompileAsync.call(this, schema, meta2);
         async function runCompileAsync(_schema, _meta) {
           await loadMetaSchema.call(this, _schema.$schema);
           const sch = this._addSchema(_schema, _meta);
@@ -4128,7 +4128,7 @@ var require_core = __commonJS({
           if (!this.refs[ref])
             await loadMetaSchema.call(this, _schema.$schema);
           if (!this.refs[ref])
-            this.addSchema(_schema, ref, meta);
+            this.addSchema(_schema, ref, meta2);
         }
         async function _loadSchema(ref) {
           const p = this._loading[ref];
@@ -4148,15 +4148,15 @@ var require_core = __commonJS({
             this.addSchema(sch, void 0, _meta, _validateSchema);
           return this;
         }
-        let id;
+        let id2;
         if (typeof schema === "object") {
           const { schemaId } = this.opts;
-          id = schema[schemaId];
-          if (id !== void 0 && typeof id != "string") {
+          id2 = schema[schemaId];
+          if (id2 !== void 0 && typeof id2 != "string") {
             throw new Error(`schema ${schemaId} must be string`);
           }
         }
-        key = (0, resolve_1.normalizeId)(key || id);
+        key = (0, resolve_1.normalizeId)(key || id2);
         this._checkUnique(key);
         this.schemas[key] = this._addSchema(schema, _meta, key, _validateSchema, true);
         return this;
@@ -4235,11 +4235,11 @@ var require_core = __commonJS({
           case "object": {
             const cacheKey = schemaKeyRef;
             this._cache.delete(cacheKey);
-            let id = schemaKeyRef[this.opts.schemaId];
-            if (id) {
-              id = (0, resolve_1.normalizeId)(id);
-              delete this.schemas[id];
-              delete this.refs[id];
+            let id2 = schemaKeyRef[this.opts.schemaId];
+            if (id2) {
+              id2 = (0, resolve_1.normalizeId)(id2);
+              delete this.schemas[id2];
+              delete this.refs[id2];
             }
             return this;
           }
@@ -4345,11 +4345,11 @@ var require_core = __commonJS({
           }
         }
       }
-      _addSchema(schema, meta, baseId, validateSchema = this.opts.validateSchema, addSchema = this.opts.addUsedSchema) {
-        let id;
+      _addSchema(schema, meta2, baseId, validateSchema = this.opts.validateSchema, addSchema = this.opts.addUsedSchema) {
+        let id2;
         const { schemaId } = this.opts;
         if (typeof schema == "object") {
-          id = schema[schemaId];
+          id2 = schema[schemaId];
         } else {
           if (this.opts.jtd)
             throw new Error("schema must be object");
@@ -4359,9 +4359,9 @@ var require_core = __commonJS({
         let sch = this._cache.get(schema);
         if (sch !== void 0)
           return sch;
-        baseId = (0, resolve_1.normalizeId)(id || baseId);
+        baseId = (0, resolve_1.normalizeId)(id2 || baseId);
         const localRefs = resolve_1.getSchemaRefs.call(this, schema, baseId);
-        sch = new compile_1.SchemaEnv({ schema, schemaId, meta, baseId, localRefs });
+        sch = new compile_1.SchemaEnv({ schema, schemaId, meta: meta2, baseId, localRefs });
         this._cache.set(sch.schema, sch);
         if (addSchema && !baseId.startsWith("#")) {
           if (baseId)
@@ -4372,9 +4372,9 @@ var require_core = __commonJS({
           this.validateSchema(schema, true);
         return sch;
       }
-      _checkUnique(id) {
-        if (this.schemas[id] || this.refs[id]) {
-          throw new Error(`schema with key or id "${id}" already exists`);
+      _checkUnique(id2) {
+        if (this.schemas[id2] || this.refs[id2]) {
+          throw new Error(`schema with key or id "${id2}" already exists`);
         }
       }
       _compileSchemaEnv(sch) {
@@ -6664,7 +6664,7 @@ var require_formats = __commonJS({
     }
     var TIME = /^(\d\d):(\d\d):(\d\d(?:\.\d+)?)(z|([+-])(\d\d)(?::?(\d\d))?)?$/i;
     function getTime(strictTimeZone) {
-      return function time3(str) {
+      return function time4(str) {
         const matches = TIME.exec(str);
         if (!matches)
           return false;
@@ -6710,10 +6710,10 @@ var require_formats = __commonJS({
     }
     var DATE_TIME_SEPARATOR = /t|\s/i;
     function getDateTime(strictTimeZone) {
-      const time3 = getTime(strictTimeZone);
+      const time4 = getTime(strictTimeZone);
       return function date_time(str) {
         const dateTime = str.split(DATE_TIME_SEPARATOR);
-        return dateTime.length === 2 && date3(dateTime[0]) && time3(dateTime[1]);
+        return dateTime.length === 2 && date3(dateTime[0]) && time4(dateTime[1]);
       };
     }
     function compareDateTime(dt1, dt2) {
@@ -6885,7 +6885,6 @@ var require_dist = __commonJS({
 });
 
 // src/server.ts
-import { execFileSync as execFileSync3 } from "child_process";
 import { isAbsolute } from "path";
 
 // ../../node_modules/.pnpm/zod@3.25.76/node_modules/zod/v3/external.js
@@ -11674,13 +11673,13 @@ function time(args) {
   return new RegExp(`^${timeSource(args)}$`);
 }
 function datetime(args) {
-  const time3 = timeSource({ precision: args.precision });
+  const time4 = timeSource({ precision: args.precision });
   const opts = ["Z"];
   if (args.local)
     opts.push("");
   if (args.offset)
     opts.push(`([+-]\\d{2}:\\d{2})`);
-  const timeRegex2 = `${time3}(?:${opts.join("|")})`;
+  const timeRegex2 = `${time4}(?:${opts.join("|")})`;
   return new RegExp(`^${dateSource}T(?:${timeRegex2})$`);
 }
 var string = (params) => {
@@ -12698,38 +12697,38 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
     doc.write(`const newResult = {}`);
     for (const key of normalized.keys) {
       if (normalized.optionalKeys.has(key)) {
-        const id = ids[key];
-        doc.write(`const ${id} = ${parseStr(key)};`);
+        const id2 = ids[key];
+        doc.write(`const ${id2} = ${parseStr(key)};`);
         const k = esc(key);
         doc.write(`
-        if (${id}.issues.length) {
+        if (${id2}.issues.length) {
           if (input[${k}] === undefined) {
             if (${k} in input) {
               newResult[${k}] = undefined;
             }
           } else {
             payload.issues = payload.issues.concat(
-              ${id}.issues.map((iss) => ({
+              ${id2}.issues.map((iss) => ({
                 ...iss,
                 path: iss.path ? [${k}, ...iss.path] : [${k}],
               }))
             );
           }
-        } else if (${id}.value === undefined) {
+        } else if (${id2}.value === undefined) {
           if (${k} in input) newResult[${k}] = undefined;
         } else {
-          newResult[${k}] = ${id}.value;
+          newResult[${k}] = ${id2}.value;
         }
         `);
       } else {
-        const id = ids[key];
-        doc.write(`const ${id} = ${parseStr(key)};`);
+        const id2 = ids[key];
+        doc.write(`const ${id2} = ${parseStr(key)};`);
         doc.write(`
-          if (${id}.issues.length) payload.issues = payload.issues.concat(${id}.issues.map(iss => ({
+          if (${id2}.issues.length) payload.issues = payload.issues.concat(${id2}.issues.map(iss => ({
             ...iss,
             path: iss.path ? [${esc(key)}, ...iss.path] : [${esc(key)}]
           })));`);
-        doc.write(`newResult[${esc(key)}] = ${id}.value`);
+        doc.write(`newResult[${esc(key)}] = ${id2}.value`);
       }
     }
     doc.write(`payload.value = newResult;`);
@@ -13485,13 +13484,13 @@ var $ZodRegistry = class {
     this._idmap = /* @__PURE__ */ new Map();
   }
   add(schema, ..._meta) {
-    const meta = _meta[0];
-    this._map.set(schema, meta);
-    if (meta && typeof meta === "object" && "id" in meta) {
-      if (this._idmap.has(meta.id)) {
-        throw new Error(`ID ${meta.id} already exists in the registry`);
+    const meta2 = _meta[0];
+    this._map.set(schema, meta2);
+    if (meta2 && typeof meta2 === "object" && "id" in meta2) {
+      if (this._idmap.has(meta2.id)) {
+        throw new Error(`ID ${meta2.id} already exists in the registry`);
       }
-      this._idmap.set(meta.id, schema);
+      this._idmap.set(meta2.id, schema);
     }
     return this;
   }
@@ -13501,9 +13500,9 @@ var $ZodRegistry = class {
     return this;
   }
   remove(schema) {
-    const meta = this._map.get(schema);
-    if (meta && typeof meta === "object" && "id" in meta) {
-      this._idmap.delete(meta.id);
+    const meta2 = this._map.get(schema);
+    if (meta2 && typeof meta2 === "object" && "id" in meta2) {
+      this._idmap.delete(meta2.id);
     }
     this._map.delete(schema);
     return this;
@@ -14432,9 +14431,9 @@ var JSONSchemaGenerator = class {
         }
       }
     }
-    const meta = this.metadataRegistry.get(schema);
-    if (meta)
-      Object.assign(result.schema, meta);
+    const meta2 = this.metadataRegistry.get(schema);
+    if (meta2)
+      Object.assign(result.schema, meta2);
     if (this.io === "input" && isTransforming(schema)) {
       delete result.schema.examples;
       delete result.schema.default;
@@ -14460,13 +14459,13 @@ var JSONSchemaGenerator = class {
       const defsSegment = this.target === "draft-2020-12" ? "$defs" : "definitions";
       if (params.external) {
         const externalId = params.external.registry.get(entry[0])?.id;
-        const uriGenerator = params.external.uri ?? ((id2) => id2);
+        const uriGenerator = params.external.uri ?? ((id3) => id3);
         if (externalId) {
           return { ref: uriGenerator(externalId) };
         }
-        const id = entry[1].defId ?? entry[1].schema.id ?? `schema${this.counter++}`;
-        entry[1].defId = id;
-        return { defId: id, ref: `${uriGenerator("__shared")}#/${defsSegment}/${id}` };
+        const id2 = entry[1].defId ?? entry[1].schema.id ?? `schema${this.counter++}`;
+        entry[1].defId = id2;
+        return { defId: id2, ref: `${uriGenerator("__shared")}#/${defsSegment}/${id2}` };
       }
       if (entry[1] === root) {
         return { ref: "#" };
@@ -14514,8 +14513,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
           continue;
         }
       }
-      const id = this.metadataRegistry.get(entry[0])?.id;
-      if (id) {
+      const id2 = this.metadataRegistry.get(entry[0])?.id;
+      if (id2) {
         extractToDef(entry);
         continue;
       }
@@ -14569,10 +14568,10 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
       console.warn(`Invalid target: ${this.target}`);
     }
     if (params.external?.uri) {
-      const id = params.external.registry.get(schema)?.id;
-      if (!id)
+      const id2 = params.external.registry.get(schema)?.id;
+      if (!id2)
         throw new Error("Schema is missing an `id` property");
-      result.$id = params.external.uri(id);
+      result.$id = params.external.uri(id2);
     }
     Object.assign(result, root.def);
     const defs = params.external?.defs ?? {};
@@ -14756,8 +14755,8 @@ var ZodMiniType = /* @__PURE__ */ $constructor("ZodMiniType", (inst, def) => {
   };
   inst.clone = (_def, params) => clone(inst, _def, params);
   inst.brand = () => inst;
-  inst.register = ((reg, meta) => {
-    reg.add(inst, meta);
+  inst.register = ((reg, meta2) => {
+    reg.add(inst, meta2);
     return inst;
   });
 });
@@ -15022,8 +15021,8 @@ var ZodType2 = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
   };
   inst.clone = (def2, params) => clone(inst, def2, params);
   inst.brand = () => inst;
-  inst.register = ((reg, meta) => {
-    reg.add(inst, meta);
+  inst.register = ((reg, meta2) => {
+    reg.add(inst, meta2);
     return inst;
   });
   inst.parse = (data, params) => parse2(inst, data, params, { callee: inst.parse });
@@ -18979,7 +18978,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve2) => setTimeout(resolve2, pollInterval));
+        await new Promise((resolve3) => setTimeout(resolve3, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -18996,7 +18995,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve2, reject) => {
+    return new Promise((resolve3, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -19074,7 +19073,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve2(parseResult.data);
+            resolve3(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -19335,12 +19334,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve2, reject) => {
+    return new Promise((resolve3, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve2, interval);
+      const timeoutId = setTimeout(resolve3, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -19589,7 +19588,7 @@ var ExperimentalServerTasks = class {
       if (hasPreviousToolUse) {
         const toolUseIds = new Set(previousContent.filter((c) => c.type === "tool_use").map((c) => c.id));
         const toolResultIds = new Set(lastContent.filter((c) => c.type === "tool_result").map((c) => c.toolUseId));
-        if (toolUseIds.size !== toolResultIds.size || ![...toolUseIds].every((id) => toolResultIds.has(id))) {
+        if (toolUseIds.size !== toolResultIds.size || ![...toolUseIds].every((id2) => toolResultIds.has(id2))) {
           throw new Error("ids of tool_result blocks and tool_use blocks from previous message do not match");
         }
       }
@@ -20023,7 +20022,7 @@ var Server = class extends Protocol {
       if (hasPreviousToolUse) {
         const toolUseIds = new Set(previousContent.filter((c) => c.type === "tool_use").map((c) => c.id));
         const toolResultIds = new Set(lastContent.filter((c) => c.type === "tool_result").map((c) => c.toolUseId));
-        if (toolUseIds.size !== toolResultIds.size || ![...toolUseIds].every((id) => toolResultIds.has(id))) {
+        if (toolUseIds.size !== toolResultIds.size || ![...toolUseIds].every((id2) => toolResultIds.has(id2))) {
           throw new Error("ids of tool_result blocks and tool_use blocks from previous message do not match");
         }
       }
@@ -20135,8 +20134,8 @@ function isCompletable(schema) {
   return !!schema && typeof schema === "object" && COMPLETABLE_SYMBOL in schema;
 }
 function getCompleter(schema) {
-  const meta = schema[COMPLETABLE_SYMBOL];
-  return meta?.complete;
+  const meta2 = schema[COMPLETABLE_SYMBOL];
+  return meta2?.complete;
 }
 var McpZodTypeKind;
 (function(McpZodTypeKind2) {
@@ -20440,7 +20439,7 @@ var McpServer = class {
     let task = createTaskResult.task;
     const pollInterval = task.pollInterval ?? 5e3;
     while (task.status !== "completed" && task.status !== "failed" && task.status !== "cancelled") {
-      await new Promise((resolve2) => setTimeout(resolve2, pollInterval));
+      await new Promise((resolve3) => setTimeout(resolve3, pollInterval));
       const updatedTask = await extra.taskStore.getTask(taskId);
       if (!updatedTask) {
         throw new McpError(ErrorCode.InternalError, `Task ${taskId} not found during polling`);
@@ -21089,44 +21088,50 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve2) => {
+    return new Promise((resolve3) => {
       const json = serializeMessage(message);
       if (this._stdout.write(json)) {
-        resolve2();
+        resolve3();
       } else {
-        this._stdout.once("drain", resolve2);
+        this._stdout.once("drain", resolve3);
       }
     });
   }
 };
 
 // ../core/dist/index.js
-import Database from "better-sqlite3";
-import { mkdirSync, renameSync, rmSync } from "fs";
-import { dirname } from "path";
-import { execFileSync } from "child_process";
-import { createHash } from "crypto";
-import { existsSync, readdirSync } from "fs";
-import { homedir } from "os";
-import { join, resolve } from "path";
 import Database2 from "better-sqlite3";
+import { mkdirSync as mkdirSync2, renameSync as renameSync2, rmSync as rmSync2 } from "fs";
+import { dirname as dirname2, join as join2 } from "path";
+import Database from "better-sqlite3";
+import { execFileSync } from "child_process";
+import { randomBytes } from "crypto";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "fs";
+import { basename, dirname, join, resolve } from "path";
+import { homedir } from "os";
 import { execFileSync as execFileSync2 } from "child_process";
+import { createHash } from "crypto";
+import { homedir as homedir2 } from "os";
+import { join as join3, resolve as resolve2 } from "path";
+import Database3 from "better-sqlite3";
+import { realpathSync as realpathSync2 } from "fs";
+import { execFileSync as execFileSync3 } from "child_process";
 import { createHash as createHash2 } from "crypto";
 import {
-  existsSync as existsSync2,
-  mkdirSync as mkdirSync2,
-  readFileSync,
-  renameSync as renameSync2,
-  rmSync as rmSync2,
+  existsSync as existsSync3,
+  mkdirSync as mkdirSync3,
+  readFileSync as readFileSync2,
+  renameSync as renameSync3,
+  rmSync as rmSync3,
   statSync,
-  writeFileSync
+  writeFileSync as writeFileSync2
 } from "fs";
-import { basename, dirname as dirname2, extname, join as join2 } from "path";
+import { basename as basename2, dirname as dirname3, extname, join as join4 } from "path";
 import { createHash as createHash3 } from "crypto";
-import { existsSync as existsSync4, readFileSync as readFileSync3, readdirSync as readdirSync3 } from "fs";
-import { join as join4 } from "path";
-import { existsSync as existsSync6, readFileSync as readFileSync6, readdirSync as readdirSync4 } from "fs";
-import { join as join7 } from "path";
+import { existsSync as existsSync5, readFileSync as readFileSync4, readdirSync as readdirSync4, realpathSync as realpathSync4 } from "fs";
+import { dirname as dirname5, join as join6 } from "path";
+import { existsSync as existsSync8, readFileSync as readFileSync7, readdirSync as readdirSync5, realpathSync as realpathSync7 } from "fs";
+import { dirname as dirname8, join as join9 } from "path";
 var CAPS = {
   briefBytes: 4096,
   // JSON/MCP payload для детерминированного resume-пакета
@@ -21197,7 +21202,6 @@ var KddError = class extends Error {
 function logError(db, source, message) {
   db.prepare(`INSERT INTO errors (source, message, created_at) VALUES (?, ?, ?)`).run(source, message, now());
 }
-var now = () => Math.floor(Date.now() / 1e3);
 var MIGRATIONS = [
   `
   CREATE TABLE tasks (
@@ -21371,34 +21375,296 @@ var MIGRATIONS = [
   -- \u041A\u0430\u043D\u043E\u043D provenance \u0436\u0438\u0432\u0451\u0442 \u0432\u043E frontmatter decision Markdown. \u042D\u0442\u0430 JSON-\u043A\u043E\u043B\u043E\u043D\u043A\u0430 \u2014 \u0442\u043E\u043B\u044C\u043A\u043E
   -- rebuildable \u0438\u043D\u0434\u0435\u043A\u0441 \u0434\u043B\u044F \u043E\u0431\u0440\u0430\u0442\u043D\u043E\u0433\u043E \u0437\u0430\u043F\u0440\u043E\u0441\u0430 task -> decisions.
   ALTER TABLE decisions ADD COLUMN source_tasks TEXT NOT NULL DEFAULT '[]';
+  `,
+  `
+  CREATE TABLE repositories (
+    repo_id TEXT PRIMARY KEY CHECK(length(repo_id) = 32 AND repo_id NOT GLOB '*[^0-9a-f]*'),
+    purpose TEXT NOT NULL CHECK(length(trim(purpose)) > 0),
+    access TEXT NOT NULL CHECK(access IN ('context_only','implementation')),
+    remote TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE project (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    project_id TEXT NOT NULL UNIQUE CHECK(length(project_id) = 32 AND project_id NOT GLOB '*[^0-9a-f]*'),
+    primary_repo_id TEXT REFERENCES repositories(repo_id),
+    legacy_decisions_dir TEXT,
+    autonomy_enabled INTEGER NOT NULL DEFAULT 0 CHECK(autonomy_enabled IN (0,1)),
+    default_execution_mode TEXT NOT NULL DEFAULT 'manual' CHECK(default_execution_mode IN ('manual','orchestrated')),
+    created_at INTEGER NOT NULL
+  );
+  INSERT INTO project(singleton,project_id,created_at)
+    VALUES(1,lower(hex(randomblob(16))),CAST(strftime('%s','now') AS INTEGER));
+  CREATE TABLE repository_bindings (
+    common_dir TEXT PRIMARY KEY,
+    repo_id TEXT NOT NULL REFERENCES repositories(repo_id),
+    checkout_path TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('source','managed')),
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX idx_repository_bindings_repo ON repository_bindings(repo_id);
   `
 ];
+function projectOf(db) {
+  const row = db.prepare("SELECT project_id,primary_repo_id,legacy_decisions_dir,autonomy_enabled,default_execution_mode,created_at FROM project WHERE singleton=1").get();
+  return { ...row, autonomy_enabled: row.autonomy_enabled === 1 };
+}
+function bindingsOf(db) {
+  return db.prepare("SELECT * FROM repository_bindings ORDER BY common_dir").all();
+}
+var time3 = () => Math.floor(Date.now() / 1e3);
+var id = () => randomBytes(16).toString("hex");
+function git(cwd, args) {
+  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+}
+function canonicalCommonDir(cwd) {
+  try {
+    return realpathSync(git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]));
+  } catch {
+    throw new KddError(`not in a git repository: ${cwd}`);
+  }
+}
+function canonicalProjectPath(path) {
+  path = resolve(path);
+  if (existsSync(path)) return realpathSync(path);
+  const parent = dirname(resolve(path));
+  return parent === resolve(path) ? resolve(path) : join(canonicalProjectPath(parent), path.slice(dirname(path).length + 1));
+}
+function worktrees(common) {
+  return git(common, ["--git-dir", common, "worktree", "list", "--porcelain"]).split(/\r?\n\r?\n/).filter((block) => !/^bare$/m.test(block)).flatMap((block) => block.match(/^worktree (.+)$/m)?.[1] ?? []).filter((path) => {
+    try {
+      return existsSync(path) && canonicalCommonDir(path) === common && realpathSync(git(path, ["rev-parse", "--show-toplevel"])) === realpathSync(path);
+    } catch {
+      return false;
+    }
+  });
+}
+function withRegistry(home, fn) {
+  mkdirSync(home, { recursive: true });
+  const db = new Database(join(home, "registry.db"));
+  try {
+    db.pragma("busy_timeout = 5000");
+    const version2 = db.pragma("user_version", { simple: true });
+    if (version2 > 1) throw new KddError(`registry has unknown schema version ${version2}`);
+    db.transaction(() => {
+      if (db.pragma("user_version", { simple: true }) === 0) {
+        db.exec(`CREATE TABLE bindings(common_dir TEXT PRIMARY KEY, db_path TEXT NOT NULL, project_id TEXT NOT NULL, repo_id TEXT NOT NULL); PRAGMA user_version = 1`);
+      }
+    }).immediate();
+    return fn(db);
+  } finally {
+    db.close();
+  }
+}
+function readonly2(path, fn) {
+  if (!existsSync(path)) throw new KddError(`project store is missing: ${path}`);
+  const db = new Database(path, { readonly: true, fileMustExist: true });
+  try {
+    const version2 = db.pragma("user_version", { simple: true });
+    if (version2 < 1 || version2 > MIGRATIONS.length) throw new KddError(`unknown project schema version ${version2}: ${path}`);
+    return fn(db, version2);
+  } finally {
+    db.close();
+  }
+}
+function storePaths(home) {
+  if (!existsSync(home)) return [];
+  const paths = readdirSync(home, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => join(home, e.name, "kdd.db")).filter((path) => existsSync(path));
+  const catalog = join(home, "project-stores");
+  if (existsSync(catalog)) for (const name of readdirSync(catalog).filter((n) => n.endsWith(".json"))) {
+    const record2 = JSON.parse(readFileSync(join(catalog, name), "utf8"));
+    if (!/^[0-9a-f]{32}\.json$/.test(name) || record2.project_id !== name.slice(0, -5) || typeof record2.db_path !== "string" || resolve(record2.db_path) !== record2.db_path) throw new KddError("invalid project store catalog");
+    readonly2(record2.db_path, (db, version2) => {
+      if (version2 < 13 || projectOf(db).project_id !== record2.project_id) throw new KddError("project store catalog identity mismatch");
+    });
+    paths.push(record2.db_path);
+  }
+  return [...new Set(paths.map((path) => resolve(path)))];
+}
+function catalogStore(db, dbPath, home) {
+  if (canonicalProjectPath(dirname(dirname(dbPath))) === canonicalProjectPath(home) && dbPath.endsWith("/kdd.db")) return;
+  const projectId = projectOf(db).project_id;
+  const dir = join(home, "project-stores");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `${projectId}.json`);
+  const record2 = JSON.stringify({ db_path: resolve(dbPath), project_id: projectId });
+  if (existsSync(path)) {
+    if (readFileSync(path, "utf8") !== record2) throw new KddError("project store location conflict");
+    return;
+  }
+  const tmp = `${path}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, record2, { mode: 384 });
+    renameSync(tmp, path);
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+}
+function meta(db, key) {
+  return db.prepare("SELECT value FROM meta WHERE key=?").get(key)?.value;
+}
+function discover(common, home) {
+  const matches = storePaths(home).flatMap((path) => readonly2(path, (db, version2) => {
+    if (version2 >= 13) {
+      const binding = bindingsOf(db).find((b) => b.common_dir === common);
+      if (binding) return [{ dbPath: path, projectPath: common, locator: {
+        common_dir: common,
+        db_path: resolve(path),
+        project_id: projectOf(db).project_id,
+        repo_id: binding.repo_id
+      } }];
+    }
+    const source = meta(db, "project_path");
+    try {
+      return source && existsSync(source) && canonicalCommonDir(source) === common ? [{ dbPath: path, projectPath: source }] : [];
+    } catch {
+      return [];
+    }
+  }));
+  if (matches.length > 1) throw new KddError(`conflicting project stores for ${common}`);
+  return matches[0];
+}
+function validateLocator(row) {
+  readonly2(row.db_path, (db, version2) => {
+    const binding = version2 >= 13 ? bindingsOf(db).find((b) => b.common_dir === row.common_dir) : void 0;
+    if (!binding || binding.repo_id !== row.repo_id || projectOf(db).project_id !== row.project_id) {
+      throw new KddError(`stale or mismatched registry binding for ${row.common_dir}; repeat explicit binding/rebind`);
+    }
+  });
+}
+function putLocator(registry2, row) {
+  registry2.prepare("INSERT INTO bindings(common_dir,db_path,project_id,repo_id) VALUES(@common_dir,@db_path,@project_id,@repo_id) ON CONFLICT(common_dir) DO UPDATE SET db_path=excluded.db_path,project_id=excluded.project_id,repo_id=excluded.repo_id").run(row);
+}
+function lookupProjectStore(commonDir, home) {
+  return withRegistry(home, (registry2) => registry2.transaction(() => {
+    const row = registry2.prepare("SELECT * FROM bindings WHERE common_dir=?").get(commonDir);
+    if (row) {
+      validateLocator(row);
+      return { dbPath: row.db_path, projectPath: commonDir };
+    }
+    const found = discover(commonDir, home);
+    if (found?.locator) putLocator(registry2, found.locator);
+    return found ? { dbPath: found.dbPath, projectPath: found.projectPath } : void 0;
+  }).immediate());
+}
+function initializeProjectStore(db, dbPath, home, projectPath, checkout = process.cwd(), options = {}) {
+  if (dbPath === ":memory:") return;
+  const savedSource = meta(db, "project_path");
+  const source = savedSource ?? projectPath;
+  if (!source || !existsSync(source)) return;
+  let common;
+  let paths;
+  try {
+    common = savedSource && (options.legacyUpgrade || projectOf(db).primary_repo_id) ? canonicalCommonDir(savedSource) : realpathSync(source);
+    paths = worktrees(common).map((path) => realpathSync(path));
+  } catch {
+    return;
+  }
+  let sourceCaller = false;
+  try {
+    if (canonicalCommonDir(checkout) === common) {
+      sourceCaller = true;
+      paths = [realpathSync(git(checkout, ["rev-parse", "--show-toplevel"])), ...paths];
+    }
+  } catch {
+  }
+  const toplevel = meta(db, "project_toplevel");
+  if (toplevel) {
+    try {
+      if (canonicalCommonDir(toplevel) === common) paths.unshift(realpathSync(toplevel));
+    } catch {
+    }
+  }
+  if (!paths.length) return;
+  withRegistry(home, (registry2) => registry2.transaction(() => {
+    catalogStore(db, dbPath, home);
+    const found = registry2.prepare("SELECT * FROM bindings WHERE common_dir=?").get(common);
+    if (found && (found.project_id !== projectOf(db).project_id || resolve(found.db_path) !== resolve(dbPath))) {
+      throw new KddError(`registry binding conflict for ${common}`);
+    }
+    const other = discover(common, home);
+    if (other && resolve(other.dbPath) !== resolve(dbPath)) throw new KddError(`project store conflict for ${common}`);
+    db.transaction(() => {
+      const project = projectOf(db);
+      if (project.primary_repo_id) return;
+      let decisionsDir = project.legacy_decisions_dir;
+      if (!decisionsDir) {
+        const cachedPaths = db.prepare("SELECT path FROM decisions").all().map((row) => resolve(dirname(row.path)));
+        const cachedDirs = new Set(cachedPaths.map(canonicalProjectPath));
+        const cachedDefault = cachedPaths.some((dir) => basename(dir) === "decisions" && basename(dirname(dir)) === ".planning" && paths.includes(canonicalProjectPath(dirname(dirname(dir)))));
+        if (cachedDirs.size === 1 && !cachedDefault) decisionsDir = [...cachedDirs][0];
+        if (!decisionsDir && sourceCaller && options.configuredDecisions) decisionsDir = canonicalProjectPath(options.configuredDecisions);
+      }
+      const repoId = id();
+      db.prepare("INSERT INTO repositories VALUES(?,?,?,NULL,?)").run(repoId, "primary", "implementation", time3());
+      db.prepare("INSERT INTO repository_bindings VALUES(?,?,?,?,?)").run(common, repoId, paths[0], "source", time3());
+      db.prepare("UPDATE project SET primary_repo_id=?,legacy_decisions_dir=? WHERE singleton=1").run(repoId, decisionsDir ?? join(paths[0], ".planning", "decisions"));
+    }).immediate();
+    const binding = bindingsOf(db).find((b) => b.common_dir === common);
+    if (binding) putLocator(registry2, { common_dir: common, db_path: resolve(dbPath), project_id: projectOf(db).project_id, repo_id: binding.repo_id });
+  }).immediate());
+}
+function listProjectCheckouts(home) {
+  return [...new Set(storePaths(home).flatMap((path) => readonly2(path, (db, version2) => {
+    const bindings = version2 >= 13 ? bindingsOf(db) : [];
+    const commons = version2 >= 13 ? bindings.map((b) => b.common_dir) : [meta(db, "project_path")].filter((p) => !!p);
+    const checkoutPaths = bindings.flatMap((b) => {
+      try {
+        return canonicalCommonDir(b.checkout_path) === b.common_dir ? [realpathSync(b.checkout_path)] : [];
+      } catch {
+        return [];
+      }
+    });
+    return [...checkoutPaths, ...commons.filter((p) => existsSync(p)).flatMap((common) => worktrees(realpathSync(common)))];
+  })))];
+}
+function canSyncLegacyDecisions(db, decisionsDir) {
+  const project = projectOf(db);
+  if (!project.primary_repo_id && db.memory) return true;
+  const bindings = bindingsOf(db);
+  const source = bindings.find((b) => b.repo_id === project.primary_repo_id && b.kind === "source");
+  if (project.primary_repo_id && (!source || !existsSync(source.common_dir))) return false;
+  const path = canonicalProjectPath(decisionsDir);
+  if (project.legacy_decisions_dir && (!source || resolve(project.legacy_decisions_dir) !== join(source.checkout_path, ".planning", "decisions"))) {
+    return path === resolve(project.legacy_decisions_dir);
+  }
+  if (!project.primary_repo_id) return false;
+  let ancestor = path;
+  while (!existsSync(ancestor) && dirname(ancestor) !== ancestor) ancestor = dirname(ancestor);
+  try {
+    const common = canonicalCommonDir(ancestor);
+    return bindings.some((b) => b.repo_id === project.primary_repo_id && b.kind === "source" && b.common_dir === common);
+  } catch {
+    return false;
+  }
+}
+var now = () => Math.floor(Date.now() / 1e3);
 function backupBeforeMigrate(db, dbPath, from) {
   const backup = `${dbPath}.v${from}.bak`;
   const tmp = `${backup}.${process.pid}.tmp`;
   const q = (p) => p.replace(/'/g, "''");
   try {
-    rmSync(tmp, { force: true });
+    rmSync2(tmp, { force: true });
     db.exec(`VACUUM INTO '${q(tmp)}'`);
-    const copy = new Database(tmp, { readonly: true });
+    const copy = new Database2(tmp, { readonly: true });
     const copied = copy.pragma("user_version", { simple: true });
     copy.close();
     if (copied !== from) {
-      rmSync(tmp, { force: true });
+      rmSync2(tmp, { force: true });
       return;
     }
-    renameSync(tmp, backup);
+    renameSync2(tmp, backup);
   } catch (e) {
-    rmSync(tmp, { force: true });
+    rmSync2(tmp, { force: true });
     db.close();
     throw new KddError(
       `cannot back up the board before migrating it to v${MIGRATIONS.length}: ${e instanceof Error ? e.message : String(e)} (wanted ${backup})`
     );
   }
 }
-function openDb(dbPath, projectPath) {
-  if (dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true });
-  const db = new Database(dbPath);
+function openDb(dbPath, projectPath, checkout) {
+  if (dbPath !== ":memory:") mkdirSync2(dirname2(dbPath), { recursive: true });
+  const db = new Database2(dbPath);
   db.pragma("journal_mode = WAL");
   db.pragma("busy_timeout = 5000");
   db.pragma("foreign_keys = ON");
@@ -21414,21 +21680,41 @@ function openDb(dbPath, projectPath) {
   }
   for (let i = from; i < MIGRATIONS.length; i++) {
     db.transaction(() => {
+      const current = db.pragma("user_version", { simple: true });
+      if (current > MIGRATIONS.length) throw new KddError("board schema changed to an unknown version during migration");
+      if (current > i) return;
       db.exec(MIGRATIONS[i]);
       db.pragma(`user_version = ${i + 1}`);
-    })();
+    }).immediate();
   }
   if (from === 0 && projectPath) {
     db.prepare(`INSERT OR IGNORE INTO meta (key, value) VALUES ('project_path', ?)`).run(projectPath);
   }
-  return db;
+  const configuredDecisions = process.env.KDD_DECISIONS_DIR;
+  if (from === 0 && configuredDecisions) {
+    db.transaction(() => db.prepare("UPDATE project SET legacy_decisions_dir=? WHERE singleton=1").run(canonicalProjectPath(configuredDecisions)))();
+  }
+  try {
+    initializeProjectStore(
+      db,
+      dbPath,
+      process.env.KDD_HOME ?? join2(homedir(), ".kdd"),
+      projectPath,
+      checkout,
+      { legacyUpgrade: from > 0 && from < 13, configuredDecisions: from < 13 ? configuredDecisions : void 0 }
+    );
+    return db;
+  } catch (e) {
+    db.close();
+    throw e;
+  }
 }
-var kddHome = () => process.env.KDD_HOME ?? join(homedir(), ".kdd");
+var kddHome = () => process.env.KDD_HOME ?? join3(homedir2(), ".kdd");
 function resolveDbPath(cwd = process.cwd()) {
   if (process.env.KDD_DB) return { dbPath: process.env.KDD_DB, projectPath: cwd };
   let common;
   try {
-    common = execFileSync(
+    common = execFileSync2(
       "git",
       ["rev-parse", "--path-format=absolute", "--git-common-dir"],
       { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
@@ -21436,14 +21722,16 @@ function resolveDbPath(cwd = process.cwd()) {
   } catch {
     throw new KddError("not in a git repository (kdd resolves its store via git)");
   }
+  const registered = lookupProjectStore(realpathSync2(common), kddHome());
+  if (registered) return registered;
   const hash = createHash("sha256").update(common).digest("hex").slice(0, 16);
-  return { dbPath: join(kddHome(), hash, "kdd.db"), projectPath: common };
+  return { dbPath: join3(kddHome(), hash, "kdd.db"), projectPath: common };
 }
 function resolveDecisionsDir(cwd = process.cwd()) {
   if (process.env.KDD_DECISIONS_DIR) return process.env.KDD_DECISIONS_DIR;
   let top;
   try {
-    top = execFileSync(
+    top = execFileSync2(
       "git",
       ["rev-parse", "--show-toplevel"],
       { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
@@ -21451,32 +21739,7 @@ function resolveDecisionsDir(cwd = process.cwd()) {
   } catch {
     throw new KddError("not in a git repository (kdd resolves .planning via git)");
   }
-  return join(top, ".planning", "decisions");
-}
-function listProjects() {
-  const home = kddHome();
-  if (!existsSync(home)) return [];
-  const out = [];
-  for (const entry of readdirSync(home, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const dbPath = join(home, entry.name, "kdd.db");
-    if (!existsSync(dbPath)) continue;
-    try {
-      const db = new Database2(dbPath, { readonly: true });
-      const rows = db.prepare(
-        `SELECT key, value FROM meta WHERE key IN ('project_path','autotick_enabled')`
-      ).all();
-      db.close();
-      const meta = new Map(rows.map((r) => [r.key, r.value]));
-      out.push({
-        dbPath,
-        projectPath: meta.get("project_path") ?? "(unknown)",
-        autoTickEnabled: meta.get("autotick_enabled") === "1"
-      });
-    } catch {
-    }
-  }
-  return out;
+  return join3(top, ".planning", "decisions");
 }
 var STATUSES = ["backlog", "new", "in_progress", "review", "done"];
 var PRIORITIES = ["low", "medium", "high", "urgent"];
@@ -21572,9 +21835,9 @@ function redact(s) {
   for (const [re, to] of SECRETS) out = out.replace(re, to);
   return out;
 }
-function mustGetTrack(db, id) {
-  const t = db.prepare(`SELECT * FROM tracks WHERE id = ?`).get(id);
-  if (!t) throw new KddError(`track #${id} not found`);
+function mustGetTrack(db, id2) {
+  const t = db.prepare(`SELECT * FROM tracks WHERE id = ?`).get(id2);
+  if (!t) throw new KddError(`track #${id2} not found`);
   return t;
 }
 function listTracks(db, opts = {}) {
@@ -21608,9 +21871,9 @@ function appendEvent(db, taskId, actor, action, detail, opts) {
 function appendTaskMutationEvent(db, taskId, actor, action, detail, opts) {
   const session = actor.type === "ai" ? actor.manualSession : void 0;
   if (!session) return appendEvent(db, taskId, actor, action, detail, opts);
-  const git2 = (args) => {
+  const git3 = (args) => {
     try {
-      return execFileSync2("git", args, {
+      return execFileSync3("git", args, {
         cwd: session.cwd,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"]
@@ -21619,9 +21882,9 @@ function appendTaskMutationEvent(db, taskId, actor, action, detail, opts) {
       return void 0;
     }
   };
-  const worktree = git2(["rev-parse", "--show-toplevel"]);
-  const branch = worktree ? git2(["symbolic-ref", "--quiet", "--short", "HEAD"]) : void 0;
-  const head = worktree ? git2(["rev-parse", "--verify", "HEAD"]) : void 0;
+  const worktree = git3(["rev-parse", "--show-toplevel"]);
+  const branch = worktree ? git3(["symbolic-ref", "--quiet", "--short", "HEAD"]) : void 0;
+  const head = worktree ? git3(["rev-parse", "--verify", "HEAD"]) : void 0;
   return appendEvent(db, taskId, actor, action, {
     ...detail ?? {},
     manual_provenance: {
@@ -21633,9 +21896,9 @@ function appendTaskMutationEvent(db, taskId, actor, action, detail, opts) {
     }
   }, opts);
 }
-function mustGetTask(db, id) {
-  const t = db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id);
-  if (!t) throw new KddError(`task #${id} not found`);
+function mustGetTask(db, id2) {
+  const t = db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id2);
+  if (!t) throw new KddError(`task #${id2} not found`);
   return t;
 }
 function checkPriority(p) {
@@ -21648,29 +21911,29 @@ function checkKind(k) {
     throw new KddError(`invalid kind '${k}'; allowed: ${KINDS.join(", ")}`);
   }
 }
-function editTask(db, id, patch, actor) {
+function editTask(db, id2, patch, actor) {
   if (patch.priority !== void 0) checkPriority(patch.priority);
   if (patch.kind !== void 0) checkKind(patch.kind);
   if (patch.track_id != null) mustGetTrack(db, patch.track_id);
   const fields = Object.keys(patch).filter((k) => patch[k] !== void 0);
   if (fields.length === 0) throw new KddError("nothing to edit");
   return db.transaction(() => {
-    mustGetTask(db, id);
+    mustGetTask(db, id2);
     const sets = fields.map((f) => `${f} = ?`).join(", ");
-    db.prepare(`UPDATE tasks SET ${sets}, updated_at = ? WHERE id = ?`).run(...fields.map((f) => patch[f]), now(), id);
-    appendTaskMutationEvent(db, id, actor, "edited", { fields });
-    return mustGetTask(db, id);
+    db.prepare(`UPDATE tasks SET ${sets}, updated_at = ? WHERE id = ?`).run(...fields.map((f) => patch[f]), now(), id2);
+    appendTaskMutationEvent(db, id2, actor, "edited", { fields });
+    return mustGetTask(db, id2);
   })();
 }
-function commentTask(db, id, body, actor) {
+function commentTask(db, id2, body, actor) {
   if (!body.trim()) throw new KddError("comment must not be empty");
   const text = actor.type === "ai" ? redact(body) : body;
   return db.transaction(() => {
-    mustGetTask(db, id);
+    mustGetTask(db, id2);
     const r = db.prepare(
       `INSERT INTO comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)`
-    ).run(id, authorOf(actor), text, now());
-    appendTaskMutationEvent(db, id, actor, "commented");
+    ).run(id2, authorOf(actor), text, now());
+    appendTaskMutationEvent(db, id2, actor, "commented");
     return db.prepare(`SELECT * FROM comments WHERE id = ?`).get(Number(r.lastInsertRowid));
   })();
 }
@@ -21698,12 +21961,12 @@ function nextPosition(db, status) {
      FROM tasks WHERE status = ? AND archived_at IS NULL`
   ).get(status).p;
 }
-function moveTask(db, id, to, actor, reason) {
+function moveTask(db, id2, to, actor, reason) {
   checkStatus(to);
   return db.transaction(() => {
-    const t = mustGetTask(db, id);
-    const submitter = t.status === "review" ? submittedBy(db, id) : null;
-    const res = checkMove(t.status, to, actor, reason, openCriteria(db, id), t.claimed_by, submitter);
+    const t = mustGetTask(db, id2);
+    const submitter = t.status === "review" ? submittedBy(db, id2) : null;
+    const res = checkMove(t.status, to, actor, reason, openCriteria(db, id2), t.claimed_by, submitter);
     if (!res.ok) throw new KddError(res.error);
     const self = t.status === "review" && to === "done" && submitter === authorOf(actor);
     const leaving = t.status === "in_progress" && to !== "in_progress";
@@ -21711,8 +21974,8 @@ function moveTask(db, id, to, actor, reason) {
     db.prepare(
       `UPDATE tasks SET status = ?, position = ?, updated_at = ?${leaving ? ", claimed_by = NULL, claim_expires = NULL" : ""}${reset ? ", failed_attempts = 0" : ""}
        WHERE id = ?`
-    ).run(to, nextPosition(db, to), now(), id);
-    appendTaskMutationEvent(db, id, actor, "moved", {
+    ).run(to, nextPosition(db, to), now(), id2);
+    appendTaskMutationEvent(db, id2, actor, "moved", {
       from: t.status,
       to,
       ...reason ? { reason } : {},
@@ -21721,9 +21984,9 @@ function moveTask(db, id, to, actor, reason) {
     if (reason) {
       db.prepare(
         `INSERT INTO comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)`
-      ).run(id, authorOf(actor), reason, now());
+      ).run(id2, authorOf(actor), reason, now());
     }
-    return mustGetTask(db, id);
+    return mustGetTask(db, id2);
   })();
 }
 function listCriteria(db, taskId) {
@@ -21752,14 +22015,14 @@ var MIME = {
 };
 var filesDir = (dbPath) => {
   if (dbPath === ":memory:") throw new KddError("attachments need a real board file, not :memory:");
-  return join2(dirname2(dbPath), "files");
+  return join4(dirname3(dbPath), "files");
 };
-var filePath = (dbPath, f) => join2(filesDir(dbPath), `${f.sha256}.${f.ext}`);
+var filePath = (dbPath, f) => join4(filesDir(dbPath), `${f.sha256}.${f.ext}`);
 function listFiles(db, taskId) {
   return db.prepare(`SELECT * FROM files WHERE task_id = ? ORDER BY id`).all(taskId);
 }
-function getFile(db, id) {
-  return db.prepare(`SELECT * FROM files WHERE id = ?`).get(id);
+function getFile(db, id2) {
+  return db.prepare(`SELECT * FROM files WHERE id = ?`).get(id2);
 }
 function attachFile(db, dbPath, taskId, srcPath, opts, actor) {
   let data;
@@ -21769,7 +22032,7 @@ function attachFile(db, dbPath, taskId, srcPath, opts, actor) {
     if (stat.size > CAPS.fileBytes) {
       throw new KddError(`file is ${stat.size} bytes, the limit is ${CAPS.fileBytes}`);
     }
-    data = readFileSync(srcPath);
+    data = readFileSync2(srcPath);
   } catch (e) {
     if (e instanceof KddError) throw e;
     throw new KddError(`cannot read ${srcPath}: ${e.message}`);
@@ -21777,15 +22040,15 @@ function attachFile(db, dbPath, taskId, srcPath, opts, actor) {
   mustGetTask(db, taskId);
   const sha256 = createHash2("sha256").update(data).digest("hex");
   const ext = (extname(srcPath).slice(1) || "bin").toLowerCase();
-  const target = join2(filesDir(dbPath), `${sha256}.${ext}`);
+  const target = join4(filesDir(dbPath), `${sha256}.${ext}`);
   return db.transaction(() => {
-    if (!existsSync2(target)) {
-      mkdirSync2(filesDir(dbPath), { recursive: true });
+    if (!existsSync3(target)) {
+      mkdirSync3(filesDir(dbPath), { recursive: true });
       const tmp = `${target}.${process.pid}.tmp`;
-      writeFileSync(tmp, data);
-      renameSync2(tmp, target);
+      writeFileSync2(tmp, data);
+      renameSync3(tmp, target);
     }
-    const name = capText(basename(srcPath), CAPS.fileNameChars);
+    const name = capText(basename2(srcPath), CAPS.fileNameChars);
     const r = db.prepare(
       `INSERT INTO files (task_id, sha256, ext, original_name, mime_type, size_bytes,
                           description, created_at)
@@ -21824,7 +22087,7 @@ function detachFile(db, dbPath, fileId, actor) {
     appendTaskMutationEvent(db, f.task_id, actor, "file_detached", { id: fileId, name: f.original_name });
     db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), f.task_id);
     const left = db.prepare(`SELECT COUNT(*) AS c FROM files WHERE sha256 = ? AND ext = ?`).get(f.sha256, f.ext).c;
-    if (left === 0) rmSync2(filePath(dbPath, f), { force: true });
+    if (left === 0) rmSync3(filePath(dbPath, f), { force: true });
   })();
 }
 var normalize = (s) => s.replace(/\r\n/g, "\n").trim();
@@ -21833,8 +22096,8 @@ function contentHash(title, body) {
 ${normalize(body)}`).digest("hex");
 }
 function normalizeSourceTasks(ids = []) {
-  for (const id of ids) {
-    if (!Number.isInteger(id) || id < 1) throw new KddError(`invalid source task id '${id}'`);
+  for (const id2 of ids) {
+    if (!Number.isInteger(id2) || id2 < 1) throw new KddError(`invalid source task id '${id2}'`);
   }
   return [...new Set(ids)].sort((a, b) => a - b);
 }
@@ -21882,42 +22145,45 @@ function parseDecisionMd(raw) {
 }
 function syncIndex(db, decisionsDir) {
   db.transaction(() => {
-    const files = existsSync4(decisionsDir) ? readdirSync3(decisionsDir).filter((f) => f.endsWith(".md")) : [];
-    const inDb = new Map(
-      db.prepare(
-        `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`
-      ).all().map((r) => [r.slug, r])
-    );
-    const seen = /* @__PURE__ */ new Set();
-    for (const f of files) {
-      const slug = f.slice(0, -3);
-      seen.add(slug);
-      const path = join4(decisionsDir, f);
-      const doc = parseDecisionMd(readFileSync3(path, "utf8"));
-      const title = doc.title || slug;
-      const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
-      const sourceTasks = JSON.stringify(doc.sourceTasks);
-      const row = inDb.get(slug);
-      if (row && row.content_hash === doc.hash && (row.superseded_by ?? null) === (supersededBy ?? null)) {
-        if (row.path !== path || row.source_tasks !== sourceTasks || row.created !== (doc.created || null)) {
-          db.prepare(`UPDATE decisions SET path = ?, source_tasks = ?, created = ? WHERE slug = ?`).run(path, sourceTasks, doc.created || null, slug);
+    if (canSyncLegacyDecisions(db, decisionsDir)) {
+      const files = existsSync5(decisionsDir) ? readdirSync4(decisionsDir).filter((f) => f.endsWith(".md")) : [];
+      const inDb = new Map(
+        db.prepare(
+          `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`
+        ).all().map((r) => [r.slug, r])
+      );
+      const seen = /* @__PURE__ */ new Set();
+      for (const f of files) {
+        const slug = f.slice(0, -3);
+        seen.add(slug);
+        const path = join6(decisionsDir, f);
+        if (!canSyncLegacyDecisions(db, dirname5(realpathSync4(path)))) continue;
+        const doc = parseDecisionMd(readFileSync4(path, "utf8"));
+        const title = doc.title || slug;
+        const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
+        const sourceTasks = JSON.stringify(doc.sourceTasks);
+        const row = inDb.get(slug);
+        if (row && row.content_hash === doc.hash && (row.superseded_by ?? null) === (supersededBy ?? null)) {
+          if (row.path !== path || row.source_tasks !== sourceTasks || row.created !== (doc.created || null)) {
+            db.prepare(`UPDATE decisions SET path = ?, source_tasks = ?, created = ? WHERE slug = ?`).run(path, sourceTasks, doc.created || null, slug);
+          }
+          continue;
         }
-        continue;
+        db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
+        db.prepare(
+          `INSERT OR REPLACE INTO decisions
+             (slug, title, path, content_hash, created, superseded_by, source_tasks)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        ).run(slug, title, path, doc.hash, doc.created || null, supersededBy, sourceTasks);
+        db.prepare(
+          `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`
+        ).run(slug, title, doc.indexBody);
       }
-      db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
-      db.prepare(
-        `INSERT OR REPLACE INTO decisions
-           (slug, title, path, content_hash, created, superseded_by, source_tasks)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      ).run(slug, title, path, doc.hash, doc.created || null, supersededBy, sourceTasks);
-      db.prepare(
-        `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`
-      ).run(slug, title, doc.indexBody);
-    }
-    for (const slug of inDb.keys()) {
-      if (seen.has(slug)) continue;
-      db.prepare(`DELETE FROM decisions WHERE slug = ?`).run(slug);
-      db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
+      for (const slug of inDb.keys()) {
+        if (seen.has(slug)) continue;
+        db.prepare(`DELETE FROM decisions WHERE slug = ?`).run(slug);
+        db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
+      }
     }
     const last = Number(
       db.prepare(`SELECT value FROM meta WHERE key='fts_last_event_id'`).get()?.value ?? "0"
@@ -21929,14 +22195,14 @@ function syncIndex(db, decisionsDir) {
     ).all(last);
     const getTask = db.prepare(`SELECT * FROM tasks WHERE id = ?`);
     const getComments = db.prepare(`SELECT body FROM comments WHERE task_id = ? ORDER BY id`);
-    for (const { id } of ids) {
-      db.prepare(`DELETE FROM search_index WHERE kind='task' AND ref = ?`).run(String(id));
-      const t = getTask.get(id);
+    for (const { id: id2 } of ids) {
+      db.prepare(`DELETE FROM search_index WHERE kind='task' AND ref = ?`).run(String(id2));
+      const t = getTask.get(id2);
       if (!t || t.archived_at) continue;
-      const body = [t.body ?? "", ...getComments.all(id).map((c) => c.body)].filter(Boolean).join("\n");
+      const body = [t.body ?? "", ...getComments.all(id2).map((c) => c.body)].filter(Boolean).join("\n");
       db.prepare(
         `INSERT INTO search_index (kind, ref, title, body) VALUES ('task', ?, ?, ?)`
-      ).run(String(id), t.title, body);
+      ).run(String(id2), t.title, body);
     }
     db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_last_event_id', ?)`).run(String(max));
   })();
@@ -22057,30 +22323,30 @@ function boardData(db, f = {}) {
   for (const r of rows) out[r.status].push(r);
   return out;
 }
-function taskDetail(db, id) {
-  const task = mustGetTask(db, id);
-  const criteria = listCriteria(db, id);
+function taskDetail(db, id2) {
+  const task = mustGetTask(db, id2);
+  const criteria = listCriteria(db, id2);
   const comments = db.prepare(
     `SELECT * FROM comments WHERE task_id = ? ORDER BY created_at, id`
-  ).all(id);
+  ).all(id2);
   const events = db.prepare(
     `SELECT * FROM events WHERE task_id = ? ORDER BY created_at, id`
-  ).all(id);
+  ).all(id2);
   const links = db.prepare(
     `SELECT t.id, t.title, l.kind FROM task_links l
      JOIN tasks t ON t.id = CASE WHEN l.from_id = ? THEN l.to_id ELSE l.from_id END
      WHERE l.from_id = ? OR l.to_id = ?`
-  ).all(id, id, id);
+  ).all(id2, id2, id2);
   const agent_runs_total = db.prepare(
     `SELECT COUNT(*) c FROM agent_events WHERE task_id = ? AND kind = 'run_start'`
-  ).get(id).c;
-  const files = listFiles(db, id).map((f) => ({ ...f, path: filePath(db.name, f) }));
+  ).get(id2).c;
+  const files = listFiles(db, id2).map((f) => ({ ...f, path: filePath(db.name, f) }));
   const decisions = db.prepare(
     `SELECT d.slug, d.title, d.created, d.superseded_by
        FROM decisions d, json_each(d.source_tasks) source
       WHERE CAST(source.value AS INTEGER) = ?
       ORDER BY d.slug`
-  ).all(id);
+  ).all(id2);
   return {
     task,
     criteria,
@@ -22093,8 +22359,8 @@ function taskDetail(db, id) {
     ...manualHistory(events)
   };
 }
-function taskDetailCapped(db, id) {
-  const d = taskDetail(db, id);
+function taskDetailCapped(db, id2) {
+  const d = taskDetail(db, id2);
   return {
     task: {
       ...d.task,
@@ -22121,9 +22387,9 @@ function taskDetailCapped(db, id) {
     handoffs_total: d.handoffs.length
   };
 }
-function syncedTaskDetail(db, decisionsDir, id, full = false) {
+function syncedTaskDetail(db, decisionsDir, id2, full = false) {
   syncIndex(db, decisionsDir);
-  return full ? taskDetail(db, id) : taskDetailCapped(db, id);
+  return full ? taskDetail(db, id2) : taskDetailCapped(db, id2);
 }
 var DEFAULT_TTL = 15 * 60;
 var OK_TTL = 60 * 60 * 1e3;
@@ -22185,11 +22451,15 @@ function readRunProvenance(db, taskId) {
   if (message !== void 0) provenance.error = message;
   return provenance;
 }
-function readTaskDecisions(decisionsDir, taskId) {
-  if (!existsSync6(decisionsDir)) return [];
-  return readdirSync4(decisionsDir).filter((file) => file.endsWith(".md")).flatMap((file) => {
+function readTaskDecisions(db, decisionsDir, taskId) {
+  if (!canSyncLegacyDecisions(db, decisionsDir)) {
+    return db.prepare("SELECT slug,title,created,superseded_by,source_tasks FROM decisions ORDER BY slug").all().filter((row) => JSON.parse(row.source_tasks).includes(taskId)).map(({ source_tasks, ...row }) => ({ ...row, title: capText(row.title, CAPS.titleChars) }));
+  }
+  if (!existsSync8(decisionsDir)) return [];
+  return readdirSync5(decisionsDir).filter((file) => file.endsWith(".md")).flatMap((file) => {
     const slug = file.slice(0, -3);
-    const decision = parseDecisionMd(readFileSync6(join7(decisionsDir, file), "utf8"));
+    if (!canSyncLegacyDecisions(db, dirname8(realpathSync7(join9(decisionsDir, file))))) return [];
+    const decision = parseDecisionMd(readFileSync7(join9(decisionsDir, file), "utf8"));
     if (!decision.sourceTasks.includes(taskId)) return [];
     return [{
       slug,
@@ -22298,13 +22568,13 @@ function fitBrief(brief, sources, errorSource) {
   }
   return brief;
 }
-function taskBrief(db, decisionsDir, id) {
-  const detail = taskDetail(db, id);
+function taskBrief(db, decisionsDir, id2) {
+  const detail = taskDetail(db, id2);
   const criteria = [...detail.criteria].sort((a, b) => {
     const rank = (criterion) => criterion.checked_at === null ? 0 : criterion.evidence ? 1 : 2;
     return rank(a) - rank(b) || a.position - b.position || a.id - b.id;
   });
-  const provenance = readRunProvenance(db, id);
+  const provenance = readRunProvenance(db, id2);
   const errorSource = provenance?.error;
   if (provenance?.error) provenance.error = capText(provenance.error, 256);
   const task = {
@@ -22360,7 +22630,7 @@ function taskBrief(db, decisionsDir, id) {
       omitted: 0
     },
     decisions: {
-      items: readTaskDecisions(decisionsDir, id).sort((a, b) => lexical(a.slug, b.slug)),
+      items: readTaskDecisions(db, decisionsDir, id2).sort((a, b) => lexical(a.slug, b.slug)),
       omitted: 0
     },
     files: {
@@ -22466,10 +22736,10 @@ function updateTask(db, input, actor) {
 // src/server.ts
 var ok = (data) => ({ content: [{ type: "text", text: JSON.stringify(data) }] });
 var fail = (text) => ({ content: [{ type: "text", text }], isError: true });
-function guard(getCtx, meta, project, fn) {
+function guard(getCtx, meta2, project, fn) {
   let c;
   try {
-    c = getCtx(meta, project);
+    c = getCtx(meta2, project);
   } catch (e) {
     return fail(e instanceof KddError ? e.message : String(e));
   }
@@ -22489,24 +22759,7 @@ var priorityEnum = external_exports.enum(PRIORITIES);
 var kindEnum = external_exports.enum(KINDS);
 var projectField = external_exports.string().min(1).optional().describe("Absolute path inside the git repository; use list_projects to find known projects");
 function knownProjects() {
-  return listProjects().flatMap((p) => {
-    try {
-      const output = execFileSync3(
-        "git",
-        ["--git-dir", p.projectPath, "worktree", "list", "--porcelain"],
-        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
-      );
-      return output.split(/\r?\n\r?\n/).filter((block) => !/^bare$/m.test(block)).map((block) => block.match(/^worktree (.+)$/m)?.[1]).filter((path) => !!path).filter((path) => {
-        try {
-          return resolveDbPath(path).dbPath === p.dbPath;
-        } catch {
-          return false;
-        }
-      });
-    } catch {
-      return [];
-    }
-  });
+  return listProjectCheckouts(kddHome());
 }
 function createServer(getCtx, actor) {
   const server = new McpServer({ name: "kdd", version: "0.1.0" });
@@ -22521,9 +22774,9 @@ function createServer(getCtx, actor) {
         project: projectField
       }
     },
-    async ({ id, full, brief, project }, extra) => guard(getCtx, extra._meta, project, (c) => {
+    async ({ id: id2, full, brief, project }, extra) => guard(getCtx, extra._meta, project, (c) => {
       if (brief && full) throw new KddError("brief and full are mutually exclusive");
-      return brief ? taskBrief(c.db, c.dir, id) : syncedTaskDetail(c.db, c.dir, id, full);
+      return brief ? taskBrief(c.db, c.dir, id2) : syncedTaskDetail(c.db, c.dir, id2, full);
     })
   );
   server.registerTool(
@@ -22615,12 +22868,12 @@ function createServer(getCtx, actor) {
 }
 function lazyCtx() {
   const contexts = /* @__PURE__ */ new Map();
-  return (meta, project) => {
+  return (meta2, project) => {
     if (project && !isAbsolute(project)) throw new KddError("project must be an absolute repository path");
     if (project && (process.env.KDD_DB || process.env.KDD_DECISIONS_DIR)) {
       throw new KddError("project cannot be used with KDD_DB or KDD_DECISIONS_DIR overrides");
     }
-    const cwd = project ?? mcpWorkspace(meta) ?? process.cwd();
+    const cwd = project ?? mcpWorkspace(meta2) ?? process.cwd();
     const cached2 = contexts.get(cwd);
     if (cached2) return cached2;
     let dbPath, projectPath;
@@ -22633,13 +22886,13 @@ function lazyCtx() {
       throw e;
     }
     const dir = resolveDecisionsDir(cwd);
-    const ctx = { db: openDb(dbPath, projectPath), dir };
+    const ctx = { db: openDb(dbPath, projectPath, cwd), dir };
     contexts.set(cwd, ctx);
     return ctx;
   };
 }
-var codexTurn = (meta) => {
-  const raw = meta?.["x-codex-turn-metadata"];
+var codexTurn = (meta2) => {
+  const raw = meta2?.["x-codex-turn-metadata"];
   let turn = raw;
   if (typeof raw === "string") {
     try {
@@ -22650,21 +22903,21 @@ var codexTurn = (meta) => {
   }
   return turn && typeof turn === "object" ? turn : void 0;
 };
-var mcpWorkspace = (meta) => {
-  const workspaces = codexTurn(meta)?.workspaces;
+var mcpWorkspace = (meta2) => {
+  const workspaces = codexTurn(meta2)?.workspaces;
   if (!workspaces || typeof workspaces !== "object" || Array.isArray(workspaces)) return void 0;
   return Object.keys(workspaces).find(Boolean);
 };
-var mcpActor = (meta, project) => {
-  const hasTurnMetadata = !!meta && Object.hasOwn(meta, "x-codex-turn-metadata");
-  const values = codexTurn(meta);
-  const cwd = project ?? mcpWorkspace(meta) ?? process.cwd();
+var mcpActor = (meta2, project) => {
+  const hasTurnMetadata = !!meta2 && Object.hasOwn(meta2, "x-codex-turn-metadata");
+  const values = codexTurn(meta2);
+  const cwd = project ?? mcpWorkspace(meta2) ?? process.cwd();
   const normalizedTurnId = normalizeSessionId(values?.session_id) ?? normalizeSessionId(values?.thread_id) ?? normalizeSessionId(values?.threadId);
   const manualSession = process.env.KDD_SESSION ? void 0 : normalizedTurnId ? { client: "codex", sessionId: normalizedTurnId, cwd } : hasTurnMetadata ? { client: "codex", cwd } : manualSessionFromEnv(cwd);
   if (values) {
-    const id = values.session_id ?? values.thread_id ?? values.threadId;
-    if (typeof id === "string" && id) {
-      return { type: "ai", id: "codex:" + id, ...manualSession ? { manualSession } : {} };
+    const id2 = values.session_id ?? values.thread_id ?? values.threadId;
+    if (typeof id2 === "string" && id2) {
+      return { type: "ai", id: "codex:" + id2, ...manualSession ? { manualSession } : {} };
     }
   }
   return { type: "ai", id: agentId() ?? "mcp", ...manualSession ? { manualSession } : {} };

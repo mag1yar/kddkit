@@ -244,6 +244,18 @@ is retried on the next tick; after 3 failed attempts it is auto-blocked for a hu
 - **Store:** `~/.kdd/<repo-hash>/kdd.db` (override the root with `KDD_HOME`).
 - **Decisions:** `.planning/decisions/` in your repo, versioned with your code.
 
+Each store has a persistent local project id. Linked worktrees share it automatically;
+an independent clone or an additional repository joins only through an explicit binding.
+From the primary checkout, use `kdd project show --json` to inspect ids, then
+`kdd project bind /path/to/clone --repo <repo_id> --kind managed --json` or
+`kdd project add-repo /path/to/backend --purpose backend --access context_only --json`.
+After a move, stop existing clients and use
+`kdd project rebind /old/git-common-dir /new/checkout --json`, targeting the existing
+store with `KDD_DB` if needed; restart clients afterwards. A conflicting existing
+board is never silently replaced. These commands do not start agents or create clones.
+Additional repositories read the shared legacy decisions index; they cannot replace
+it through their own `.planning/decisions`, `rebuild`, or `decide`.
+
 To copy a board, copy it with SQLite, not with `cp`: the store runs in WAL mode, and recent
 writes — sometimes all of them — live in the `-wal` file next to it. `sqlite3 kdd.db "VACUUM INTO
 'copy.db'"` writes one consistent file; `cp kdd.db` alone can silently lose everything since the

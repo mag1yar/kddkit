@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -16,7 +16,9 @@ function setup() {
   const dbPath = join(root, 'kdd.db');
   const decisionsDir = join(root, 'decisions');
   mkdirSync(decisionsDir);
-  return { db: openDb(dbPath, 'brief-test'), dbPath, decisionsDir, root };
+  const db = openDb(dbPath, 'brief-test');
+  db.prepare('UPDATE project SET legacy_decisions_dir=? WHERE singleton=1').run(realpathSync(decisionsDir));
+  return { db, dbPath, decisionsDir, root };
 }
 
 describe('taskBrief', () => {

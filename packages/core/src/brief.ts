@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { canSyncLegacyDecisions } from './project_store.js';
+import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type Database from 'better-sqlite3';
 import { CAPS, capText } from './caps.js';
 import { parseDecisionMd } from './decisions.js';
@@ -157,11 +158,18 @@ function readRunProvenance(db: Database.Database, taskId: number): Provenance | 
 }
 
 function readTaskDecisions(
-  decisionsDir: string, taskId: number,
+  db: Database.Database, decisionsDir: string, taskId: number,
 ): TaskBrief['decisions']['items'] {
+  if (!canSyncLegacyDecisions(db, decisionsDir)) {
+    return (db.prepare('SELECT slug,title,created,superseded_by,source_tasks FROM decisions ORDER BY slug')
+      .all() as { slug: string; title: string; created: string | null; superseded_by: string | null; source_tasks: string }[])
+      .filter(row => (JSON.parse(row.source_tasks) as number[]).includes(taskId))
+      .map(({ source_tasks, ...row }) => ({ ...row, title: capText(row.title, CAPS.titleChars) }));
+  }
   if (!existsSync(decisionsDir)) return [];
   return readdirSync(decisionsDir).filter((file) => file.endsWith('.md')).flatMap((file) => {
     const slug = file.slice(0, -3);
+    if (!canSyncLegacyDecisions(db, dirname(realpathSync(join(decisionsDir,file))))) return [];
     const decision = parseDecisionMd(readFileSync(join(decisionsDir, file), 'utf8'));
     if (!decision.sourceTasks.includes(taskId)) return [];
     return [{
@@ -361,7 +369,7 @@ export function taskBrief(
       omitted: 0,
     },
     decisions: {
-      items: readTaskDecisions(decisionsDir, id)
+      items: readTaskDecisions(db, decisionsDir, id)
         .sort((a, b) => lexical(a.slug, b.slug)),
       omitted: 0,
     },

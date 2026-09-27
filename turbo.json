@@ -3,6 +3,7 @@
   "tasks": {
     "build": { "dependsOn": ["^build"], "outputs": ["dist/**"] },
     "test": { "dependsOn": ["build"] },
+    "@kddkit/mcp#test": { "dependsOn": ["build", "@kddkit/cli#build"] },
     "typecheck": { "dependsOn": ["^build"] }
   }
 }

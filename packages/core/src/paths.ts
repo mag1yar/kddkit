@@ -5,6 +5,8 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import Database from 'better-sqlite3';
 import { KddError } from './errors.js';
+import { lookupProjectStore } from './project_store.js';
+import { realpathSync } from 'node:fs';
 
 export const kddHome = (): string => process.env.KDD_HOME ?? join(homedir(), '.kdd');
 
@@ -24,6 +26,8 @@ export function resolveDbPath(cwd: string = process.cwd()): { dbPath: string; pr
   } catch {
     throw new KddError('not in a git repository (kdd resolves its store via git)');
   }
+  const registered = lookupProjectStore(realpathSync(common), kddHome());
+  if (registered) return registered;
   const hash = createHash('sha256').update(common).digest('hex').slice(0, 16);
   return { dbPath: join(kddHome(), hash, 'kdd.db'), projectPath: common };
 }

@@ -42,7 +42,7 @@ mkdir -p ~/.kdd-dev && cp -r ~/.kdd/<hash> ~/.kdd-dev/
 
 ## Migrations — the one thing that can corrupt the real board
 
-`MIGRATIONS[]` in `packages/core/src/db.ts` auto-applies on `openDb` (tracked by
+`MIGRATIONS[]` in `packages/core/src/schema.ts` (re-exported from `db.ts`) auto-applies on `openDb` (tracked by
 `PRAGMA user_version`) — **in dev and in prod, same path**, the moment the store
 opens. A half-finished migration in the array runs against your real board on the
 next `kdd status`.

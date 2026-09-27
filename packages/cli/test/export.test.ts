@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { openDb } from '@kddkit/core';
+import { canonicalProjectPath, openDb } from '@kddkit/core';
 import { kdd, makeEnv } from './run.js';
 
 describe('export CLI', () => {
@@ -40,6 +40,8 @@ describe('export CLI', () => {
   it('matches the fixed v1 fixture byte for byte and retains all references', () => {
     const env = makeEnv();
     const db = openDb(env.KDD_DB!);
+    db.prepare('UPDATE project SET legacy_decisions_dir=? WHERE singleton=1')
+      .run(canonicalProjectPath(env.KDD_DECISIONS_DIR!));
     db.exec(`
       INSERT INTO tracks (id,name,description,status,created_at)
         VALUES (1,'Continuity',NULL,'active',100);

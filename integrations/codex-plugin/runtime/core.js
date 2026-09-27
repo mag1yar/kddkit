@@ -66,9 +66,9 @@ function capText(s, n) {
 }
 
 // src/db.ts
-import Database from "better-sqlite3";
-import { mkdirSync, renameSync, rmSync } from "fs";
-import { dirname } from "path";
+import Database2 from "better-sqlite3";
+import { mkdirSync as mkdirSync2, renameSync as renameSync2, rmSync as rmSync2 } from "fs";
+import { dirname as dirname2, join as join2 } from "path";
 
 // src/errors.ts
 var KddError = class extends Error {
@@ -77,8 +77,14 @@ function logError(db, source, message) {
   db.prepare(`INSERT INTO errors (source, message, created_at) VALUES (?, ?, ?)`).run(source, message, now());
 }
 
-// src/db.ts
-var now = () => Math.floor(Date.now() / 1e3);
+// src/project_store.ts
+import Database from "better-sqlite3";
+import { execFileSync } from "child_process";
+import { randomBytes } from "crypto";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "fs";
+import { basename, dirname, join, resolve } from "path";
+
+// src/schema.ts
 var MIGRATIONS = [
   `
   CREATE TABLE tasks (
@@ -252,34 +258,426 @@ var MIGRATIONS = [
   -- \u041A\u0430\u043D\u043E\u043D provenance \u0436\u0438\u0432\u0451\u0442 \u0432\u043E frontmatter decision Markdown. \u042D\u0442\u0430 JSON-\u043A\u043E\u043B\u043E\u043D\u043A\u0430 \u2014 \u0442\u043E\u043B\u044C\u043A\u043E
   -- rebuildable \u0438\u043D\u0434\u0435\u043A\u0441 \u0434\u043B\u044F \u043E\u0431\u0440\u0430\u0442\u043D\u043E\u0433\u043E \u0437\u0430\u043F\u0440\u043E\u0441\u0430 task -> decisions.
   ALTER TABLE decisions ADD COLUMN source_tasks TEXT NOT NULL DEFAULT '[]';
+  `,
+  `
+  CREATE TABLE repositories (
+    repo_id TEXT PRIMARY KEY CHECK(length(repo_id) = 32 AND repo_id NOT GLOB '*[^0-9a-f]*'),
+    purpose TEXT NOT NULL CHECK(length(trim(purpose)) > 0),
+    access TEXT NOT NULL CHECK(access IN ('context_only','implementation')),
+    remote TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE project (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    project_id TEXT NOT NULL UNIQUE CHECK(length(project_id) = 32 AND project_id NOT GLOB '*[^0-9a-f]*'),
+    primary_repo_id TEXT REFERENCES repositories(repo_id),
+    legacy_decisions_dir TEXT,
+    autonomy_enabled INTEGER NOT NULL DEFAULT 0 CHECK(autonomy_enabled IN (0,1)),
+    default_execution_mode TEXT NOT NULL DEFAULT 'manual' CHECK(default_execution_mode IN ('manual','orchestrated')),
+    created_at INTEGER NOT NULL
+  );
+  INSERT INTO project(singleton,project_id,created_at)
+    VALUES(1,lower(hex(randomblob(16))),CAST(strftime('%s','now') AS INTEGER));
+  CREATE TABLE repository_bindings (
+    common_dir TEXT PRIMARY KEY,
+    repo_id TEXT NOT NULL REFERENCES repositories(repo_id),
+    checkout_path TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('source','managed')),
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX idx_repository_bindings_repo ON repository_bindings(repo_id);
   `
 ];
+
+// src/project_store.ts
+function projectOf(db) {
+  const row = db.prepare("SELECT project_id,primary_repo_id,legacy_decisions_dir,autonomy_enabled,default_execution_mode,created_at FROM project WHERE singleton=1").get();
+  return { ...row, autonomy_enabled: row.autonomy_enabled === 1 };
+}
+function repositoriesOf(db) {
+  return db.prepare("SELECT * FROM repositories ORDER BY repo_id").all();
+}
+function bindingsOf(db) {
+  return db.prepare("SELECT * FROM repository_bindings ORDER BY common_dir").all();
+}
+var time = () => Math.floor(Date.now() / 1e3);
+var id = () => randomBytes(16).toString("hex");
+function git(cwd, args) {
+  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+}
+function canonicalCommonDir(cwd) {
+  try {
+    return realpathSync(git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]));
+  } catch {
+    throw new KddError(`not in a git repository: ${cwd}`);
+  }
+}
+function canonicalProjectPath(path) {
+  path = resolve(path);
+  if (existsSync(path)) return realpathSync(path);
+  const parent = dirname(resolve(path));
+  return parent === resolve(path) ? resolve(path) : join(canonicalProjectPath(parent), path.slice(dirname(path).length + 1));
+}
+function worktrees(common) {
+  return git(common, ["--git-dir", common, "worktree", "list", "--porcelain"]).split(/\r?\n\r?\n/).filter((block) => !/^bare$/m.test(block)).flatMap((block) => block.match(/^worktree (.+)$/m)?.[1] ?? []).filter((path) => {
+    try {
+      return existsSync(path) && canonicalCommonDir(path) === common && realpathSync(git(path, ["rev-parse", "--show-toplevel"])) === realpathSync(path);
+    } catch {
+      return false;
+    }
+  });
+}
+function withRegistry(home, fn) {
+  mkdirSync(home, { recursive: true });
+  const db = new Database(join(home, "registry.db"));
+  try {
+    db.pragma("busy_timeout = 5000");
+    const version = db.pragma("user_version", { simple: true });
+    if (version > 1) throw new KddError(`registry has unknown schema version ${version}`);
+    db.transaction(() => {
+      if (db.pragma("user_version", { simple: true }) === 0) {
+        db.exec(`CREATE TABLE bindings(common_dir TEXT PRIMARY KEY, db_path TEXT NOT NULL, project_id TEXT NOT NULL, repo_id TEXT NOT NULL); PRAGMA user_version = 1`);
+      }
+    }).immediate();
+    return fn(db);
+  } finally {
+    db.close();
+  }
+}
+function readonly(path, fn) {
+  if (!existsSync(path)) throw new KddError(`project store is missing: ${path}`);
+  const db = new Database(path, { readonly: true, fileMustExist: true });
+  try {
+    const version = db.pragma("user_version", { simple: true });
+    if (version < 1 || version > MIGRATIONS.length) throw new KddError(`unknown project schema version ${version}: ${path}`);
+    return fn(db, version);
+  } finally {
+    db.close();
+  }
+}
+function storePaths(home) {
+  if (!existsSync(home)) return [];
+  const paths = readdirSync(home, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => join(home, e.name, "kdd.db")).filter((path) => existsSync(path));
+  const catalog = join(home, "project-stores");
+  if (existsSync(catalog)) for (const name of readdirSync(catalog).filter((n) => n.endsWith(".json"))) {
+    const record = JSON.parse(readFileSync(join(catalog, name), "utf8"));
+    if (!/^[0-9a-f]{32}\.json$/.test(name) || record.project_id !== name.slice(0, -5) || typeof record.db_path !== "string" || resolve(record.db_path) !== record.db_path) throw new KddError("invalid project store catalog");
+    readonly(record.db_path, (db, version) => {
+      if (version < 13 || projectOf(db).project_id !== record.project_id) throw new KddError("project store catalog identity mismatch");
+    });
+    paths.push(record.db_path);
+  }
+  return [...new Set(paths.map((path) => resolve(path)))];
+}
+function catalogStore(db, dbPath, home) {
+  if (canonicalProjectPath(dirname(dirname(dbPath))) === canonicalProjectPath(home) && dbPath.endsWith("/kdd.db")) return;
+  const projectId = projectOf(db).project_id;
+  const dir = join(home, "project-stores");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `${projectId}.json`);
+  const record = JSON.stringify({ db_path: resolve(dbPath), project_id: projectId });
+  if (existsSync(path)) {
+    if (readFileSync(path, "utf8") !== record) throw new KddError("project store location conflict");
+    return;
+  }
+  const tmp = `${path}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, record, { mode: 384 });
+    renameSync(tmp, path);
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+}
+function meta(db, key) {
+  return db.prepare("SELECT value FROM meta WHERE key=?").get(key)?.value;
+}
+function discover(common, home) {
+  const matches = storePaths(home).flatMap((path) => readonly(path, (db, version) => {
+    if (version >= 13) {
+      const binding = bindingsOf(db).find((b) => b.common_dir === common);
+      if (binding) return [{ dbPath: path, projectPath: common, locator: {
+        common_dir: common,
+        db_path: resolve(path),
+        project_id: projectOf(db).project_id,
+        repo_id: binding.repo_id
+      } }];
+    }
+    const source = meta(db, "project_path");
+    try {
+      return source && existsSync(source) && canonicalCommonDir(source) === common ? [{ dbPath: path, projectPath: source }] : [];
+    } catch {
+      return [];
+    }
+  }));
+  if (matches.length > 1) throw new KddError(`conflicting project stores for ${common}`);
+  return matches[0];
+}
+function validateLocator(row) {
+  readonly(row.db_path, (db, version) => {
+    const binding = version >= 13 ? bindingsOf(db).find((b) => b.common_dir === row.common_dir) : void 0;
+    if (!binding || binding.repo_id !== row.repo_id || projectOf(db).project_id !== row.project_id) {
+      throw new KddError(`stale or mismatched registry binding for ${row.common_dir}; repeat explicit binding/rebind`);
+    }
+  });
+}
+function putLocator(registry, row) {
+  registry.prepare("INSERT INTO bindings(common_dir,db_path,project_id,repo_id) VALUES(@common_dir,@db_path,@project_id,@repo_id) ON CONFLICT(common_dir) DO UPDATE SET db_path=excluded.db_path,project_id=excluded.project_id,repo_id=excluded.repo_id").run(row);
+}
+function lookupProjectStore(commonDir, home) {
+  return withRegistry(home, (registry) => registry.transaction(() => {
+    const row = registry.prepare("SELECT * FROM bindings WHERE common_dir=?").get(commonDir);
+    if (row) {
+      validateLocator(row);
+      return { dbPath: row.db_path, projectPath: commonDir };
+    }
+    const found = discover(commonDir, home);
+    if (found?.locator) putLocator(registry, found.locator);
+    return found ? { dbPath: found.dbPath, projectPath: found.projectPath } : void 0;
+  }).immediate());
+}
+function initializeProjectStore(db, dbPath, home, projectPath, checkout = process.cwd(), options = {}) {
+  if (dbPath === ":memory:") return;
+  const savedSource = meta(db, "project_path");
+  const source = savedSource ?? projectPath;
+  if (!source || !existsSync(source)) return;
+  let common;
+  let paths;
+  try {
+    common = savedSource && (options.legacyUpgrade || projectOf(db).primary_repo_id) ? canonicalCommonDir(savedSource) : realpathSync(source);
+    paths = worktrees(common).map((path) => realpathSync(path));
+  } catch {
+    return;
+  }
+  let sourceCaller = false;
+  try {
+    if (canonicalCommonDir(checkout) === common) {
+      sourceCaller = true;
+      paths = [realpathSync(git(checkout, ["rev-parse", "--show-toplevel"])), ...paths];
+    }
+  } catch {
+  }
+  const toplevel = meta(db, "project_toplevel");
+  if (toplevel) {
+    try {
+      if (canonicalCommonDir(toplevel) === common) paths.unshift(realpathSync(toplevel));
+    } catch {
+    }
+  }
+  if (!paths.length) return;
+  withRegistry(home, (registry) => registry.transaction(() => {
+    catalogStore(db, dbPath, home);
+    const found = registry.prepare("SELECT * FROM bindings WHERE common_dir=?").get(common);
+    if (found && (found.project_id !== projectOf(db).project_id || resolve(found.db_path) !== resolve(dbPath))) {
+      throw new KddError(`registry binding conflict for ${common}`);
+    }
+    const other = discover(common, home);
+    if (other && resolve(other.dbPath) !== resolve(dbPath)) throw new KddError(`project store conflict for ${common}`);
+    db.transaction(() => {
+      const project = projectOf(db);
+      if (project.primary_repo_id) return;
+      let decisionsDir = project.legacy_decisions_dir;
+      if (!decisionsDir) {
+        const cachedPaths = db.prepare("SELECT path FROM decisions").all().map((row) => resolve(dirname(row.path)));
+        const cachedDirs = new Set(cachedPaths.map(canonicalProjectPath));
+        const cachedDefault = cachedPaths.some((dir) => basename(dir) === "decisions" && basename(dirname(dir)) === ".planning" && paths.includes(canonicalProjectPath(dirname(dirname(dir)))));
+        if (cachedDirs.size === 1 && !cachedDefault) decisionsDir = [...cachedDirs][0];
+        if (!decisionsDir && sourceCaller && options.configuredDecisions) decisionsDir = canonicalProjectPath(options.configuredDecisions);
+      }
+      const repoId = id();
+      db.prepare("INSERT INTO repositories VALUES(?,?,?,NULL,?)").run(repoId, "primary", "implementation", time());
+      db.prepare("INSERT INTO repository_bindings VALUES(?,?,?,?,?)").run(common, repoId, paths[0], "source", time());
+      db.prepare("UPDATE project SET primary_repo_id=?,legacy_decisions_dir=? WHERE singleton=1").run(repoId, decisionsDir ?? join(paths[0], ".planning", "decisions"));
+    }).immediate();
+    const binding = bindingsOf(db).find((b) => b.common_dir === common);
+    if (binding) putLocator(registry, { common_dir: common, db_path: resolve(dbPath), project_id: projectOf(db).project_id, repo_id: binding.repo_id });
+  }).immediate());
+}
+function listProjectCheckouts(home) {
+  return [...new Set(storePaths(home).flatMap((path) => readonly(path, (db, version) => {
+    const bindings = version >= 13 ? bindingsOf(db) : [];
+    const commons = version >= 13 ? bindings.map((b) => b.common_dir) : [meta(db, "project_path")].filter((p) => !!p);
+    const checkoutPaths = bindings.flatMap((b) => {
+      try {
+        return canonicalCommonDir(b.checkout_path) === b.common_dir ? [realpathSync(b.checkout_path)] : [];
+      } catch {
+        return [];
+      }
+    });
+    return [...checkoutPaths, ...commons.filter((p) => existsSync(p)).flatMap((common) => worktrees(realpathSync(common)))];
+  })))];
+}
+function audit(db, actor, action, detail) {
+  db.prepare("INSERT INTO events(task_id,actor_type,actor_id,action,detail,created_at) VALUES(NULL,?,?,?,?,?)").run(actor.type, actor.type === "ai" ? actor.id ?? null : null, action, JSON.stringify(detail), time());
+}
+function assertAvailable(registry, common, home, dbPath, projectId, repoId) {
+  const row = registry.prepare("SELECT * FROM bindings WHERE common_dir=?").get(common);
+  if (row && (row.project_id !== projectId || resolve(row.db_path) !== resolve(dbPath) || repoId && row.repo_id !== repoId)) {
+    throw new KddError(`repository binding conflict for ${common}`);
+  }
+  const found = discover(common, home);
+  if (found && (resolve(found.dbPath) !== resolve(dbPath) || repoId && found.locator && found.locator.repo_id !== repoId)) {
+    throw new KddError(`project store conflict for ${common}`);
+  }
+}
+function checkoutBinding(cwd, repoId, kind) {
+  return {
+    common_dir: canonicalCommonDir(cwd),
+    repo_id: repoId,
+    checkout_path: realpathSync(git(cwd, ["rev-parse", "--show-toplevel"])),
+    kind,
+    created_at: time()
+  };
+}
+function insertBinding(db, binding) {
+  db.prepare("INSERT INTO repository_bindings VALUES(@common_dir,@repo_id,@checkout_path,@kind,@created_at)").run(binding);
+}
+function locateBinding(registry, db, dbPath, binding) {
+  putLocator(registry, {
+    common_dir: binding.common_dir,
+    db_path: resolve(dbPath),
+    project_id: projectOf(db).project_id,
+    repo_id: binding.repo_id
+  });
+}
+function bindRepository(db, dbPath, home, input, actor) {
+  if (!/^[0-9a-f]{32}$/.test(input.repoId) || !repositoriesOf(db).some((r) => r.repo_id === input.repoId)) throw new KddError("unknown repository id");
+  if (!["source", "managed"].includes(input.kind)) throw new KddError("invalid binding kind");
+  const binding = checkoutBinding(input.cwd, input.repoId, input.kind);
+  return withRegistry(home, (registry) => registry.transaction(() => {
+    assertAvailable(registry, binding.common_dir, home, dbPath, projectOf(db).project_id, input.repoId);
+    const existing = bindingsOf(db).find((b) => b.common_dir === binding.common_dir);
+    if (existing && (existing.repo_id !== input.repoId || existing.kind !== input.kind)) throw new KddError("repository binding conflict");
+    if (input.kind === "source" && bindingsOf(db).some((b) => b.repo_id === input.repoId && b.kind === "source" && b.common_dir !== binding.common_dir)) {
+      throw new KddError("repository already has a source; use rebind to move it");
+    }
+    const result = existing ?? db.transaction(() => {
+      insertBinding(db, binding);
+      audit(db, actor, "repository_bound", binding);
+      return binding;
+    }).immediate();
+    locateBinding(registry, db, dbPath, result);
+    return result;
+  }).immediate());
+}
+function addRepository(db, dbPath, home, input, actor) {
+  if (!input.purpose?.trim()) throw new KddError("repository purpose must not be empty");
+  if (!["context_only", "implementation"].includes(input.access)) throw new KddError("invalid repository access");
+  if (!projectOf(db).primary_repo_id) throw new KddError("restore the primary source before adding a repository");
+  const binding = checkoutBinding(input.cwd, id(), "source");
+  return withRegistry(home, (registry) => registry.transaction(() => {
+    assertAvailable(registry, binding.common_dir, home, dbPath, projectOf(db).project_id);
+    const existing = bindingsOf(db).find((b) => b.common_dir === binding.common_dir);
+    const repository = existing ? repositoriesOf(db).find((r) => r.repo_id === existing.repo_id) : {
+      repo_id: binding.repo_id,
+      purpose: input.purpose.trim(),
+      access: input.access,
+      remote: null,
+      created_at: time()
+    };
+    if (existing && (repository.purpose !== input.purpose.trim() || repository.access !== input.access)) throw new KddError("repository binding conflict");
+    if (!existing) db.transaction(() => {
+      db.prepare("INSERT INTO repositories VALUES(@repo_id,@purpose,@access,@remote,@created_at)").run(repository);
+      insertBinding(db, binding);
+      audit(db, actor, "repository_added", { repository, binding });
+    }).immediate();
+    locateBinding(registry, db, dbPath, existing ?? binding);
+    return { repository, binding: existing ?? binding };
+  }).immediate());
+}
+function rebindRepository(db, dbPath, home, input, actor) {
+  const oldPath = canonicalProjectPath(input.fromCommonDir);
+  const newCommon = canonicalCommonDir(input.cwd);
+  return withRegistry(home, (registry) => registry.transaction(() => {
+    const project = projectOf(db);
+    let previous = bindingsOf(db).find((b) => b.common_dir === oldPath);
+    const existing = bindingsOf(db).find((b) => b.common_dir === newCommon);
+    const history = db.prepare("SELECT detail FROM events WHERE action='repository_rebound' AND json_valid(detail) ORDER BY id DESC").all();
+    const repeated = !previous && existing && history.some((e) => {
+      const change = JSON.parse(e.detail);
+      return change.from_common_dir === oldPath && change.binding.common_dir === newCommon && change.binding.repo_id === existing.repo_id;
+    });
+    if (!previous && !repeated && (project.primary_repo_id || canonicalProjectPath(meta(db, "project_path") ?? "") !== oldPath)) throw new KddError("unknown original source binding");
+    const oldRow = registry.prepare("SELECT * FROM bindings WHERE common_dir=?").get(oldPath);
+    if (oldRow && (oldRow.project_id !== project.project_id || resolve(oldRow.db_path) !== resolve(dbPath))) throw new KddError("repository binding conflict");
+    const repoId = previous?.repo_id ?? existing?.repo_id ?? id();
+    assertAvailable(registry, newCommon, home, dbPath, project.project_id, repoId);
+    if (existing && !repeated && previous?.common_dir !== existing.common_dir) throw new KddError("repository binding conflict");
+    const binding = repeated ? existing : checkoutBinding(input.cwd, repoId, previous?.kind ?? "source");
+    catalogStore(db, dbPath, home);
+    if (!repeated && oldPath !== newCommon) db.transaction(() => {
+      if (!previous) {
+        db.prepare("INSERT INTO repositories VALUES(?,?,?,NULL,?)").run(repoId, "primary", "implementation", time());
+        db.prepare("UPDATE project SET primary_repo_id=? WHERE singleton=1").run(repoId);
+      } else db.prepare("DELETE FROM repository_bindings WHERE common_dir=?").run(oldPath);
+      insertBinding(db, binding);
+      if (previous?.kind === "source" && project.primary_repo_id === repoId || !project.primary_repo_id) {
+        const oldDefault = previous ? join(previous.checkout_path, ".planning", "decisions") : null;
+        if (!project.legacy_decisions_dir || project.legacy_decisions_dir === oldDefault) {
+          db.prepare("UPDATE project SET legacy_decisions_dir=? WHERE singleton=1").run(join(binding.checkout_path, ".planning", "decisions"));
+        }
+        db.prepare("INSERT INTO meta(key,value) VALUES('project_path',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(newCommon);
+        if (meta(db, "project_toplevel")) db.prepare("UPDATE meta SET value=? WHERE key='project_toplevel'").run(binding.checkout_path);
+      }
+      audit(db, actor, "repository_rebound", { from_common_dir: oldPath, binding });
+    }).immediate();
+    if (oldPath !== newCommon) registry.prepare("DELETE FROM bindings WHERE common_dir=?").run(oldPath);
+    locateBinding(registry, db, dbPath, binding);
+    return binding;
+  }).immediate());
+}
+function canSyncLegacyDecisions(db, decisionsDir) {
+  const project = projectOf(db);
+  if (!project.primary_repo_id && db.memory) return true;
+  const bindings = bindingsOf(db);
+  const source = bindings.find((b) => b.repo_id === project.primary_repo_id && b.kind === "source");
+  if (project.primary_repo_id && (!source || !existsSync(source.common_dir))) return false;
+  const path = canonicalProjectPath(decisionsDir);
+  if (project.legacy_decisions_dir && (!source || resolve(project.legacy_decisions_dir) !== join(source.checkout_path, ".planning", "decisions"))) {
+    return path === resolve(project.legacy_decisions_dir);
+  }
+  if (!project.primary_repo_id) return false;
+  let ancestor = path;
+  while (!existsSync(ancestor) && dirname(ancestor) !== ancestor) ancestor = dirname(ancestor);
+  try {
+    const common = canonicalCommonDir(ancestor);
+    return bindings.some((b) => b.repo_id === project.primary_repo_id && b.kind === "source" && b.common_dir === common);
+  } catch {
+    return false;
+  }
+}
+function assertLegacyDecisionSource(db, decisionsDir) {
+  if (!canSyncLegacyDecisions(db, decisionsDir)) throw new KddError("legacy decisions require the primary project source; foreign repositories may read the shared index");
+}
+
+// src/db.ts
+import { homedir } from "os";
+var now = () => Math.floor(Date.now() / 1e3);
 function backupBeforeMigrate(db, dbPath, from) {
   const backup = `${dbPath}.v${from}.bak`;
   const tmp = `${backup}.${process.pid}.tmp`;
   const q = (p) => p.replace(/'/g, "''");
   try {
-    rmSync(tmp, { force: true });
+    rmSync2(tmp, { force: true });
     db.exec(`VACUUM INTO '${q(tmp)}'`);
-    const copy = new Database(tmp, { readonly: true });
+    const copy = new Database2(tmp, { readonly: true });
     const copied = copy.pragma("user_version", { simple: true });
     copy.close();
     if (copied !== from) {
-      rmSync(tmp, { force: true });
+      rmSync2(tmp, { force: true });
       return;
     }
-    renameSync(tmp, backup);
+    renameSync2(tmp, backup);
   } catch (e) {
-    rmSync(tmp, { force: true });
+    rmSync2(tmp, { force: true });
     db.close();
     throw new KddError(
       `cannot back up the board before migrating it to v${MIGRATIONS.length}: ${e instanceof Error ? e.message : String(e)} (wanted ${backup})`
     );
   }
 }
-function openDb(dbPath, projectPath) {
-  if (dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true });
-  const db = new Database(dbPath);
+function openDb(dbPath, projectPath, checkout) {
+  if (dbPath !== ":memory:") mkdirSync2(dirname2(dbPath), { recursive: true });
+  const db = new Database2(dbPath);
   db.pragma("journal_mode = WAL");
   db.pragma("busy_timeout = 5000");
   db.pragma("foreign_keys = ON");
@@ -295,14 +693,34 @@ function openDb(dbPath, projectPath) {
   }
   for (let i = from; i < MIGRATIONS.length; i++) {
     db.transaction(() => {
+      const current = db.pragma("user_version", { simple: true });
+      if (current > MIGRATIONS.length) throw new KddError("board schema changed to an unknown version during migration");
+      if (current > i) return;
       db.exec(MIGRATIONS[i]);
       db.pragma(`user_version = ${i + 1}`);
-    })();
+    }).immediate();
   }
   if (from === 0 && projectPath) {
     db.prepare(`INSERT OR IGNORE INTO meta (key, value) VALUES ('project_path', ?)`).run(projectPath);
   }
-  return db;
+  const configuredDecisions = process.env.KDD_DECISIONS_DIR;
+  if (from === 0 && configuredDecisions) {
+    db.transaction(() => db.prepare("UPDATE project SET legacy_decisions_dir=? WHERE singleton=1").run(canonicalProjectPath(configuredDecisions)))();
+  }
+  try {
+    initializeProjectStore(
+      db,
+      dbPath,
+      process.env.KDD_HOME ?? join2(homedir(), ".kdd"),
+      projectPath,
+      checkout,
+      { legacyUpgrade: from > 0 && from < 13, configuredDecisions: from < 13 ? configuredDecisions : void 0 }
+    );
+    return db;
+  } catch (e) {
+    db.close();
+    throw e;
+  }
 }
 function checkpointWal(db) {
   try {
@@ -327,6 +745,15 @@ function projectToplevelOf(db) {
   return db.prepare(`SELECT value FROM meta WHERE key = 'project_toplevel'`).get()?.value ?? null;
 }
 function setProjectToplevel(db, toplevel) {
+  const primary = projectOf(db).primary_repo_id;
+  if (primary) {
+    try {
+      const common = canonicalCommonDir(toplevel);
+      if (!bindingsOf(db).some((b) => b.repo_id === primary && b.kind === "source" && b.common_dir === common)) return;
+    } catch {
+      return;
+    }
+  }
   db.transaction(() => {
     db.prepare(
       `INSERT INTO meta (key, value) VALUES ('project_toplevel', ?)
@@ -336,19 +763,20 @@ function setProjectToplevel(db, toplevel) {
 }
 
 // src/paths.ts
-import { execFileSync } from "child_process";
+import { execFileSync as execFileSync2 } from "child_process";
 import { createHash } from "crypto";
-import { existsSync, readdirSync } from "fs";
-import { homedir } from "os";
-import { join, resolve } from "path";
-import Database2 from "better-sqlite3";
-var kddHome = () => process.env.KDD_HOME ?? join(homedir(), ".kdd");
-var storeIdentity = () => createHash("sha256").update(resolve(kddHome())).update("\0").update(process.env.KDD_DB ? resolve(process.env.KDD_DB) : "").digest("hex").slice(0, 16);
+import { existsSync as existsSync2, readdirSync as readdirSync2 } from "fs";
+import { homedir as homedir2 } from "os";
+import { join as join3, resolve as resolve2 } from "path";
+import Database3 from "better-sqlite3";
+import { realpathSync as realpathSync2 } from "fs";
+var kddHome = () => process.env.KDD_HOME ?? join3(homedir2(), ".kdd");
+var storeIdentity = () => createHash("sha256").update(resolve2(kddHome())).update("\0").update(process.env.KDD_DB ? resolve2(process.env.KDD_DB) : "").digest("hex").slice(0, 16);
 function resolveDbPath(cwd = process.cwd()) {
   if (process.env.KDD_DB) return { dbPath: process.env.KDD_DB, projectPath: cwd };
   let common;
   try {
-    common = execFileSync(
+    common = execFileSync2(
       "git",
       ["rev-parse", "--path-format=absolute", "--git-common-dir"],
       { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
@@ -356,14 +784,16 @@ function resolveDbPath(cwd = process.cwd()) {
   } catch {
     throw new KddError("not in a git repository (kdd resolves its store via git)");
   }
+  const registered = lookupProjectStore(realpathSync2(common), kddHome());
+  if (registered) return registered;
   const hash = createHash("sha256").update(common).digest("hex").slice(0, 16);
-  return { dbPath: join(kddHome(), hash, "kdd.db"), projectPath: common };
+  return { dbPath: join3(kddHome(), hash, "kdd.db"), projectPath: common };
 }
 function resolveDecisionsDir(cwd = process.cwd()) {
   if (process.env.KDD_DECISIONS_DIR) return process.env.KDD_DECISIONS_DIR;
   let top;
   try {
-    top = execFileSync(
+    top = execFileSync2(
       "git",
       ["rev-parse", "--show-toplevel"],
       { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
@@ -371,12 +801,12 @@ function resolveDecisionsDir(cwd = process.cwd()) {
   } catch {
     throw new KddError("not in a git repository (kdd resolves .planning via git)");
   }
-  return join(top, ".planning", "decisions");
+  return join3(top, ".planning", "decisions");
 }
 function resolveToplevel(cwd = process.cwd()) {
   if (process.env.KDD_TOPLEVEL) return process.env.KDD_TOPLEVEL;
   try {
-    return execFileSync(
+    return execFileSync2(
       "git",
       ["rev-parse", "--show-toplevel"],
       { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
@@ -387,23 +817,23 @@ function resolveToplevel(cwd = process.cwd()) {
 }
 function listProjects() {
   const home = kddHome();
-  if (!existsSync(home)) return [];
+  if (!existsSync2(home)) return [];
   const out = [];
-  for (const entry of readdirSync(home, { withFileTypes: true })) {
+  for (const entry of readdirSync2(home, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
-    const dbPath = join(home, entry.name, "kdd.db");
-    if (!existsSync(dbPath)) continue;
+    const dbPath = join3(home, entry.name, "kdd.db");
+    if (!existsSync2(dbPath)) continue;
     try {
-      const db = new Database2(dbPath, { readonly: true });
+      const db = new Database3(dbPath, { readonly: true });
       const rows = db.prepare(
         `SELECT key, value FROM meta WHERE key IN ('project_path','autotick_enabled')`
       ).all();
       db.close();
-      const meta = new Map(rows.map((r) => [r.key, r.value]));
+      const meta2 = new Map(rows.map((r) => [r.key, r.value]));
       out.push({
         dbPath,
-        projectPath: meta.get("project_path") ?? "(unknown)",
-        autoTickEnabled: meta.get("autotick_enabled") === "1"
+        projectPath: meta2.get("project_path") ?? "(unknown)",
+        autoTickEnabled: meta2.get("autotick_enabled") === "1"
       });
     } catch {
     }
@@ -480,7 +910,7 @@ function checkMove(from, to, actor, reason, openCriteria2 = 0, claimedBy = null,
 }
 
 // src/ops.ts
-import { execFileSync as execFileSync2 } from "child_process";
+import { execFileSync as execFileSync3 } from "child_process";
 
 // src/agent_events.ts
 function parseClaudeStreamLine(line) {
@@ -640,9 +1070,9 @@ function headOf(detail) {
 }
 
 // src/tracks.ts
-function mustGetTrack(db, id) {
-  const t = db.prepare(`SELECT * FROM tracks WHERE id = ?`).get(id);
-  if (!t) throw new KddError(`track #${id} not found`);
+function mustGetTrack(db, id2) {
+  const t = db.prepare(`SELECT * FROM tracks WHERE id = ?`).get(id2);
+  if (!t) throw new KddError(`track #${id2} not found`);
   return t;
 }
 function createTrack(db, input) {
@@ -658,26 +1088,26 @@ function createTrack(db, input) {
     throw e;
   }
 }
-function editTrack(db, id, patch) {
+function editTrack(db, id2, patch) {
   if (patch.status && patch.status !== "active" && patch.status !== "done") {
     throw new KddError(`invalid status '${patch.status}'; allowed: active, done`);
   }
   const fields = Object.keys(patch).filter((k) => patch[k] !== void 0);
   if (fields.length === 0) throw new KddError("nothing to edit");
-  mustGetTrack(db, id);
+  mustGetTrack(db, id2);
   try {
-    db.prepare(`UPDATE tracks SET ${fields.map((f) => `${f} = ?`).join(", ")} WHERE id = ?`).run(...fields.map((f) => patch[f]), id);
+    db.prepare(`UPDATE tracks SET ${fields.map((f) => `${f} = ?`).join(", ")} WHERE id = ?`).run(...fields.map((f) => patch[f]), id2);
   } catch (e) {
     if (String(e).includes("UNIQUE")) throw new KddError(`track '${patch.name}' already exists`);
     throw e;
   }
-  return mustGetTrack(db, id);
+  return mustGetTrack(db, id2);
 }
-function deleteTrack(db, id) {
-  mustGetTrack(db, id);
+function deleteTrack(db, id2) {
+  mustGetTrack(db, id2);
   db.transaction(() => {
-    db.prepare(`UPDATE tasks SET track_id = NULL WHERE track_id = ?`).run(id);
-    db.prepare(`DELETE FROM tracks WHERE id = ?`).run(id);
+    db.prepare(`UPDATE tasks SET track_id = NULL WHERE track_id = ?`).run(id2);
+    db.prepare(`DELETE FROM tracks WHERE id = ?`).run(id2);
   })();
 }
 function listTracks(db, opts = {}) {
@@ -713,9 +1143,9 @@ function appendEvent(db, taskId, actor, action, detail, opts) {
 function appendTaskMutationEvent(db, taskId, actor, action, detail, opts) {
   const session = actor.type === "ai" ? actor.manualSession : void 0;
   if (!session) return appendEvent(db, taskId, actor, action, detail, opts);
-  const git2 = (args) => {
+  const git3 = (args) => {
     try {
-      return execFileSync2("git", args, {
+      return execFileSync3("git", args, {
         cwd: session.cwd,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"]
@@ -724,9 +1154,9 @@ function appendTaskMutationEvent(db, taskId, actor, action, detail, opts) {
       return void 0;
     }
   };
-  const worktree = git2(["rev-parse", "--show-toplevel"]);
-  const branch = worktree ? git2(["symbolic-ref", "--quiet", "--short", "HEAD"]) : void 0;
-  const head = worktree ? git2(["rev-parse", "--verify", "HEAD"]) : void 0;
+  const worktree = git3(["rev-parse", "--show-toplevel"]);
+  const branch = worktree ? git3(["symbolic-ref", "--quiet", "--short", "HEAD"]) : void 0;
+  const head = worktree ? git3(["rev-parse", "--verify", "HEAD"]) : void 0;
   return appendEvent(db, taskId, actor, action, {
     ...detail ?? {},
     manual_provenance: {
@@ -738,9 +1168,9 @@ function appendTaskMutationEvent(db, taskId, actor, action, detail, opts) {
     }
   }, opts);
 }
-function mustGetTask(db, id) {
-  const t = db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id);
-  if (!t) throw new KddError(`task #${id} not found`);
+function mustGetTask(db, id2) {
+  const t = db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id2);
+  if (!t) throw new KddError(`task #${id2} not found`);
   return t;
 }
 function checkPriority(p) {
@@ -780,38 +1210,38 @@ function addTask(db, input, actor) {
       ts,
       ts
     );
-    const id = Number(r.lastInsertRowid);
+    const id2 = Number(r.lastInsertRowid);
     const ins = db.prepare(
       `INSERT INTO criteria (task_id, text, position, created_at) VALUES (?, ?, ?, ?)`
     );
-    (input.criteria ?? []).forEach((text, i) => ins.run(id, text, i, ts));
-    appendTaskMutationEvent(db, id, actor, "created");
-    return mustGetTask(db, id);
+    (input.criteria ?? []).forEach((text, i) => ins.run(id2, text, i, ts));
+    appendTaskMutationEvent(db, id2, actor, "created");
+    return mustGetTask(db, id2);
   })();
 }
-function editTask(db, id, patch, actor) {
+function editTask(db, id2, patch, actor) {
   if (patch.priority !== void 0) checkPriority(patch.priority);
   if (patch.kind !== void 0) checkKind(patch.kind);
   if (patch.track_id != null) mustGetTrack(db, patch.track_id);
   const fields = Object.keys(patch).filter((k) => patch[k] !== void 0);
   if (fields.length === 0) throw new KddError("nothing to edit");
   return db.transaction(() => {
-    mustGetTask(db, id);
+    mustGetTask(db, id2);
     const sets = fields.map((f) => `${f} = ?`).join(", ");
-    db.prepare(`UPDATE tasks SET ${sets}, updated_at = ? WHERE id = ?`).run(...fields.map((f) => patch[f]), now(), id);
-    appendTaskMutationEvent(db, id, actor, "edited", { fields });
-    return mustGetTask(db, id);
+    db.prepare(`UPDATE tasks SET ${sets}, updated_at = ? WHERE id = ?`).run(...fields.map((f) => patch[f]), now(), id2);
+    appendTaskMutationEvent(db, id2, actor, "edited", { fields });
+    return mustGetTask(db, id2);
   })();
 }
-function commentTask(db, id, body, actor) {
+function commentTask(db, id2, body, actor) {
   if (!body.trim()) throw new KddError("comment must not be empty");
   const text = actor.type === "ai" ? redact(body) : body;
   return db.transaction(() => {
-    mustGetTask(db, id);
+    mustGetTask(db, id2);
     const r = db.prepare(
       `INSERT INTO comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)`
-    ).run(id, authorOf(actor), text, now());
-    appendTaskMutationEvent(db, id, actor, "commented");
+    ).run(id2, authorOf(actor), text, now());
+    appendTaskMutationEvent(db, id2, actor, "commented");
     return db.prepare(`SELECT * FROM comments WHERE id = ?`).get(Number(r.lastInsertRowid));
   })();
 }
@@ -839,12 +1269,12 @@ function nextPosition(db, status) {
      FROM tasks WHERE status = ? AND archived_at IS NULL`
   ).get(status).p;
 }
-function moveTask(db, id, to, actor, reason) {
+function moveTask(db, id2, to, actor, reason) {
   checkStatus(to);
   return db.transaction(() => {
-    const t = mustGetTask(db, id);
-    const submitter = t.status === "review" ? submittedBy(db, id) : null;
-    const res = checkMove(t.status, to, actor, reason, openCriteria(db, id), t.claimed_by, submitter);
+    const t = mustGetTask(db, id2);
+    const submitter = t.status === "review" ? submittedBy(db, id2) : null;
+    const res = checkMove(t.status, to, actor, reason, openCriteria(db, id2), t.claimed_by, submitter);
     if (!res.ok) throw new KddError(res.error);
     const self = t.status === "review" && to === "done" && submitter === authorOf(actor);
     const leaving = t.status === "in_progress" && to !== "in_progress";
@@ -852,8 +1282,8 @@ function moveTask(db, id, to, actor, reason) {
     db.prepare(
       `UPDATE tasks SET status = ?, position = ?, updated_at = ?${leaving ? ", claimed_by = NULL, claim_expires = NULL" : ""}${reset ? ", failed_attempts = 0" : ""}
        WHERE id = ?`
-    ).run(to, nextPosition(db, to), now(), id);
-    appendTaskMutationEvent(db, id, actor, "moved", {
+    ).run(to, nextPosition(db, to), now(), id2);
+    appendTaskMutationEvent(db, id2, actor, "moved", {
       from: t.status,
       to,
       ...reason ? { reason } : {},
@@ -862,27 +1292,27 @@ function moveTask(db, id, to, actor, reason) {
     if (reason) {
       db.prepare(
         `INSERT INTO comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)`
-      ).run(id, authorOf(actor), reason, now());
+      ).run(id2, authorOf(actor), reason, now());
     }
-    return mustGetTask(db, id);
+    return mustGetTask(db, id2);
   })();
 }
-function placeTask(db, id, to, orderedIds, actor) {
+function placeTask(db, id2, to, orderedIds, actor) {
   checkStatus(to);
   return db.transaction(() => {
-    const t = mustGetTask(db, id);
+    const t = mustGetTask(db, id2);
     if (t.status !== to) {
       const res = checkMove(
         t.status,
         to,
         actor,
         void 0,
-        openCriteria(db, id),
+        openCriteria(db, id2),
         t.claimed_by,
-        t.status === "review" ? submittedBy(db, id) : null
+        t.status === "review" ? submittedBy(db, id2) : null
       );
       if (!res.ok) throw new KddError(res.error);
-      appendTaskMutationEvent(db, id, actor, "moved", { from: t.status, to });
+      appendTaskMutationEvent(db, id2, actor, "moved", { from: t.status, to });
     }
     const setPos = db.prepare(`UPDATE tasks SET position = ? WHERE id = ?`);
     orderedIds.forEach((tid, i) => setPos.run(i, tid));
@@ -891,25 +1321,25 @@ function placeTask(db, id, to, orderedIds, actor) {
     db.prepare(
       `UPDATE tasks SET status = ?, updated_at = ?${leaving ? ", claimed_by = NULL, claim_expires = NULL" : ""}${reset ? ", failed_attempts = 0" : ""}
        WHERE id = ?`
-    ).run(to, now(), id);
-    return mustGetTask(db, id);
+    ).run(to, now(), id2);
+    return mustGetTask(db, id2);
   })();
 }
-function blockTask(db, id, reason, actor) {
+function blockTask(db, id2, reason, actor) {
   if (!reason.trim()) throw new KddError("block reason must not be empty");
   return db.transaction(() => {
-    mustGetTask(db, id);
-    db.prepare(`UPDATE tasks SET blocked = 1, block_reason = ?, updated_at = ? WHERE id = ?`).run(reason, now(), id);
-    appendTaskMutationEvent(db, id, actor, "blocked", { reason });
-    return mustGetTask(db, id);
+    mustGetTask(db, id2);
+    db.prepare(`UPDATE tasks SET blocked = 1, block_reason = ?, updated_at = ? WHERE id = ?`).run(reason, now(), id2);
+    appendTaskMutationEvent(db, id2, actor, "blocked", { reason });
+    return mustGetTask(db, id2);
   })();
 }
-function unblockTask(db, id, actor) {
+function unblockTask(db, id2, actor) {
   return db.transaction(() => {
-    mustGetTask(db, id);
-    db.prepare(`UPDATE tasks SET blocked = 0, block_reason = NULL, updated_at = ? WHERE id = ?`).run(now(), id);
-    appendTaskMutationEvent(db, id, actor, "unblocked");
-    return mustGetTask(db, id);
+    mustGetTask(db, id2);
+    db.prepare(`UPDATE tasks SET blocked = 0, block_reason = NULL, updated_at = ? WHERE id = ?`).run(now(), id2);
+    appendTaskMutationEvent(db, id2, actor, "unblocked");
+    return mustGetTask(db, id2);
   })();
 }
 function linkTasks(db, fromId, toId, kind, actor) {
@@ -922,20 +1352,20 @@ function linkTasks(db, fromId, toId, kind, actor) {
     if (r.changes > 0) appendTaskMutationEvent(db, fromId, actor, "linked", { to: toId, kind });
   })();
 }
-function archiveTask(db, id, actor) {
+function archiveTask(db, id2, actor) {
   return db.transaction(() => {
-    mustGetTask(db, id);
-    db.prepare(`UPDATE tasks SET archived_at = ?, updated_at = ? WHERE id = ?`).run(now(), now(), id);
-    appendTaskMutationEvent(db, id, actor, "archived");
-    return mustGetTask(db, id);
+    mustGetTask(db, id2);
+    db.prepare(`UPDATE tasks SET archived_at = ?, updated_at = ? WHERE id = ?`).run(now(), now(), id2);
+    appendTaskMutationEvent(db, id2, actor, "archived");
+    return mustGetTask(db, id2);
   })();
 }
-function unarchiveTask(db, id, actor) {
+function unarchiveTask(db, id2, actor) {
   return db.transaction(() => {
-    mustGetTask(db, id);
-    db.prepare(`UPDATE tasks SET archived_at = NULL, updated_at = ? WHERE id = ?`).run(now(), id);
-    appendTaskMutationEvent(db, id, actor, "unarchived");
-    return mustGetTask(db, id);
+    mustGetTask(db, id2);
+    db.prepare(`UPDATE tasks SET archived_at = NULL, updated_at = ? WHERE id = ?`).run(now(), id2);
+    appendTaskMutationEvent(db, id2, actor, "unarchived");
+    return mustGetTask(db, id2);
   })();
 }
 
@@ -945,9 +1375,9 @@ function listCriteria(db, taskId) {
     `SELECT * FROM criteria WHERE task_id = ? ORDER BY position, id`
   ).all(taskId);
 }
-function mustGetCriterion(db, taskId, id) {
-  const c = db.prepare(`SELECT * FROM criteria WHERE id = ? AND task_id = ?`).get(id, taskId);
-  if (!c) throw new KddError(`criterion #${id} not found on task #${taskId}`);
+function mustGetCriterion(db, taskId, id2) {
+  const c = db.prepare(`SELECT * FROM criteria WHERE id = ? AND task_id = ?`).get(id2, taskId);
+  if (!c) throw new KddError(`criterion #${id2} not found on task #${taskId}`);
   return c;
 }
 var touchTask = (db, taskId) => {
@@ -963,15 +1393,15 @@ function addCriterion(db, taskId, text, actor) {
     const r = db.prepare(
       `INSERT INTO criteria (task_id, text, position, created_at) VALUES (?, ?, ?, ?)`
     ).run(taskId, text, pos, now());
-    const id = Number(r.lastInsertRowid);
-    appendTaskMutationEvent(db, taskId, actor, "criterion_added", { id, text });
+    const id2 = Number(r.lastInsertRowid);
+    appendTaskMutationEvent(db, taskId, actor, "criterion_added", { id: id2, text });
     touchTask(db, taskId);
-    return mustGetCriterion(db, taskId, id);
+    return mustGetCriterion(db, taskId, id2);
   })();
 }
-function setCriterionChecked(db, taskId, id, checked, actor, evidence) {
+function setCriterionChecked(db, taskId, id2, checked, actor, evidence) {
   return db.transaction(() => {
-    const c = mustGetCriterion(db, taskId, id);
+    const c = mustGetCriterion(db, taskId, id2);
     const proof = evidence?.trim();
     if (c.checked_at !== null === checked && (!checked || !proof)) return c;
     const stored = proof ? actor.type === "ai" ? redact(proof) : proof : null;
@@ -981,24 +1411,24 @@ function setCriterionChecked(db, taskId, id, checked, actor, evidence) {
       checked ? now() : null,
       checked ? stored : null,
       checked ? authorOf(actor) : null,
-      id
+      id2
     );
     appendTaskMutationEvent(
       db,
       taskId,
       actor,
       checked ? "criterion_checked" : "criterion_unchecked",
-      { id, text: c.text, ...checked && stored ? { evidence: stored } : {} }
+      { id: id2, text: c.text, ...checked && stored ? { evidence: stored } : {} }
     );
     touchTask(db, taskId);
-    return mustGetCriterion(db, taskId, id);
+    return mustGetCriterion(db, taskId, id2);
   })();
 }
-function removeCriterion(db, taskId, id, actor) {
+function removeCriterion(db, taskId, id2, actor) {
   db.transaction(() => {
-    const c = mustGetCriterion(db, taskId, id);
-    db.prepare(`DELETE FROM criteria WHERE id = ?`).run(id);
-    appendTaskMutationEvent(db, taskId, actor, "criterion_removed", { id, text: c.text });
+    const c = mustGetCriterion(db, taskId, id2);
+    db.prepare(`DELETE FROM criteria WHERE id = ?`).run(id2);
+    appendTaskMutationEvent(db, taskId, actor, "criterion_removed", { id: id2, text: c.text });
     touchTask(db, taskId);
   })();
 }
@@ -1006,15 +1436,15 @@ function removeCriterion(db, taskId, id, actor) {
 // src/files.ts
 import { createHash as createHash2 } from "crypto";
 import {
-  existsSync as existsSync2,
-  mkdirSync as mkdirSync2,
-  readFileSync,
-  renameSync as renameSync2,
-  rmSync as rmSync2,
+  existsSync as existsSync3,
+  mkdirSync as mkdirSync3,
+  readFileSync as readFileSync2,
+  renameSync as renameSync3,
+  rmSync as rmSync3,
   statSync,
-  writeFileSync
+  writeFileSync as writeFileSync2
 } from "fs";
-import { basename, dirname as dirname2, extname, join as join2 } from "path";
+import { basename as basename2, dirname as dirname3, extname, join as join4 } from "path";
 var MIME = {
   png: "image/png",
   jpg: "image/jpeg",
@@ -1046,14 +1476,14 @@ var INLINE = /* @__PURE__ */ new Set([
 var isInlineMime = (m) => m !== null && INLINE.has(m);
 var filesDir = (dbPath) => {
   if (dbPath === ":memory:") throw new KddError("attachments need a real board file, not :memory:");
-  return join2(dirname2(dbPath), "files");
+  return join4(dirname3(dbPath), "files");
 };
-var filePath = (dbPath, f) => join2(filesDir(dbPath), `${f.sha256}.${f.ext}`);
+var filePath = (dbPath, f) => join4(filesDir(dbPath), `${f.sha256}.${f.ext}`);
 function listFiles(db, taskId) {
   return db.prepare(`SELECT * FROM files WHERE task_id = ? ORDER BY id`).all(taskId);
 }
-function getFile(db, id) {
-  return db.prepare(`SELECT * FROM files WHERE id = ?`).get(id);
+function getFile(db, id2) {
+  return db.prepare(`SELECT * FROM files WHERE id = ?`).get(id2);
 }
 function attachFile(db, dbPath, taskId, srcPath, opts, actor) {
   let data;
@@ -1063,7 +1493,7 @@ function attachFile(db, dbPath, taskId, srcPath, opts, actor) {
     if (stat.size > CAPS.fileBytes) {
       throw new KddError(`file is ${stat.size} bytes, the limit is ${CAPS.fileBytes}`);
     }
-    data = readFileSync(srcPath);
+    data = readFileSync2(srcPath);
   } catch (e) {
     if (e instanceof KddError) throw e;
     throw new KddError(`cannot read ${srcPath}: ${e.message}`);
@@ -1071,15 +1501,15 @@ function attachFile(db, dbPath, taskId, srcPath, opts, actor) {
   mustGetTask(db, taskId);
   const sha256 = createHash2("sha256").update(data).digest("hex");
   const ext = (extname(srcPath).slice(1) || "bin").toLowerCase();
-  const target = join2(filesDir(dbPath), `${sha256}.${ext}`);
+  const target = join4(filesDir(dbPath), `${sha256}.${ext}`);
   return db.transaction(() => {
-    if (!existsSync2(target)) {
-      mkdirSync2(filesDir(dbPath), { recursive: true });
+    if (!existsSync3(target)) {
+      mkdirSync3(filesDir(dbPath), { recursive: true });
       const tmp = `${target}.${process.pid}.tmp`;
-      writeFileSync(tmp, data);
-      renameSync2(tmp, target);
+      writeFileSync2(tmp, data);
+      renameSync3(tmp, target);
     }
-    const name = capText(basename(srcPath), CAPS.fileNameChars);
+    const name = capText(basename2(srcPath), CAPS.fileNameChars);
     const r = db.prepare(
       `INSERT INTO files (task_id, sha256, ext, original_name, mime_type, size_bytes,
                           description, created_at)
@@ -1118,14 +1548,14 @@ function detachFile(db, dbPath, fileId, actor) {
     appendTaskMutationEvent(db, f.task_id, actor, "file_detached", { id: fileId, name: f.original_name });
     db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), f.task_id);
     const left = db.prepare(`SELECT COUNT(*) AS c FROM files WHERE sha256 = ? AND ext = ?`).get(f.sha256, f.ext).c;
-    if (left === 0) rmSync2(filePath(dbPath, f), { force: true });
+    if (left === 0) rmSync3(filePath(dbPath, f), { force: true });
   })();
 }
 
 // src/decisions.ts
 import { createHash as createHash3 } from "crypto";
-import { existsSync as existsSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync2, readdirSync as readdirSync2, writeFileSync as writeFileSync2 } from "fs";
-import { join as join3 } from "path";
+import { existsSync as existsSync4, mkdirSync as mkdirSync4, readFileSync as readFileSync3, readdirSync as readdirSync3, realpathSync as realpathSync3, writeFileSync as writeFileSync3 } from "fs";
+import { dirname as dirname4, join as join5 } from "path";
 function slugify(title) {
   const s = title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 60).replace(/-+$/, "");
   return s || "untitled";
@@ -1136,8 +1566,8 @@ function contentHash(title, body) {
 ${normalize(body)}`).digest("hex");
 }
 function normalizeSourceTasks(ids = []) {
-  for (const id of ids) {
-    if (!Number.isInteger(id) || id < 1) throw new KddError(`invalid source task id '${id}'`);
+  for (const id2 of ids) {
+    if (!Number.isInteger(id2) || id2 < 1) throw new KddError(`invalid source task id '${id2}'`);
   }
   return [...new Set(ids)].sort((a, b) => a - b);
 }
@@ -1209,9 +1639,10 @@ function parseDecisionMd(raw) {
   };
 }
 function supersede(db, dir, oldSlug, newSlug) {
-  const p = join3(dir, `${oldSlug}.md`);
-  if (!existsSync3(p)) throw new KddError(`decision '${oldSlug}' not found`);
-  let raw = readFileSync2(p, "utf8").replace(/\r\n/g, "\n");
+  const p = join5(dir, `${oldSlug}.md`);
+  if (!existsSync4(p)) throw new KddError(`decision '${oldSlug}' not found`);
+  assertLegacyDecisionSource(db, dirname4(realpathSync3(p)));
+  let raw = readFileSync3(p, "utf8").replace(/\r\n/g, "\n");
   if (raw.startsWith("---\n") && /^status:/m.test(raw)) {
     raw = raw.replace(/^status:.*$/m, "status: superseded").replace(/^superseded_by:.*$/m, `superseded_by: ${newSlug}`);
   } else {
@@ -1223,28 +1654,30 @@ superseded_by: ${newSlug}
 ---
 ${raw}`;
   }
-  writeFileSync2(p, raw);
+  writeFileSync3(p, raw);
   db.prepare(`UPDATE decisions SET superseded_by = ? WHERE slug = ?`).run(newSlug, oldSlug);
 }
 function addDecision(db, decisionsDir, input) {
+  assertLegacyDecisionSource(db, decisionsDir);
   if (!input.title.trim()) throw new KddError("title must not be empty");
   if (input.body !== void 0 && [input.decision, input.rationale, input.alternatives, input.outcome].some((v) => v !== void 0)) {
     throw new KddError("--body is mutually exclusive with section flags");
   }
   const sourceTasks = normalizeSourceTasks(input.sourceTasks);
-  for (const id of sourceTasks) {
-    if (!db.prepare(`SELECT 1 FROM tasks WHERE id = ?`).get(id)) {
-      throw new KddError(`task #${id} not found`);
+  for (const id2 of sourceTasks) {
+    if (!db.prepare(`SELECT 1 FROM tasks WHERE id = ?`).get(id2)) {
+      throw new KddError(`task #${id2} not found`);
     }
   }
   const body = renderDecisionBody(input);
   const hash = contentHash(input.title, body);
   const provenance = JSON.stringify(sourceTasks);
   let fileDup;
-  if (existsSync3(decisionsDir)) {
-    for (const file of readdirSync2(decisionsDir).filter((name) => name.endsWith(".md")).sort()) {
-      const path2 = join3(decisionsDir, file);
-      const doc = parseDecisionMd(readFileSync2(path2, "utf8"));
+  if (existsSync4(decisionsDir)) {
+    for (const file of readdirSync3(decisionsDir).filter((name) => name.endsWith(".md")).sort()) {
+      const path2 = join5(decisionsDir, file);
+      assertLegacyDecisionSource(db, dirname4(realpathSync3(path2)));
+      const doc = parseDecisionMd(readFileSync3(path2, "utf8"));
       if (doc.hash !== hash) continue;
       const slug2 = file.slice(0, -3);
       if (JSON.stringify(doc.sourceTasks) !== provenance) {
@@ -1256,7 +1689,8 @@ function addDecision(db, decisionsDir, input) {
   if (fileDup) return { ...fileDup, created: false };
   const dup = db.prepare(`SELECT slug, path FROM decisions WHERE content_hash = ?`).get(hash);
   if (dup) {
-    const existing = parseDecisionMd(readFileSync2(dup.path, "utf8")).sourceTasks;
+    assertLegacyDecisionSource(db, dirname4(realpathSync3(dup.path)));
+    const existing = parseDecisionMd(readFileSync3(dup.path, "utf8")).sourceTasks;
     if (JSON.stringify(existing) !== provenance) {
       throw new KddError(`decision '${dup.slug}' provenance mismatch`);
     }
@@ -1265,13 +1699,13 @@ function addDecision(db, decisionsDir, input) {
   const date = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
   const base = `${date}-${slugify(input.title)}`;
   let slug = base;
-  const taken = (s) => existsSync3(join3(decisionsDir, `${s}.md`)) || !!db.prepare(`SELECT 1 FROM decisions WHERE slug = ?`).get(s);
+  const taken = (s) => existsSync4(join5(decisionsDir, `${s}.md`)) || !!db.prepare(`SELECT 1 FROM decisions WHERE slug = ?`).get(s);
   for (let i = 2; taken(slug); i++) slug = `${base}-${i}`;
-  const path = join3(decisionsDir, `${slug}.md`);
+  const path = join5(decisionsDir, `${slug}.md`);
   return db.transaction(() => {
     if (input.supersedes) supersede(db, decisionsDir, input.supersedes, slug);
-    mkdirSync3(decisionsDir, { recursive: true });
-    writeFileSync2(path, renderDecisionMd({ ...input, sourceTasks }, date));
+    mkdirSync4(decisionsDir, { recursive: true });
+    writeFileSync3(path, renderDecisionMd({ ...input, sourceTasks }, date));
     db.prepare(
       `INSERT INTO decisions (slug, title, path, content_hash, created, superseded_by, source_tasks)
        VALUES (?, ?, ?, ?, ?, NULL, ?)`
@@ -1284,46 +1718,49 @@ function addDecision(db, decisionsDir, input) {
 }
 
 // src/recall.ts
-import { existsSync as existsSync4, readFileSync as readFileSync3, readdirSync as readdirSync3 } from "fs";
-import { join as join4 } from "path";
+import { existsSync as existsSync5, readFileSync as readFileSync4, readdirSync as readdirSync4, realpathSync as realpathSync4 } from "fs";
+import { dirname as dirname5, join as join6 } from "path";
 function syncIndex(db, decisionsDir) {
   db.transaction(() => {
-    const files = existsSync4(decisionsDir) ? readdirSync3(decisionsDir).filter((f) => f.endsWith(".md")) : [];
-    const inDb = new Map(
-      db.prepare(
-        `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`
-      ).all().map((r) => [r.slug, r])
-    );
-    const seen = /* @__PURE__ */ new Set();
-    for (const f of files) {
-      const slug = f.slice(0, -3);
-      seen.add(slug);
-      const path = join4(decisionsDir, f);
-      const doc = parseDecisionMd(readFileSync3(path, "utf8"));
-      const title = doc.title || slug;
-      const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
-      const sourceTasks = JSON.stringify(doc.sourceTasks);
-      const row = inDb.get(slug);
-      if (row && row.content_hash === doc.hash && (row.superseded_by ?? null) === (supersededBy ?? null)) {
-        if (row.path !== path || row.source_tasks !== sourceTasks || row.created !== (doc.created || null)) {
-          db.prepare(`UPDATE decisions SET path = ?, source_tasks = ?, created = ? WHERE slug = ?`).run(path, sourceTasks, doc.created || null, slug);
+    if (canSyncLegacyDecisions(db, decisionsDir)) {
+      const files = existsSync5(decisionsDir) ? readdirSync4(decisionsDir).filter((f) => f.endsWith(".md")) : [];
+      const inDb = new Map(
+        db.prepare(
+          `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`
+        ).all().map((r) => [r.slug, r])
+      );
+      const seen = /* @__PURE__ */ new Set();
+      for (const f of files) {
+        const slug = f.slice(0, -3);
+        seen.add(slug);
+        const path = join6(decisionsDir, f);
+        if (!canSyncLegacyDecisions(db, dirname5(realpathSync4(path)))) continue;
+        const doc = parseDecisionMd(readFileSync4(path, "utf8"));
+        const title = doc.title || slug;
+        const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
+        const sourceTasks = JSON.stringify(doc.sourceTasks);
+        const row = inDb.get(slug);
+        if (row && row.content_hash === doc.hash && (row.superseded_by ?? null) === (supersededBy ?? null)) {
+          if (row.path !== path || row.source_tasks !== sourceTasks || row.created !== (doc.created || null)) {
+            db.prepare(`UPDATE decisions SET path = ?, source_tasks = ?, created = ? WHERE slug = ?`).run(path, sourceTasks, doc.created || null, slug);
+          }
+          continue;
         }
-        continue;
+        db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
+        db.prepare(
+          `INSERT OR REPLACE INTO decisions
+             (slug, title, path, content_hash, created, superseded_by, source_tasks)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        ).run(slug, title, path, doc.hash, doc.created || null, supersededBy, sourceTasks);
+        db.prepare(
+          `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`
+        ).run(slug, title, doc.indexBody);
       }
-      db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
-      db.prepare(
-        `INSERT OR REPLACE INTO decisions
-           (slug, title, path, content_hash, created, superseded_by, source_tasks)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      ).run(slug, title, path, doc.hash, doc.created || null, supersededBy, sourceTasks);
-      db.prepare(
-        `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`
-      ).run(slug, title, doc.indexBody);
-    }
-    for (const slug of inDb.keys()) {
-      if (seen.has(slug)) continue;
-      db.prepare(`DELETE FROM decisions WHERE slug = ?`).run(slug);
-      db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
+      for (const slug of inDb.keys()) {
+        if (seen.has(slug)) continue;
+        db.prepare(`DELETE FROM decisions WHERE slug = ?`).run(slug);
+        db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
+      }
     }
     const last = Number(
       db.prepare(`SELECT value FROM meta WHERE key='fts_last_event_id'`).get()?.value ?? "0"
@@ -1335,14 +1772,14 @@ function syncIndex(db, decisionsDir) {
     ).all(last);
     const getTask = db.prepare(`SELECT * FROM tasks WHERE id = ?`);
     const getComments = db.prepare(`SELECT body FROM comments WHERE task_id = ? ORDER BY id`);
-    for (const { id } of ids) {
-      db.prepare(`DELETE FROM search_index WHERE kind='task' AND ref = ?`).run(String(id));
-      const t = getTask.get(id);
+    for (const { id: id2 } of ids) {
+      db.prepare(`DELETE FROM search_index WHERE kind='task' AND ref = ?`).run(String(id2));
+      const t = getTask.get(id2);
       if (!t || t.archived_at) continue;
-      const body = [t.body ?? "", ...getComments.all(id).map((c) => c.body)].filter(Boolean).join("\n");
+      const body = [t.body ?? "", ...getComments.all(id2).map((c) => c.body)].filter(Boolean).join("\n");
       db.prepare(
         `INSERT INTO search_index (kind, ref, title, body) VALUES ('task', ?, ?, ?)`
-      ).run(String(id), t.title, body);
+      ).run(String(id2), t.title, body);
     }
     db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_last_event_id', ?)`).run(String(max));
   })();
@@ -1386,6 +1823,10 @@ function recall(db, decisionsDir, query, opts = {}) {
   });
 }
 function rebuild(db, decisionsDir) {
+  assertLegacyDecisionSource(db, decisionsDir);
+  if (existsSync5(decisionsDir)) for (const name of readdirSync4(decisionsDir).filter((f) => f.endsWith(".md"))) {
+    assertLegacyDecisionSource(db, dirname5(realpathSync4(join6(decisionsDir, name))));
+  }
   db.transaction(() => {
     db.exec(`DELETE FROM search_index; DELETE FROM decisions;`);
     db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_last_event_id', '0')`).run();
@@ -1398,7 +1839,8 @@ function rebuild(db, decisionsDir) {
 }
 
 // src/queries.ts
-import { readFileSync as readFileSync4 } from "fs";
+import { existsSync as existsSync6, readFileSync as readFileSync5, realpathSync as realpathSync5 } from "fs";
+import { dirname as dirname6 } from "path";
 var PRIORITY_ORDER = `CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
 function manualEvent(event) {
   if (event.actor_type !== "ai" || !event.detail) return void 0;
@@ -1477,30 +1919,30 @@ function boardData(db, f = {}) {
   for (const r of rows) out[r.status].push(r);
   return out;
 }
-function taskDetail(db, id) {
-  const task = mustGetTask(db, id);
-  const criteria = listCriteria(db, id);
+function taskDetail(db, id2) {
+  const task = mustGetTask(db, id2);
+  const criteria = listCriteria(db, id2);
   const comments = db.prepare(
     `SELECT * FROM comments WHERE task_id = ? ORDER BY created_at, id`
-  ).all(id);
+  ).all(id2);
   const events = db.prepare(
     `SELECT * FROM events WHERE task_id = ? ORDER BY created_at, id`
-  ).all(id);
+  ).all(id2);
   const links = db.prepare(
     `SELECT t.id, t.title, l.kind FROM task_links l
      JOIN tasks t ON t.id = CASE WHEN l.from_id = ? THEN l.to_id ELSE l.from_id END
      WHERE l.from_id = ? OR l.to_id = ?`
-  ).all(id, id, id);
+  ).all(id2, id2, id2);
   const agent_runs_total = db.prepare(
     `SELECT COUNT(*) c FROM agent_events WHERE task_id = ? AND kind = 'run_start'`
-  ).get(id).c;
-  const files = listFiles(db, id).map((f) => ({ ...f, path: filePath(db.name, f) }));
+  ).get(id2).c;
+  const files = listFiles(db, id2).map((f) => ({ ...f, path: filePath(db.name, f) }));
   const decisions = db.prepare(
     `SELECT d.slug, d.title, d.created, d.superseded_by
        FROM decisions d, json_each(d.source_tasks) source
       WHERE CAST(source.value AS INTEGER) = ?
       ORDER BY d.slug`
-  ).all(id);
+  ).all(id2);
   return {
     task,
     criteria,
@@ -1513,8 +1955,8 @@ function taskDetail(db, id) {
     ...manualHistory(events)
   };
 }
-function taskDetailCapped(db, id) {
-  const d = taskDetail(db, id);
+function taskDetailCapped(db, id2) {
+  const d = taskDetail(db, id2);
   return {
     task: {
       ...d.task,
@@ -1541,24 +1983,31 @@ function taskDetailCapped(db, id) {
     handoffs_total: d.handoffs.length
   };
 }
-function syncedTaskDetail(db, decisionsDir, id, full = false) {
+function syncedTaskDetail(db, decisionsDir, id2, full = false) {
   syncIndex(db, decisionsDir);
-  return full ? taskDetail(db, id) : taskDetailCapped(db, id);
+  return full ? taskDetail(db, id2) : taskDetailCapped(db, id2);
 }
 function decisionDetail(db, decisionsDir, slug) {
   syncIndex(db, decisionsDir);
   const row = db.prepare(
-    `SELECT slug, title, path, created, superseded_by FROM decisions WHERE slug = ?`
+    `SELECT slug, title, path, created, superseded_by, source_tasks FROM decisions WHERE slug = ?`
   ).get(slug);
   if (!row) throw new KddError(`decision '${slug}' not found`);
-  const doc = parseDecisionMd(readFileSync4(row.path, "utf8"));
+  const trusted = canSyncLegacyDecisions(db, decisionsDir) && existsSync6(row.path) && canSyncLegacyDecisions(db, dirname6(realpathSync5(row.path)));
+  const cached = trusted ? void 0 : db.prepare("SELECT body FROM search_index WHERE kind='decision' AND ref=?").get(slug);
+  if (!trusted && !cached) throw new KddError(`decision '${slug}' has no indexed body`);
+  const doc = trusted ? parseDecisionMd(readFileSync5(row.path, "utf8")) : {
+    status: row.superseded_by ? "superseded" : "active",
+    indexBody: cached.body,
+    sourceTasks: JSON.parse(row.source_tasks)
+  };
   return {
     ...row,
     status: doc.status,
     body: doc.indexBody,
-    source_tasks: doc.sourceTasks.map((id) => {
-      const task = mustGetTask(db, id);
-      return { id, title: task.title, status: task.status, archived_at: task.archived_at };
+    source_tasks: doc.sourceTasks.map((id2) => {
+      const task = mustGetTask(db, id2);
+      return { id: id2, title: task.title, status: task.status, archived_at: task.archived_at };
     })
   };
 }
@@ -1659,7 +2108,7 @@ function exportEventDetail(detail, includeSensitive) {
     const value = JSON.parse(protectedDetail);
     const restoreNumbers = (json) => json.replace(
       new RegExp(`"${marker}(\\d+)__"`, "g"),
-      (_match, id) => numbers[Number(id)]
+      (_match, id2) => numbers[Number(id2)]
     );
     let changed = false;
     if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -1732,23 +2181,23 @@ function unsubmitted(db, author) {
     `SELECT actor_type, actor_id FROM events
       WHERE task_id = ? AND action = 'criterion_checked' ORDER BY id DESC LIMIT 1`
   );
-  return ids.filter(({ id }) => {
-    const r = lastCheck.get(id);
+  return ids.filter(({ id: id2 }) => {
+    const r = lastCheck.get(id2);
     return !!r && authorOf({ type: r.actor_type, id: r.actor_id ?? void 0 }) === author;
-  }).map(({ id }) => id);
+  }).map(({ id: id2 }) => id2);
 }
 
 // src/claim.ts
 var DEFAULT_TTL = 15 * 60;
 var SYSTEM = { type: "ai", id: "system" };
-function recordFailedAttempt(db, id, actor, reason) {
-  db.prepare(`UPDATE tasks SET failed_attempts = failed_attempts + 1, updated_at = ? WHERE id = ?`).run(now(), id);
-  const fa = db.prepare(`SELECT failed_attempts FROM tasks WHERE id = ?`).get(id).failed_attempts;
+function recordFailedAttempt(db, id2, actor, reason) {
+  db.prepare(`UPDATE tasks SET failed_attempts = failed_attempts + 1, updated_at = ? WHERE id = ?`).run(now(), id2);
+  const fa = db.prepare(`SELECT failed_attempts FROM tasks WHERE id = ?`).get(id2).failed_attempts;
   if (fa >= MAX_FAILED_ATTEMPTS) {
-    db.prepare(`UPDATE tasks SET blocked = 1, block_reason = ?, updated_at = ? WHERE id = ?`).run(`${fa} failed attempts (agent driver): ${reason}`, now(), id);
+    db.prepare(`UPDATE tasks SET blocked = 1, block_reason = ?, updated_at = ? WHERE id = ?`).run(`${fa} failed attempts (agent driver): ${reason}`, now(), id2);
     appendEvent(
       db,
-      id,
+      id2,
       actor,
       "blocked",
       { reason: `${fa} failed attempts`, last: reason },
@@ -1756,13 +2205,13 @@ function recordFailedAttempt(db, id, actor, reason) {
     );
   }
 }
-function releaseClaim(db, id, actor, reason) {
+function releaseClaim(db, id2, actor, reason) {
   db.transaction(() => {
     db.prepare(
       `UPDATE tasks SET status='new', claimed_by=NULL, claim_expires=NULL, updated_at=? WHERE id=?`
-    ).run(now(), id);
-    appendEvent(db, id, actor, "released", { reason }, { type: "claim", level: "warn" });
-    recordFailedAttempt(db, id, actor, reason);
+    ).run(now(), id2);
+    appendEvent(db, id2, actor, "released", { reason }, { type: "claim", level: "warn" });
+    recordFailedAttempt(db, id2, actor, reason);
   })();
 }
 function assertTtl(ttl) {
@@ -1771,14 +2220,14 @@ function assertTtl(ttl) {
 var CLAIMABLE_SQL = `status = 'new' AND blocked = 0 AND archived_at IS NULL AND claimed_by IS NULL
    AND kind <> 'research'
    AND (SELECT COUNT(*) FROM criteria WHERE criteria.task_id = tasks.id) > 0`;
-var criteriaCount = (db, id) => db.prepare(`SELECT COUNT(*) c FROM criteria WHERE task_id = ?`).get(id).c;
+var criteriaCount = (db, id2) => db.prepare(`SELECT COUNT(*) c FROM criteria WHERE task_id = ?`).get(id2).c;
 function killAll(ids, kill) {
   if (!ids.length) return /* @__PURE__ */ new Map();
-  if (!kill) return new Map(ids.map((id) => [id, "stuck"]));
+  if (!kill) return new Map(ids.map((id2) => [id2, "stuck"]));
   try {
     return kill(ids);
   } catch {
-    return new Map(ids.map((id) => [id, "stuck"]));
+    return new Map(ids.map((id2) => [id2, "stuck"]));
   }
 }
 var isTickLease = (claimedBy) => !!claimedBy?.startsWith("ai:tick:");
@@ -1898,15 +2347,15 @@ function stopWorkers(db, kill) {
   })();
   return { killed, released, stuck };
 }
-function claimTask(db, id, actor, ttl = DEFAULT_TTL, opts = {}) {
+function claimTask(db, id2, actor, ttl = DEFAULT_TTL, opts = {}) {
   assertTtl(ttl);
   reapExpired(db, opts.kill);
   return db.transaction(() => {
-    const t = mustGetTask(db, id);
+    const t = mustGetTask(db, id2);
     if (t.kind === "research" && actor.type === "ai") {
       appendEvent(
         db,
-        id,
+        id2,
         actor,
         "claim_rejected",
         { reason: "research is not agent work" },
@@ -1914,33 +2363,33 @@ function claimTask(db, id, actor, ttl = DEFAULT_TTL, opts = {}) {
       );
       return {
         ok: false,
-        error: `cannot claim #${id}: kind=research \u2014 the deliverable is a recorded decision, not code`
+        error: `cannot claim #${id2}: kind=research \u2014 the deliverable is a recorded decision, not code`
       };
     }
-    if (criteriaCount(db, id) === 0) {
+    if (criteriaCount(db, id2) === 0) {
       appendEvent(
         db,
-        id,
+        id2,
         actor,
         "claim_rejected",
         { reason: "no acceptance criteria" },
         { type: "claim", level: "warn" }
       );
-      return { ok: false, error: `cannot claim #${id}: no acceptance criteria (define done first)` };
+      return { ok: false, error: `cannot claim #${id2}: no acceptance criteria (define done first)` };
     }
     const expires = now() + ttl;
     const r = db.prepare(
       `UPDATE tasks SET status='in_progress', claimed_by=?, claim_expires=?, updated_at=?
        WHERE id=? AND status='new' AND blocked=0 AND archived_at IS NULL AND claimed_by IS NULL`
-    ).run(authorOf(actor), expires, now(), id);
+    ).run(authorOf(actor), expires, now(), id2);
     if (r.changes !== 1) {
       return {
         ok: false,
-        error: `#${id} is not claimable (status ${t.status}${t.claimed_by ? `, held by ${t.claimed_by}` : ""})`
+        error: `#${id2} is not claimable (status ${t.status}${t.claimed_by ? `, held by ${t.claimed_by}` : ""})`
       };
     }
-    appendTaskMutationEvent(db, id, actor, "claimed", { ttl, expires }, { type: "claim" });
-    return { ok: true, task: mustGetTask(db, id) };
+    appendTaskMutationEvent(db, id2, actor, "claimed", { ttl, expires }, { type: "claim" });
+    return { ok: true, task: mustGetTask(db, id2) };
   })();
 }
 function claimNext(db, actor, ttl = DEFAULT_TTL, opts = {}) {
@@ -1950,38 +2399,38 @@ function claimNext(db, actor, ttl = DEFAULT_TTL, opts = {}) {
     const rows = db.prepare(
       `SELECT id FROM tasks WHERE ${CLAIMABLE_SQL} ORDER BY ${PRIORITY_ORDER}, created_at, id`
     ).all();
-    for (const { id } of rows) {
+    for (const { id: id2 } of rows) {
       const expires = now() + ttl;
       const r = db.prepare(
         `UPDATE tasks SET status='in_progress', claimed_by=?, claim_expires=?, updated_at=?
          WHERE id=? AND status='new' AND blocked=0 AND archived_at IS NULL AND claimed_by IS NULL`
-      ).run(authorOf(actor), expires, now(), id);
+      ).run(authorOf(actor), expires, now(), id2);
       if (r.changes === 1) {
-        appendTaskMutationEvent(db, id, actor, "claimed", { ttl, expires }, { type: "claim" });
-        return mustGetTask(db, id);
+        appendTaskMutationEvent(db, id2, actor, "claimed", { ttl, expires }, { type: "claim" });
+        return mustGetTask(db, id2);
       }
     }
     return null;
   })();
 }
-function renewClaim(db, id, actor, ttl = DEFAULT_TTL, opts = {}) {
+function renewClaim(db, id2, actor, ttl = DEFAULT_TTL, opts = {}) {
   assertTtl(ttl);
   return db.transaction(() => {
-    mustGetTask(db, id);
+    mustGetTask(db, id2);
     const expires = now() + ttl;
     const r = db.prepare(
       `UPDATE tasks SET claim_expires=?, updated_at=? WHERE id=? AND claimed_by=?`
-    ).run(expires, now(), id, authorOf(actor));
+    ).run(expires, now(), id2, authorOf(actor));
     if (r.changes !== 1) {
       return {
         ok: false,
-        error: `#${id} not held by ${authorOf(actor)} (lease lost or reclaimed) \u2014 stop work`
+        error: `#${id2} not held by ${authorOf(actor)} (lease lost or reclaimed) \u2014 stop work`
       };
     }
     if (opts.log !== false) {
-      appendEvent(db, id, actor, "claim_renewed", { ttl, expires }, { type: "claim" });
+      appendEvent(db, id2, actor, "claim_renewed", { ttl, expires }, { type: "claim" });
     }
-    return { ok: true, task: mustGetTask(db, id) };
+    return { ok: true, task: mustGetTask(db, id2) };
   })();
 }
 
@@ -2020,14 +2469,14 @@ function tick(db, opts) {
 }
 
 // src/worktree.ts
-import { execFileSync as execFileSync3 } from "child_process";
-import { existsSync as existsSync5, realpathSync, rmSync as rmSync3 } from "fs";
-import { dirname as dirname3, join as join5 } from "path";
+import { execFileSync as execFileSync4 } from "child_process";
+import { existsSync as existsSync7, realpathSync as realpathSync6, rmSync as rmSync4 } from "fs";
+import { dirname as dirname7, join as join7 } from "path";
 var branchName = (taskId) => `kdd/task-${taskId}`;
 var BRANCH_RE = /^refs\/heads\/kdd\/task-(\d+)$/;
-function git(repoRoot, args) {
+function git2(repoRoot, args) {
   try {
-    return execFileSync3("git", args, {
+    return execFileSync4("git", args, {
       cwd: repoRoot,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"]
@@ -2040,27 +2489,27 @@ function git(repoRoot, args) {
 }
 function gitTry(repoRoot, args) {
   try {
-    git(repoRoot, args);
+    git2(repoRoot, args);
   } catch {
   }
 }
 function worktreePath(dbPath, taskId, title) {
-  const root = dirname3(dbPath);
-  const realRoot = existsSync5(root) ? realpathSync(root) : root;
-  return join5(realRoot, "worktrees", `task-${taskId}-${slugify(title)}`);
+  const root = dirname7(dbPath);
+  const realRoot = existsSync7(root) ? realpathSync6(root) : root;
+  return join7(realRoot, "worktrees", `task-${taskId}-${slugify(title)}`);
 }
 function headCommit(repoRoot) {
-  return git(repoRoot, ["rev-parse", "HEAD"]);
+  return git2(repoRoot, ["rev-parse", "HEAD"]);
 }
 function taskBranchHead(repoRoot, taskId) {
   try {
-    return git(repoRoot, ["rev-parse", "--verify", "--quiet", `refs/heads/${branchName(taskId)}`]);
+    return git2(repoRoot, ["rev-parse", "--verify", "--quiet", `refs/heads/${branchName(taskId)}`]);
   } catch {
     return null;
   }
 }
 function listWorktrees(repoRoot) {
-  const out = git(repoRoot, ["worktree", "list", "--porcelain"]);
+  const out = git2(repoRoot, ["worktree", "list", "--porcelain"]);
   const entries = [];
   let cur = null;
   for (const line of out.split("\n")) {
@@ -2076,7 +2525,7 @@ function listWorktrees(repoRoot) {
 }
 function branchExists(repoRoot, branch) {
   try {
-    git(repoRoot, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+    git2(repoRoot, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
     return true;
   } catch {
     return false;
@@ -2086,13 +2535,13 @@ function ensureWorktree(repoRoot, dbPath, taskId, title) {
   const branch = branchName(taskId);
   const ref = `refs/heads/${branch}`;
   const existing = listWorktrees(repoRoot).find((e) => e.branch === ref);
-  if (existing && existsSync5(existing.path)) return existing.path;
+  if (existing && existsSync7(existing.path)) return existing.path;
   if (existing) gitTry(repoRoot, ["worktree", "remove", "--force", existing.path]);
   const path = worktreePath(dbPath, taskId, title);
   gitTry(repoRoot, ["worktree", "prune"]);
-  rmSync3(path, { recursive: true, force: true });
+  rmSync4(path, { recursive: true, force: true });
   const tail = branchExists(repoRoot, branch) ? [path, branch] : [path, "-b", branch];
-  git(repoRoot, ["worktree", "add", ...tail]);
+  git2(repoRoot, ["worktree", "add", ...tail]);
   return path;
 }
 function sweepWorktrees(db, repoRoot, isBusy) {
@@ -2113,14 +2562,14 @@ function sweepWorktrees(db, repoRoot, isBusy) {
 }
 
 // src/release.ts
-import { readFileSync as readFileSync5 } from "fs";
-import { join as join6 } from "path";
+import { readFileSync as readFileSync6 } from "fs";
+import { join as join8 } from "path";
 var pkgCache = null;
 function pkg() {
   if (pkgCache) return pkgCache;
   try {
     pkgCache = JSON.parse(
-      readFileSync5(join6(import.meta.dirname, "../package.json"), "utf8")
+      readFileSync6(join8(import.meta.dirname, "../package.json"), "utf8")
     );
   } catch {
     pkgCache = {};
@@ -2367,8 +2816,8 @@ function readReminded(db) {
 }
 
 // src/brief.ts
-import { existsSync as existsSync6, readFileSync as readFileSync6, readdirSync as readdirSync4 } from "fs";
-import { join as join7 } from "path";
+import { existsSync as existsSync8, readFileSync as readFileSync7, readdirSync as readdirSync5, realpathSync as realpathSync7 } from "fs";
+import { dirname as dirname8, join as join9 } from "path";
 var lexical = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 function detailObject(detail) {
   if (!detail) return {};
@@ -2426,11 +2875,15 @@ function readRunProvenance(db, taskId) {
   if (message !== void 0) provenance.error = message;
   return provenance;
 }
-function readTaskDecisions(decisionsDir, taskId) {
-  if (!existsSync6(decisionsDir)) return [];
-  return readdirSync4(decisionsDir).filter((file) => file.endsWith(".md")).flatMap((file) => {
+function readTaskDecisions(db, decisionsDir, taskId) {
+  if (!canSyncLegacyDecisions(db, decisionsDir)) {
+    return db.prepare("SELECT slug,title,created,superseded_by,source_tasks FROM decisions ORDER BY slug").all().filter((row) => JSON.parse(row.source_tasks).includes(taskId)).map(({ source_tasks, ...row }) => ({ ...row, title: capText(row.title, CAPS.titleChars) }));
+  }
+  if (!existsSync8(decisionsDir)) return [];
+  return readdirSync5(decisionsDir).filter((file) => file.endsWith(".md")).flatMap((file) => {
     const slug = file.slice(0, -3);
-    const decision = parseDecisionMd(readFileSync6(join7(decisionsDir, file), "utf8"));
+    if (!canSyncLegacyDecisions(db, dirname8(realpathSync7(join9(decisionsDir, file))))) return [];
+    const decision = parseDecisionMd(readFileSync7(join9(decisionsDir, file), "utf8"));
     if (!decision.sourceTasks.includes(taskId)) return [];
     return [{
       slug,
@@ -2539,13 +2992,13 @@ function fitBrief(brief, sources, errorSource) {
   }
   return brief;
 }
-function taskBrief(db, decisionsDir, id) {
-  const detail = taskDetail(db, id);
+function taskBrief(db, decisionsDir, id2) {
+  const detail = taskDetail(db, id2);
   const criteria = [...detail.criteria].sort((a, b) => {
     const rank = (criterion) => criterion.checked_at === null ? 0 : criterion.evidence ? 1 : 2;
     return rank(a) - rank(b) || a.position - b.position || a.id - b.id;
   });
-  const provenance = readRunProvenance(db, id);
+  const provenance = readRunProvenance(db, id2);
   const errorSource = provenance?.error;
   if (provenance?.error) provenance.error = capText(provenance.error, 256);
   const task = {
@@ -2601,7 +3054,7 @@ function taskBrief(db, decisionsDir, id) {
       omitted: 0
     },
     decisions: {
-      items: readTaskDecisions(decisionsDir, id).sort((a, b) => lexical(a.slug, b.slug)),
+      items: readTaskDecisions(db, decisionsDir, id2).sort((a, b) => lexical(a.slug, b.slug)),
       omitted: 0
     },
     files: {
@@ -2650,17 +3103,24 @@ export {
   _resetCache,
   addCriterion,
   addDecision,
+  addRepository,
   addTask,
   agentId,
   appendAgentEvent,
   appendEvent,
   appendTaskMutationEvent,
   archiveTask,
+  assertLegacyDecisionSource,
   attachFile,
   attentionData,
   authorOf,
+  bindRepository,
+  bindingsOf,
   blockTask,
   boardData,
+  canSyncLegacyDecisions,
+  canonicalCommonDir,
+  canonicalProjectPath,
   capDetail,
   capText,
   checkMove,
@@ -2687,6 +3147,7 @@ export {
   getLastRun,
   getReminded,
   headCommit,
+  initializeProjectStore,
   isInlineMime,
   kddHome,
   kddVersion,
@@ -2695,9 +3156,11 @@ export {
   listAgentEvents,
   listCriteria,
   listFiles,
+  listProjectCheckouts,
   listProjects,
   listTracks,
   logError,
+  lookupProjectStore,
   manualSessionFromEnv,
   maxWorkers,
   maxWorkersEnvLocked,
@@ -2712,10 +3175,12 @@ export {
   parseDecisionMd,
   parseRepoUrl,
   placeTask,
+  projectOf,
   projectPathOf,
   projectToplevelOf,
   pruneAgentEvents,
   reapExpired,
+  rebindRepository,
   rebuild,
   recall,
   reclaimExpired,
@@ -2728,6 +3193,7 @@ export {
   renderDecisionMd,
   renewClaim,
   repoSlug,
+  repositoriesOf,
   resolveDbPath,
   resolveDecisionsDir,
   resolveToplevel,

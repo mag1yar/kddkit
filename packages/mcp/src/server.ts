@@ -1,12 +1,11 @@
 import type Database from 'better-sqlite3';
-import { execFileSync } from 'node:child_process';
 import { isAbsolute } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import {
   agentId, CAPS, KddError, logError, manualSessionFromEnv, normalizeSessionId,
-  listProjects, openDb, resolveDbPath, resolveDecisionsDir,
+  listProjectCheckouts, kddHome, openDb, resolveDbPath, resolveDecisionsDir,
   PRIORITIES, STATUSES, KINDS, type Actor, type Status, type Kind,
 } from '@kddkit/core';
 import * as h from './handlers.js';
@@ -49,18 +48,7 @@ const projectField = z.string().min(1).optional()
   .describe('Absolute path inside the git repository; use list_projects to find known projects');
 
 function knownProjects(): string[] {
-  return listProjects().flatMap((p) => {
-    try {
-      const output = execFileSync('git', ['--git-dir', p.projectPath, 'worktree', 'list', '--porcelain'],
-        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-      return output.split(/\r?\n\r?\n/).filter((block) => !/^bare$/m.test(block))
-        .map((block) => block.match(/^worktree (.+)$/m)?.[1])
-        .filter((path): path is string => !!path)
-        .filter((path) => {
-          try { return resolveDbPath(path).dbPath === p.dbPath; } catch { return false; }
-        });
-    } catch { return []; } // stale or unavailable repository
-  });
+  return listProjectCheckouts(kddHome());
 }
 
 export function createServer(getCtx: CtxFn, actor?: Actor): McpServer {
@@ -193,7 +181,7 @@ export function lazyCtx(): CtxFn {
       throw e;
     }
     const dir = resolveDecisionsDir(cwd);
-    const ctx = { db: openDb(dbPath, projectPath), dir };
+    const ctx = { db: openDb(dbPath, projectPath, cwd), dir };
     contexts.set(cwd, ctx);
     return ctx;
   };

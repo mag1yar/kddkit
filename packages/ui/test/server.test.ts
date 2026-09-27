@@ -2,7 +2,10 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CAPS, addTask, createTrack, editTrack, getAutoTick, openDb, setAutoTick, setLastRun } from '@kddkit/core';
+import { CAPS, addTask, addRepository, createTrack, editTrack, getAutoTick, openDb, resolveDbPath, setAutoTick, setLastRun } from '@kddkit/core';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
+import { basename, dirname } from 'node:path';
 import { createApp, projectPool } from '../src/server.js';
 
 const user = { type: 'user' } as const;
@@ -12,6 +15,28 @@ const mk = () => {
 };
 
 describe('GET /api/board', () => {
+  it('keeps the original project address and one board after binding a backend', async () => {
+    const saved={...process.env};
+    const root=mkdtempSync(join(tmpdir(),'kdd-ui-bound-'));
+    let pool: ReturnType<typeof projectPool> | undefined;
+    let db: ReturnType<typeof openDb> | undefined;
+    try {
+      process.env.KDD_HOME=join(root,'home');delete process.env.KDD_DB;delete process.env.KDD_DECISIONS_DIR;
+      const source=join(root,'source');const backend=join(root,'backend');
+      for(const cwd of [source,backend]) { mkdirSync(cwd);execFileSync('git',['init'],{cwd,stdio:'pipe'}); }
+      const resolved=resolveDbPath(source);db=openDb(resolved.dbPath,resolved.projectPath,source);
+      const task=addTask(db,{title:'shared UI'},user);
+      const hash=basename(dirname(resolved.dbPath));
+      addRepository(db,resolved.dbPath,process.env.KDD_HOME,{cwd:backend,purpose:'backend',access:'context_only'},user);
+      pool=projectPool(hash);const app=createApp(pool.getDb,hash);
+      const projects=await (await app.request('/api/projects')).json() as {id:string}[];
+      expect(projects.map(p=>p.id)).toEqual([hash]);
+      expect((await (await app.request(`/api/tasks/${task.id}?project=${hash}`)).json() as any).task.title).toBe('shared UI');
+      const edited=await app.request(`/api/tasks/${task.id}?project=${hash}`,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({title:'changed UI'})});
+      expect(edited.status).toBe(200);
+      expect(db.prepare('SELECT title FROM tasks WHERE id=?').get(task.id)).toEqual({title:'changed UI'});
+    } finally { pool?.closeAll();db?.close();process.env=saved;rmSync(root,{recursive:true,force:true}); }
+  });
   it('returns five columns with tasks grouped by status', async () => {
     const { db, app } = mk();
     addTask(db, { title: 'hello board' }, user);

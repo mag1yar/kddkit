@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { basename, delimiter, dirname, join } from 'node:path';
 import { spawn as spawnProcess } from 'node:child_process';
 import { networkInterfaces } from 'node:os';
@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import lockfile from 'proper-lockfile';
 import {
   KddError, addCriterion, addDecision, addTask, appendAgentEvent, archiveTask, attachFile,
+  addRepository, bindRepository, rebindRepository, projectOf, repositoriesOf, bindingsOf, kddHome,
   attentionData, authorOf, blockTask,
   closeDb, boardData, BUG_BODY_TEMPLATE, claimNext, claimTask, commentTask, createTrack, decisionDetail,
   deleteTrack, DEFAULT_TTL,
@@ -20,6 +21,7 @@ import {
   setProjectToplevel, statusDigest, stopWorkers, storeIdentity, releaseInfo, compareVersions,
   sweepWorktrees, syncedTaskDetail, taskBrief, tick, unarchiveTask, unblockTask,
   type KillFn, type Kind, type Status, type UpdateChannel,
+  type RepositoryAccess, type BindingKind,
 } from '@kddkit/core';
 import {
   createScheduler, projectPool, startUi, type TickRunner, type WorkerStopper,
@@ -915,6 +917,34 @@ track.command('rm')
   .action((id, o) => run(o.json, () => {
     withDb((db) => deleteTrack(db, parseId(id))); // задачи отцепляются, память остаётся
     out(o.json, { ok: true }, () => `track #${parseId(id)} deleted`);
+  }));
+
+const projectCommand = program.command('project').description('inspect and explicitly bind project repositories');
+function withProjectStore(fn: (db: ReturnType<typeof openDb>, dbPath: string) => unknown): unknown {
+  const { dbPath, projectPath } = resolveDbPath();
+  if (!existsSync(dbPath)) throw new KddError(`unknown project store: ${dbPath}; open it before binding repositories`);
+  return withDbAt(dbPath, projectPath, db => fn(db, dbPath));
+}
+projectCommand.command('show').option('--json').action(o => run(o.json, () => {
+  const result = withDb(db => ({ project: projectOf(db), repositories: repositoriesOf(db), bindings: bindingsOf(db) }));
+  out(o.json,result,() => JSON.stringify(result,null,2));
+}));
+projectCommand.command('add-repo').argument('<checkout>')
+  .requiredOption('--purpose <text>').requiredOption('--access <access>','context_only|implementation')
+  .option('--json').action((cwd,o) => run(o.json, () => {
+    const result = withProjectStore((db,path) => addRepository(db,path,kddHome(),{cwd,purpose:o.purpose,access:o.access as RepositoryAccess},getActor()));
+    out(o.json,result,() => JSON.stringify(result,null,2));
+  }));
+projectCommand.command('bind').argument('<checkout>')
+  .requiredOption('--repo <id>').requiredOption('--kind <kind>','source|managed')
+  .option('--json').action((cwd,o) => run(o.json, () => {
+    const result = withProjectStore((db,path) => bindRepository(db,path,kddHome(),{cwd,repoId:o.repo,kind:o.kind as BindingKind},getActor()));
+    out(o.json,result,() => JSON.stringify(result,null,2));
+  }));
+projectCommand.command('rebind').argument('<old-common-dir>').argument('<checkout>')
+  .option('--json').action((fromCommonDir,cwd,o) => run(o.json, () => {
+    const result = withProjectStore((db,path) => rebindRepository(db,path,kddHome(),{fromCommonDir,cwd},getActor()));
+    out(o.json,result,() => JSON.stringify(result,null,2));
   }));
 
 program.command('projects')

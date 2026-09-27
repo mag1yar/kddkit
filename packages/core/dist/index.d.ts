@@ -34,9 +34,10 @@ declare const CAPS: {
 };
 declare function capText(s: string, n: number): string;
 
-declare const now: () => number;
 declare const MIGRATIONS: string[];
-declare function openDb(dbPath: string, projectPath?: string): Database.Database;
+
+declare const now: () => number;
+declare function openDb(dbPath: string, projectPath?: string, checkout?: string): Database.Database;
 declare function checkpointWal(db: Database.Database): void;
 declare function closeDb(db: Database.Database): void;
 declare function projectPathOf(db: Database.Database): string | null;
@@ -100,6 +101,64 @@ declare function checkMove(from: Status, to: Status, actor: Actor, reason?: stri
     ok: false;
     error: string;
 };
+
+type RepositoryAccess = 'context_only' | 'implementation';
+type BindingKind = 'source' | 'managed';
+interface ProjectRecord {
+    project_id: string;
+    primary_repo_id: string | null;
+    legacy_decisions_dir: string | null;
+    autonomy_enabled: boolean;
+    default_execution_mode: 'manual' | 'orchestrated';
+    created_at: number;
+}
+interface RepositoryRecord {
+    repo_id: string;
+    purpose: string;
+    access: RepositoryAccess;
+    remote: string | null;
+    created_at: number;
+}
+interface RepositoryBinding {
+    common_dir: string;
+    repo_id: string;
+    checkout_path: string;
+    kind: BindingKind;
+    created_at: number;
+}
+declare function projectOf(db: Database.Database): ProjectRecord;
+declare function repositoriesOf(db: Database.Database): RepositoryRecord[];
+declare function bindingsOf(db: Database.Database): RepositoryBinding[];
+declare function canonicalCommonDir(cwd: string): string;
+declare function canonicalProjectPath(path: string): string;
+declare function lookupProjectStore(commonDir: string, home: string): {
+    dbPath: string;
+    projectPath: string;
+} | undefined;
+declare function initializeProjectStore(db: Database.Database, dbPath: string, home: string, projectPath?: string, checkout?: string, options?: {
+    legacyUpgrade?: boolean;
+    configuredDecisions?: string;
+}): void;
+declare function listProjectCheckouts(home: string): string[];
+declare function bindRepository(db: Database.Database, dbPath: string, home: string, input: {
+    cwd: string;
+    repoId: string;
+    kind: BindingKind;
+}, actor: Actor): RepositoryBinding;
+declare function addRepository(db: Database.Database, dbPath: string, home: string, input: {
+    cwd: string;
+    purpose: string;
+    access: RepositoryAccess;
+}, actor: Actor): {
+    repository: RepositoryRecord;
+    binding: RepositoryBinding;
+};
+declare function rebindRepository(db: Database.Database, dbPath: string, home: string, input: {
+    fromCommonDir: string;
+    cwd: string;
+}, actor: Actor): RepositoryBinding;
+declare function canSyncLegacyDecisions(db: Database.Database, decisionsDir: string): boolean;
+declare function assertLegacyDecisionSource(db: Database.Database, decisionsDir: string): void;
 
 interface Task {
     id: number;
@@ -733,4 +792,4 @@ interface TaskBrief {
 }
 declare function taskBrief(db: Database.Database, decisionsDir: string, id: number): TaskBrief;
 
-export { type Actor, type AgentEvent, type AgentEventKind, type AttentionInbox, type AttentionItem, type AttentionReason, type AutoTick, BUG_BODY_TEMPLATE, type BriefSection, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type EventRow, type FileRow, KINDS, KddError, type KillFn, type KillOutcome, type Kind, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, type ManualProvenance, type ManualSession, type NextAction, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RunResult, STATUSES, type SessionHandoff, type SpawnFn, type Status, type StopResult, TICK_INTERVALS, TRANSITIONS, type Task, type TaskBrief, type TaskDetailCapped, type TaskListRow, type TickResult, type TickRun, type Track, type UpdateChannel, _cacheUntil, _resetCache, addCriterion, addDecision, addTask, agentId, appendAgentEvent, appendEvent, appendTaskMutationEvent, archiveTask, attachFile, attentionData, authorOf, blockTask, boardData, capDetail, capText, checkMove, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, contentHash, createTrack, decisionDetail, deleteTrack, detachFile, editTask, editTrack, ensureWorktree, expiredLeases, exportBoard, filePath, filesDir, getAutoTick, getFile, getLastRun, getReminded, headCommit, isInlineMime, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listFiles, listProjects, listTracks, logError, manualSessionFromEnv, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, normalizeSessionId, normalizeSourceTasks, now, openDb, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, projectPathOf, projectToplevelOf, pruneAgentEvents, reapExpired, rebuild, recall, reclaimExpired, recordFailedAttempt, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, setReminded, slugify, statusDigest, stopWorkers, storeIdentity, sweepWorktrees, syncIndex, syncedTaskDetail, taskBranchHead, taskBrief, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, unsubmitted, updateDisposition, versionChannel, worktreePath };
+export { type Actor, type AgentEvent, type AgentEventKind, type AttentionInbox, type AttentionItem, type AttentionReason, type AutoTick, BUG_BODY_TEMPLATE, type BindingKind, type BriefSection, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type EventRow, type FileRow, KINDS, KddError, type KillFn, type KillOutcome, type Kind, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, type ManualProvenance, type ManualSession, type NextAction, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ProjectRecord, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RepositoryAccess, type RepositoryBinding, type RepositoryRecord, type RunResult, STATUSES, type SessionHandoff, type SpawnFn, type Status, type StopResult, TICK_INTERVALS, TRANSITIONS, type Task, type TaskBrief, type TaskDetailCapped, type TaskListRow, type TickResult, type TickRun, type Track, type UpdateChannel, _cacheUntil, _resetCache, addCriterion, addDecision, addRepository, addTask, agentId, appendAgentEvent, appendEvent, appendTaskMutationEvent, archiveTask, assertLegacyDecisionSource, attachFile, attentionData, authorOf, bindRepository, bindingsOf, blockTask, boardData, canSyncLegacyDecisions, canonicalCommonDir, canonicalProjectPath, capDetail, capText, checkMove, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, contentHash, createTrack, decisionDetail, deleteTrack, detachFile, editTask, editTrack, ensureWorktree, expiredLeases, exportBoard, filePath, filesDir, getAutoTick, getFile, getLastRun, getReminded, headCommit, initializeProjectStore, isInlineMime, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listFiles, listProjectCheckouts, listProjects, listTracks, logError, lookupProjectStore, manualSessionFromEnv, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, normalizeSessionId, normalizeSourceTasks, now, openDb, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, projectOf, projectPathOf, projectToplevelOf, pruneAgentEvents, reapExpired, rebindRepository, rebuild, recall, reclaimExpired, recordFailedAttempt, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, repositoriesOf, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, setReminded, slugify, statusDigest, stopWorkers, storeIdentity, sweepWorktrees, syncIndex, syncedTaskDetail, taskBranchHead, taskBrief, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, unsubmitted, updateDisposition, versionChannel, worktreePath };

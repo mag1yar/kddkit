@@ -1,59 +1,64 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type Database from 'better-sqlite3';
 import { CAPS } from './caps.js';
 import { KddError } from './errors.js';
 import { parseDecisionMd } from './decisions.js';
+import { canSyncLegacyDecisions, assertLegacyDecisionSource } from './project_store.js';
 
 export function syncIndex(db: Database.Database, decisionsDir: string): void {
   db.transaction(() => {
-    // решения: истина — файловая система
-    const files = existsSync(decisionsDir)
-      ? readdirSync(decisionsDir).filter((f) => f.endsWith('.md'))
-      : [];
-    const inDb = new Map(
-      (db.prepare(
-        `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`,
-      ).all() as {
-        slug: string; path: string; content_hash: string; created: string | null;
-        superseded_by: string | null; source_tasks: string;
-      }[])
-        .map((r) => [r.slug, r]),
-    );
-    const seen = new Set<string>();
-    for (const f of files) {
-      const slug = f.slice(0, -3);
-      seen.add(slug);
-      const path = join(decisionsDir, f);
-      const doc = parseDecisionMd(readFileSync(path, 'utf8'));
-      const title = doc.title || slug;
-      const supersededBy =
-        doc.status === 'superseded' ? (doc.supersededBy || '?') : (doc.supersededBy || null);
-      const sourceTasks = JSON.stringify(doc.sourceTasks);
-      const row = inDb.get(slug);
-      if (row && row.content_hash === doc.hash &&
-          (row.superseded_by ?? null) === (supersededBy ?? null)) {
-        if (row.path !== path || row.source_tasks !== sourceTasks ||
-            row.created !== (doc.created || null)) {
-          db.prepare(`UPDATE decisions SET path = ?, source_tasks = ?, created = ? WHERE slug = ?`)
-            .run(path, sourceTasks, doc.created || null, slug);
+    if (canSyncLegacyDecisions(db, decisionsDir)) {
+      // решения: истина — файловая система
+      const files = existsSync(decisionsDir)
+        ? readdirSync(decisionsDir).filter((f) => f.endsWith('.md'))
+        : [];
+      const inDb = new Map(
+        (db.prepare(
+          `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`,
+        ).all() as {
+          slug: string; path: string; content_hash: string; created: string | null;
+          superseded_by: string | null; source_tasks: string;
+        }[])
+          .map((r) => [r.slug, r]),
+      );
+      const seen = new Set<string>();
+      for (const f of files) {
+        const slug = f.slice(0, -3);
+        seen.add(slug);
+        const path = join(decisionsDir, f);
+        if (!canSyncLegacyDecisions(db, dirname(realpathSync(path)))) continue;
+        const doc = parseDecisionMd(readFileSync(path, 'utf8'));
+        const title = doc.title || slug;
+        const supersededBy =
+          doc.status === 'superseded' ? (doc.supersededBy || '?') : (doc.supersededBy || null);
+        const sourceTasks = JSON.stringify(doc.sourceTasks);
+        const row = inDb.get(slug);
+        if (row && row.content_hash === doc.hash &&
+            (row.superseded_by ?? null) === (supersededBy ?? null)) {
+          if (row.path !== path || row.source_tasks !== sourceTasks ||
+              row.created !== (doc.created || null)) {
+            db.prepare(`UPDATE decisions SET path = ?, source_tasks = ?, created = ? WHERE slug = ?`)
+              .run(path, sourceTasks, doc.created || null, slug);
+          }
+          continue;
         }
-        continue;
+        db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
+        db.prepare(
+          `INSERT OR REPLACE INTO decisions
+             (slug, title, path, content_hash, created, superseded_by, source_tasks)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        ).run(slug, title, path, doc.hash, doc.created || null, supersededBy, sourceTasks);
+        db.prepare(
+          `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`,
+        ).run(slug, title, doc.indexBody);
       }
-      db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
-      db.prepare(
-        `INSERT OR REPLACE INTO decisions
-           (slug, title, path, content_hash, created, superseded_by, source_tasks)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      ).run(slug, title, path, doc.hash, doc.created || null, supersededBy, sourceTasks);
-      db.prepare(
-        `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`,
-      ).run(slug, title, doc.indexBody);
-    }
-    for (const slug of inDb.keys()) {
-      if (seen.has(slug)) continue;
-      db.prepare(`DELETE FROM decisions WHERE slug = ?`).run(slug);
-      db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
+      for (const slug of inDb.keys()) {
+        if (seen.has(slug)) continue;
+        db.prepare(`DELETE FROM decisions WHERE slug = ?`).run(slug);
+        db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
+      }
+
     }
 
     // задачи: журнал изменений — events
@@ -138,6 +143,10 @@ export function recall(
 export function rebuild(
   db: Database.Database, decisionsDir: string,
 ): { decisions: number; tasks: number } {
+  assertLegacyDecisionSource(db, decisionsDir);
+  if (existsSync(decisionsDir)) for (const name of readdirSync(decisionsDir).filter(f => f.endsWith('.md'))) {
+    assertLegacyDecisionSource(db, dirname(realpathSync(join(decisionsDir,name))));
+  }
   db.transaction(() => {
     db.exec(`DELETE FROM search_index; DELETE FROM decisions;`);
     db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_last_event_id', '0')`).run();
