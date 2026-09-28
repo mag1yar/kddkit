@@ -200,4 +200,26 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX idx_repository_bindings_repo ON repository_bindings(repo_id);
   `,
+  `
+  CREATE TABLE managed_task_policy (
+    task_id INTEGER PRIMARY KEY REFERENCES tasks(id),
+    created_at INTEGER NOT NULL,
+    source TEXT NOT NULL
+  );
+  CREATE TABLE run_authorities (
+    authority_id TEXT PRIMARY KEY,
+    task_id INTEGER NOT NULL REFERENCES tasks(id),
+    work_item_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK(typeof(generation)='integer' AND generation > 0),
+    expires_at REAL NOT NULL,
+    revoked_at INTEGER,
+    token_hash TEXT NOT NULL UNIQUE,
+    grant_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(task_id,work_item_id,generation)
+  );
+  CREATE UNIQUE INDEX idx_run_authorities_current ON run_authorities(task_id,work_item_id)
+    WHERE revoked_at IS NULL;
+  `,
 ];

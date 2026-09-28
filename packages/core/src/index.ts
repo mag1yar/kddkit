@@ -19,3 +19,8 @@ export * from './worktree.js';
 export * from './release.js';
 export * from './settings.js';
 export * from './brief.js';
+export { assertWritableRoots, withNativeControllerLock, spawnCheckedNative, preflightCodex, assertVerifiedCodexPackage } from './codex_permissions.js';
+export type { NativeLaunchInput, CodexPermissionInput, NativeProbeResult, VerifiedCodexPackage } from './codex_permissions.js';
+export { observeCodexNative } from './codex_native_probe.js';
+export type { NativeEvidence } from './codex_native_probe.js';
+export * from './authority.js';

@@ -1,0 +1,1490 @@
+{
+  "measured_at_utc": "2026-09-27T09:15:21.296219+00:00",
+  "macos": "26.5.2",
+  "node": "v24.15.0",
+  "script_sha256": "4eba9d4dd465a6adc389532912654cb8060b194ae3b081e1048297c67bfcba1d",
+  "commands": [
+    "node .planning/research/orchestration/codex-native-check.mjs --json",
+    "node .planning/research/orchestration/codex-native-check.mjs --hardlink-only --json"
+  ],
+  "exit_codes": [
+    1,
+    1
+  ],
+  "matrix": {
+    "version": "codex-cli 0.157.0",
+    "executableHash": "ad0be20d04e2ba6146ecdb51d7f8b7b0fe15420a15dc9b0057518d858f1f3714",
+    "applicable": false,
+    "attempted": 50,
+    "executed": 50,
+    "failures": [
+      {
+        "caseId": "hardlink.txt",
+        "mode": "workspace",
+        "reason": "expected denied, got allowed\n+ actual - expected\n\n+ 'allowed'\n- 'denied'\n"
+      },
+      {
+        "caseId": "hardlink.txt",
+        "mode": "workspace",
+        "reason": "expected denied, got allowed\n+ actual - expected\n\n+ 'allowed'\n- 'denied'\n"
+      },
+      {
+        "caseId": "symlink.txt",
+        "mode": "workspace",
+        "reason": "expected denied, got inconclusive\n+ actual - expected\n\n+ 'inconclusive'\n- 'denied'\n"
+      }
+    ],
+    "observations": [
+      {
+        "caseId": "read",
+        "mode": "readonly",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 53953e\nWall time: 0.0000 seconds\nProcess exited with code 0\nOriginal token count: 3\nOutput:\noriginal\n",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "f25d158066b22b87bde589c723cbf99ccc240be8c1f80b4924ae8e0d347f4e4f",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "allowed"
+      },
+      {
+        "caseId": "protected-read",
+        "mode": "readonly",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 34faa0\nWall time: 0.0000 seconds\nProcess exited with code 1\nOriginal token count: 32\nOutput:\ncat: /private/var/folders/fs/j8m3cm3j37nb7wxhxtsj95x00000gn/T/kdd-native-kCPLYU/protected/marker.txt: Operation not permitted\n",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "31a31f5e61aa5b1bd2a7426e20b13795a13ea707656711ef90a06fa9bbaa8143",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "create-1",
+        "mode": "readonly",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 9517cd\nWall time: 0.0000 seconds\nProcess exited with code 1\nOriginal token count: 12\nOutput:\n/bin/sh: created.txt: Operation not permitted\n",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "4e14114c2929dca10f3f833cf01836da27651f9d335a8ebf8da499336714d010",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "create-1",
+        "mode": "readonly",
+        "tool": "apply_patch",
+        "executed": true,
+        "output": "patch rejected: writing outside of the project; rejected by user approval settings",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "e11518adf4842ad5ce3497a1f059ea2504a611198b367951e06c58f7c6ac6ac9",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "update-1",
+        "mode": "readonly",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 0ae08c\nWall time: 0.0000 seconds\nProcess exited with code 1\nOriginal token count: 12\nOutput:\n/bin/sh: existing.txt: Operation not permitted\n",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "bbc1d38b37dff0fe325ec45031c6d09d1cc3f4f640ecf385f8d77110ad347c18",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "update-1",
+        "mode": "readonly",
+        "tool": "apply_patch",
+        "executed": true,
+        "output": "patch rejected: writing outside of the project; rejected by user approval settings",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "f8783e1ed8cb0a1cfbc6570563b164b7f0137d0cc068e92aaad70948690ba004",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "delete-1",
+        "mode": "readonly",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 7e7efa\nWall time: 0.0000 seconds\nProcess exited with code 1\nOriginal token count: 11\nOutput:\nrm: existing.txt: Operation not permitted\n",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "966552e4ccfcd2bfb58cb902e3a1612dfb1633fc80ea6c9a3931261791041808",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "delete-1",
+        "mode": "readonly",
+        "tool": "apply_patch",
+        "executed": true,
+        "output": "patch rejected: writing outside of the project; rejected by user approval settings",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "733b0590c63c383fba6de1df7ea1f41c35d7750f8859ee1bb6ce7af1ae4a9221",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "create-2",
+        "mode": "readonly",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 1aa83a\nWall time: 0.0000 seconds\nProcess exited with code 1\nOriginal token count: 12\nOutput:\n/bin/sh: created.txt: Operation not permitted\n",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "84824d2f1d85641a4426dcf914f812e2ba03195e1432425859e076616ec1d1f4",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "create-2",
+        "mode": "readonly",
+        "tool": "apply_patch",
+        "executed": true,
+        "output": "patch rejected: writing outside of the project; rejected by user approval settings",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "5846c4f76e1c490ad61d814ae679679fd517343f6ff169aa0fe117fa09ccd074",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "update-2",
+        "mode": "readonly",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 7f944d\nWall time: 0.0000 seconds\nProcess exited with code 1\nOriginal token count: 12\nOutput:\n/bin/sh: existing.txt: Operation not permitted\n",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "ed33a955715f52fe0683484463e9d75b53f596d1efde62bce503f0b9420839d6",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "update-2",
+        "mode": "readonly",
+        "tool": "apply_patch",
+        "executed": true,
+        "output": "patch rejected: writing outside of the project; rejected by user approval settings",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "12be5e1c9bfd9e5dd1f02dec7ffdee8e2fa2a4ffb74d48e8b8e4bb24af933be3",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "delete-2",
+        "mode": "readonly",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: c9baf8\nWall time: 0.0000 seconds\nProcess exited with code 1\nOriginal token count: 11\nOutput:\nrm: existing.txt: Operation not permitted\n",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "ae2c4d42970fe7bd3e2a94f6b798598f693e675d5bb59eedb81686af324b0b1b",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "delete-2",
+        "mode": "readonly",
+        "tool": "apply_patch",
+        "executed": true,
+        "output": "patch rejected: writing outside of the project; rejected by user approval settings",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "17e61d9bf052e92a163b89136e6fbfa1cc6030072f747a9b5b298619eac2a0f7",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "create-3",
+        "mode": "readonly",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 8df397\nWall time: 0.0000 seconds\nProcess exited with code 1\nOriginal token count: 12\nOutput:\n/bin/sh: created.txt: Operation not permitted\n",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "9069adb9625a5fbdaf992156e3bf660eb629b9fbde168337ec7f524953b04204",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "create-3",
+        "mode": "readonly",
+        "tool": "apply_patch",
+        "executed": true,
+        "output": "patch rejected: writing outside of the project; rejected by user approval settings",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "9a3543ffc414e2d353d874219a2671b1025eb707ccb8972fed481e7e58159bc5",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "update-3",
+        "mode": "readonly",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 606527\nWall time: 0.0000 seconds\nProcess exited with code 1\nOriginal token count: 12\nOutput:\n/bin/sh: existing.txt: Operation not permitted\n",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "35cc376736a4f0600f04e2092226e600bd12b0d5f30e8f638405966da48b60f7",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "update-3",
+        "mode": "readonly",
+        "tool": "apply_patch",
+        "executed": true,
+        "output": "patch rejected: writing outside of the project; rejected by user approval settings",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "493c44b5c3d3a24afca0471091bd52a20694fa25ad9c83b59584cae3a9dfa73e",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "delete-3",
+        "mode": "readonly",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: e721a8\nWall time: 0.0000 seconds\nProcess exited with code 1\nOriginal token count: 11\nOutput:\nrm: existing.txt: Operation not permitted\n",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "9859dce156c91a3e551eddf7904642517e790a56cee70a2a1c372aedd17b0129",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "delete-3",
+        "mode": "readonly",
+        "tool": "apply_patch",
+        "executed": true,
+        "output": "patch rejected: writing outside of the project; rejected by user approval settings",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "4ffa70251cd515e8e8b150928a6e17529c65e0f3a1ca5697ae8bcea157e0be3c",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "hardlink.txt",
+        "mode": "readonly",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 213622\nWall time: 0.0000 seconds\nProcess exited with code 1\nOriginal token count: 12\nOutput:\n/bin/sh: hardlink.txt: Operation not permitted\n",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "ca1b9d3e2a07d4d55a97e220e86544ca105201fc83fc6019df17715a2de392bb",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "hardlink.txt",
+        "mode": "readonly",
+        "tool": "apply_patch",
+        "executed": true,
+        "output": "patch rejected: writing outside of the project; rejected by user approval settings",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "7d2433dda17906b9a619bc05f87065a45bed150352dd2eaa2c41ef413f5cb91a",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "symlink.txt",
+        "mode": "readonly",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: e857b7\nWall time: 0.0000 seconds\nProcess exited with code 1\nOriginal token count: 12\nOutput:\n/bin/sh: symlink.txt: Operation not permitted\n",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "b1a2c533b4ac1a62bf5cc6dc8e0168dc262db431e52b3ed898c0fd11458dead2",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "symlink.txt",
+        "mode": "readonly",
+        "tool": "apply_patch",
+        "executed": true,
+        "output": "patch rejected: writing outside of the project; rejected by user approval settings",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "00c73529d709199a4df6a87995ac48d23b53ea18b330695d220acde82af0d534",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "create-hardlink",
+        "mode": "readonly",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 52d310\nWall time: 0.0000 seconds\nProcess exited with code 1\nOriginal token count: 11\nOutput:\nln: new-link.txt: Operation not permitted\n",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "fb9a7b0daa4ea3af359ae4eef4fd28ac7b1cca91e6353e26b3e8c3ff581737de",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "backend-write",
+        "mode": "readonly",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: fab818\nWall time: 0.0000 seconds\nProcess exited with code 1\nOriginal token count: 32\nOutput:\n/bin/sh: /private/var/folders/fs/j8m3cm3j37nb7wxhxtsj95x00000gn/T/kdd-native-kCPLYU/backend/marker.txt: Operation not permitted\n",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "152f6f4619f376d534f94a93cb7faff89d1d90dd20f40928d92fcf543a0782c5",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "git-ref",
+        "mode": "readonly",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 30e7ff\nWall time: 0.0000 seconds\nProcess exited with code 128\nOriginal token count: 143\nOutput:\ngit: error: couldn't create cache file '/var/folders/fs/j8m3cm3j37nb7wxhxtsj95x00000gn/T/xcrun_db-KnQZKdqo' (errno=Operation not permitted)\n2026-09-27 14:10:48.808 xcodebuild[15920:116965616]  DVTFilePathFSEvents: Failed to start fs event stream.\ngit: error: couldn't create cache file '/var/folders/fs/j8m3cm3j37nb7wxhxtsj95x00000gn/T/xcrun_db-FWP53HTI' (errno=Operation not permitted)\n2026-09-27 14:10:50.083 xcodebuild[15926:116965685]  DVTFilePathFSEvents: Failed to start fs event stream.\nfatal: unable to access '/Users/magiyar/.gitconfig': Operation not permitted\n",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "b4974d22fa9e64277cc9efed3a8151b9cfd9af15ba823a6762417fbf6637170e",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "scratch-write",
+        "mode": "readonly",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 8de4f6\nWall time: 0.0000 seconds\nProcess exited with code 0\nOriginal token count: 0\nOutput:\n",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "9f30850f0a6058e47f1f7c315da23e5ff0291580aa04ec599ac0fe3d90516aa1",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "allowed"
+      },
+      {
+        "caseId": "network-loopback",
+        "mode": "readonly",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 4b6dfb\nWall time: 0.0000 seconds\nProcess exited with code 7\nOriginal token count: 23\nOutput:\ncurl: (7) Failed to connect to 127.0.0.1 port 64892 after 0 ms: Couldn't connect to server\n",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "6608e6f0eb0732037b0be51b4f298d7173f58d8646e4e0e4bbc86abee53ace5a",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "network-lan",
+        "mode": "readonly",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 993067\nWall time: 0.0000 seconds\nProcess exited with code 7\nOriginal token count: 24\nOutput:\ncurl: (7) Failed to connect to 192.168.10.2 port 64892 after 0 ms: Couldn't connect to server\n",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "89dabb086a52882883d8e195c1033e6059ad9d6f5865eaa30e4e41cbbbe9d2e4",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "network-unix",
+        "mode": "readonly",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: fb20b6\nWall time: 0.0000 seconds\nProcess exited with code 1\nOriginal token count: 0\nOutput:\n",
+        "permissionHash": "8a25ad6c81067d67821341ebb922d03b5ef0e51c2076798e2aaa88f698d2a09d",
+        "configHash": "09d3aa6d6f38f2c2b0526d64d3cb7c0c21d772e72cf01255882a2b6cf4494674",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "read",
+        "mode": "workspace",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: d2189c\nWall time: 0.0000 seconds\nProcess exited with code 0\nOriginal token count: 3\nOutput:\noriginal\n",
+        "permissionHash": "10148b1287d1f802a91a56dd16a1ca73257c1a47ac2d586b90cd63b2aa65682b",
+        "configHash": "c048f3dc63b99d000dc8b712c0cd8422d2724efa40a5c6e546c4f6a82f5945f3",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "allowed"
+      },
+      {
+        "caseId": "protected-read",
+        "mode": "workspace",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 3ae723\nWall time: 0.0000 seconds\nProcess exited with code 1\nOriginal token count: 32\nOutput:\ncat: /private/var/folders/fs/j8m3cm3j37nb7wxhxtsj95x00000gn/T/kdd-native-kCPLYU/protected/marker.txt: Operation not permitted\n",
+        "permissionHash": "10148b1287d1f802a91a56dd16a1ca73257c1a47ac2d586b90cd63b2aa65682b",
+        "configHash": "ca4b900f1175a3f806f2ae89feff8136208888bbb11221b9007f953ecb70aae6",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "create-1",
+        "mode": "workspace",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 851fe3\nWall time: 0.0000 seconds\nProcess exited with code 0\nOriginal token count: 0\nOutput:\n",
+        "permissionHash": "10148b1287d1f802a91a56dd16a1ca73257c1a47ac2d586b90cd63b2aa65682b",
+        "configHash": "89f8259f2f4002e93f3c5650285750e34a6a78ea908d6887a6b3e230214863eb",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "allowed"
+      },
+      {
+        "caseId": "create-1",
+        "mode": "workspace",
+        "tool": "apply_patch",
+        "executed": true,
+        "output": "Exit code: 0\nWall time: 0.1 seconds\nOutput:\nSuccess. Updated the following files:\nA created.txt\n",
+        "permissionHash": "10148b1287d1f802a91a56dd16a1ca73257c1a47ac2d586b90cd63b2aa65682b",
+        "configHash": "f13cdbab97d41ac1909789cb22ffd47271030a40c1dc64bb798f023b2d716c9c",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "allowed"
+      },
+      {
+        "caseId": "update-1",
+        "mode": "workspace",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: b1affe\nWall time: 0.0000 seconds\nProcess exited with code 0\nOriginal token count: 0\nOutput:\n",
+        "permissionHash": "10148b1287d1f802a91a56dd16a1ca73257c1a47ac2d586b90cd63b2aa65682b",
+        "configHash": "8bc3223aebe3e50072afd156d61a760930903b3d66ca2e971651b57910f75787",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "allowed"
+      },
+      {
+        "caseId": "update-1",
+        "mode": "workspace",
+        "tool": "apply_patch",
+        "executed": true,
+        "output": "Exit code: 0\nWall time: 0.1 seconds\nOutput:\nSuccess. Updated the following files:\nM existing.txt\n",
+        "permissionHash": "10148b1287d1f802a91a56dd16a1ca73257c1a47ac2d586b90cd63b2aa65682b",
+        "configHash": "4eccf6c59768b52d721cdcdc5003079e4a8a6ad36a7837d24e18700f632ab8c3",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "allowed"
+      },
+      {
+        "caseId": "delete-1",
+        "mode": "workspace",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 007ad7\nWall time: 0.0000 seconds\nProcess exited with code 0\nOriginal token count: 0\nOutput:\n",
+        "permissionHash": "10148b1287d1f802a91a56dd16a1ca73257c1a47ac2d586b90cd63b2aa65682b",
+        "configHash": "f931a86a2af8138ef5c0f1d2380082d6e323a2d24666c5d42fbcccf5b09b7c9c",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "allowed"
+      },
+      {
+        "caseId": "delete-1",
+        "mode": "workspace",
+        "tool": "apply_patch",
+        "executed": true,
+        "output": "Exit code: 0\nWall time: 0.1 seconds\nOutput:\nSuccess. Updated the following files:\nD existing.txt\n",
+        "permissionHash": "10148b1287d1f802a91a56dd16a1ca73257c1a47ac2d586b90cd63b2aa65682b",
+        "configHash": "ce791480494c4c0c08a00d04706d3e9aa3241b74f261b2558b48ee3c825904a6",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "allowed"
+      },
+      {
+        "caseId": "hardlink.txt",
+        "mode": "workspace",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 5b5932\nWall time: 0.0000 seconds\nProcess exited with code 0\nOriginal token count: 0\nOutput:\n",
+        "permissionHash": "10148b1287d1f802a91a56dd16a1ca73257c1a47ac2d586b90cd63b2aa65682b",
+        "configHash": "4964015d4d9cb20d734225af394eecad06db0b81d5c797e7c9b61f2ae116b30d",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": false,
+        "outcome": "allowed",
+        "failure": "expected denied, got allowed\n+ actual - expected\n\n+ 'allowed'\n- 'denied'\n"
+      },
+      {
+        "caseId": "hardlink.txt",
+        "mode": "workspace",
+        "tool": "apply_patch",
+        "executed": true,
+        "output": "Exit code: 0\nWall time: 0 seconds\nOutput:\nSuccess. Updated the following files:\nM hardlink.txt\n",
+        "permissionHash": "10148b1287d1f802a91a56dd16a1ca73257c1a47ac2d586b90cd63b2aa65682b",
+        "configHash": "42b05ec77debb2ec8f3f25caf586d7fb53a061ab4b872c0f490b60f17d287331",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": false,
+        "outcome": "allowed",
+        "failure": "expected denied, got allowed\n+ actual - expected\n\n+ 'allowed'\n- 'denied'\n"
+      },
+      {
+        "caseId": "symlink.txt",
+        "mode": "workspace",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 3e2082\nWall time: 0.0000 seconds\nProcess exited with code 1\nOriginal token count: 12\nOutput:\n/bin/sh: symlink.txt: Operation not permitted\n",
+        "permissionHash": "10148b1287d1f802a91a56dd16a1ca73257c1a47ac2d586b90cd63b2aa65682b",
+        "configHash": "370f52c7582f15b4a88b23bbfe7a58b7b55bd65b60ebed50043a00c4dce58549",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "symlink.txt",
+        "mode": "workspace",
+        "tool": "apply_patch",
+        "executed": true,
+        "output": "Exit code: 1\nWall time: 0.1 seconds\nOutput:\nFailed to write file /private/var/folders/fs/j8m3cm3j37nb7wxhxtsj95x00000gn/T/kdd-native-kCPLYU/workspace/symlink.txt\n",
+        "permissionHash": "10148b1287d1f802a91a56dd16a1ca73257c1a47ac2d586b90cd63b2aa65682b",
+        "configHash": "3f7dfa964afc0ed0a88e1511e22391f52814033aa426c0eac3009b8413115a1f",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "inconclusive",
+        "failure": "expected denied, got inconclusive\n+ actual - expected\n\n+ 'inconclusive'\n- 'denied'\n"
+      },
+      {
+        "caseId": "create-hardlink",
+        "mode": "workspace",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: b728aa\nWall time: 0.0000 seconds\nProcess exited with code 1\nOriginal token count: 11\nOutput:\nln: new-link.txt: Operation not permitted\n",
+        "permissionHash": "10148b1287d1f802a91a56dd16a1ca73257c1a47ac2d586b90cd63b2aa65682b",
+        "configHash": "53424f7f10f9a5730006e6d03649a0596962439f3b1618e6a4407dacdd660893",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "backend-write",
+        "mode": "workspace",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: cf51a3\nWall time: 0.0000 seconds\nProcess exited with code 1\nOriginal token count: 32\nOutput:\n/bin/sh: /private/var/folders/fs/j8m3cm3j37nb7wxhxtsj95x00000gn/T/kdd-native-kCPLYU/backend/marker.txt: Operation not permitted\n",
+        "permissionHash": "10148b1287d1f802a91a56dd16a1ca73257c1a47ac2d586b90cd63b2aa65682b",
+        "configHash": "e8df693d50b30c472d3053f9c4e1753598eb2b09aa049a6549381e8eec31305d",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "git-ref",
+        "mode": "workspace",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 91e174\nWall time: 0.0000 seconds\nProcess exited with code 128\nOriginal token count: 143\nOutput:\ngit: error: couldn't create cache file '/var/folders/fs/j8m3cm3j37nb7wxhxtsj95x00000gn/T/xcrun_db-UxvU1dIG' (errno=Operation not permitted)\n2026-09-27 14:11:25.551 xcodebuild[16380:116969663]  DVTFilePathFSEvents: Failed to start fs event stream.\ngit: error: couldn't create cache file '/var/folders/fs/j8m3cm3j37nb7wxhxtsj95x00000gn/T/xcrun_db-GI5mGC9j' (errno=Operation not permitted)\n2026-09-27 14:11:26.427 xcodebuild[16383:116969709]  DVTFilePathFSEvents: Failed to start fs event stream.\nfatal: unable to access '/Users/magiyar/.gitconfig': Operation not permitted\n",
+        "permissionHash": "10148b1287d1f802a91a56dd16a1ca73257c1a47ac2d586b90cd63b2aa65682b",
+        "configHash": "92ec511ddc7ae60be04b7e7bab43fe89f869a75d03633b34243ec70225f0430a",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "scratch-write",
+        "mode": "workspace",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 5e625b\nWall time: 0.0000 seconds\nProcess exited with code 0\nOriginal token count: 0\nOutput:\n",
+        "permissionHash": "10148b1287d1f802a91a56dd16a1ca73257c1a47ac2d586b90cd63b2aa65682b",
+        "configHash": "ce2c744f7c04c8552f1e89e3cf1869a344b258d7252637ffc54b43c99a5b57ec",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "allowed"
+      },
+      {
+        "caseId": "network-loopback",
+        "mode": "workspace",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: a54266\nWall time: 0.0000 seconds\nProcess exited with code 7\nOriginal token count: 23\nOutput:\ncurl: (7) Failed to connect to 127.0.0.1 port 64892 after 0 ms: Couldn't connect to server\n",
+        "permissionHash": "10148b1287d1f802a91a56dd16a1ca73257c1a47ac2d586b90cd63b2aa65682b",
+        "configHash": "895b6a14a8bfdb78e747606491c49f3aee10bdaaf73cd6e29b35425493c5ae49",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "network-lan",
+        "mode": "workspace",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 7a67bc\nWall time: 0.0000 seconds\nProcess exited with code 7\nOriginal token count: 24\nOutput:\ncurl: (7) Failed to connect to 192.168.10.2 port 64892 after 0 ms: Couldn't connect to server\n",
+        "permissionHash": "10148b1287d1f802a91a56dd16a1ca73257c1a47ac2d586b90cd63b2aa65682b",
+        "configHash": "e64e0d6a58ad586e9bf17513663fb2d370da06f231e79322648f7cd70146a6f9",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      },
+      {
+        "caseId": "network-unix",
+        "mode": "workspace",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 464341\nWall time: 0.0000 seconds\nProcess exited with code 1\nOriginal token count: 0\nOutput:\n",
+        "permissionHash": "10148b1287d1f802a91a56dd16a1ca73257c1a47ac2d586b90cd63b2aa65682b",
+        "configHash": "5496247332d58754d1ee94afdda5c47e56d7bb529b710a77548de515c52f9783",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": true,
+        "outcome": "denied"
+      }
+    ]
+  },
+  "hardlink_repeat": {
+    "version": "codex-cli 0.157.0",
+    "executableHash": "ad0be20d04e2ba6146ecdb51d7f8b7b0fe15420a15dc9b0057518d858f1f3714",
+    "applicable": false,
+    "attempted": 6,
+    "executed": 6,
+    "failures": [
+      {
+        "caseId": "hardlink-shell-1",
+        "mode": "workspace",
+        "reason": "expected denied, got allowed\n+ actual - expected\n\n+ 'allowed'\n- 'denied'\n"
+      },
+      {
+        "caseId": "hardlink-patch-1",
+        "mode": "workspace",
+        "reason": "expected denied, got allowed\n+ actual - expected\n\n+ 'allowed'\n- 'denied'\n"
+      },
+      {
+        "caseId": "hardlink-shell-2",
+        "mode": "workspace",
+        "reason": "expected denied, got allowed\n+ actual - expected\n\n+ 'allowed'\n- 'denied'\n"
+      },
+      {
+        "caseId": "hardlink-patch-2",
+        "mode": "workspace",
+        "reason": "expected denied, got allowed\n+ actual - expected\n\n+ 'allowed'\n- 'denied'\n"
+      },
+      {
+        "caseId": "hardlink-shell-3",
+        "mode": "workspace",
+        "reason": "expected denied, got allowed\n+ actual - expected\n\n+ 'allowed'\n- 'denied'\n"
+      },
+      {
+        "caseId": "hardlink-patch-3",
+        "mode": "workspace",
+        "reason": "expected denied, got allowed\n+ actual - expected\n\n+ 'allowed'\n- 'denied'\n"
+      }
+    ],
+    "observations": [
+      {
+        "caseId": "hardlink-shell-1",
+        "mode": "workspace",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 7cb216\nWall time: 0.0000 seconds\nProcess exited with code 0\nOriginal token count: 0\nOutput:\n",
+        "permissionHash": "bca11d568e33813a18c4ff94b30c0ffad2c21b2df6a6aef01bd78d8f3031cd92",
+        "configHash": "eab28205bbc6b8cbcc68f792ada96499244d401df1d7522eb92a9caa494325cd",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": false,
+        "outcome": "allowed",
+        "failure": "expected denied, got allowed\n+ actual - expected\n\n+ 'allowed'\n- 'denied'\n"
+      },
+      {
+        "caseId": "hardlink-patch-1",
+        "mode": "workspace",
+        "tool": "apply_patch",
+        "executed": true,
+        "output": "Exit code: 0\nWall time: 0.1 seconds\nOutput:\nSuccess. Updated the following files:\nM hardlink.txt\n",
+        "permissionHash": "bca11d568e33813a18c4ff94b30c0ffad2c21b2df6a6aef01bd78d8f3031cd92",
+        "configHash": "914716c6706c2a12fc633eb9db036dc5d842283dbbdd1dcce5b5f838d39b698a",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": false,
+        "outcome": "allowed",
+        "failure": "expected denied, got allowed\n+ actual - expected\n\n+ 'allowed'\n- 'denied'\n"
+      },
+      {
+        "caseId": "hardlink-shell-2",
+        "mode": "workspace",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 360133\nWall time: 0.0000 seconds\nProcess exited with code 0\nOriginal token count: 0\nOutput:\n",
+        "permissionHash": "bca11d568e33813a18c4ff94b30c0ffad2c21b2df6a6aef01bd78d8f3031cd92",
+        "configHash": "655881b0bcefb9139f162b818a329d67e61d744ccfacad27c2353ea906994fea",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": false,
+        "outcome": "allowed",
+        "failure": "expected denied, got allowed\n+ actual - expected\n\n+ 'allowed'\n- 'denied'\n"
+      },
+      {
+        "caseId": "hardlink-patch-2",
+        "mode": "workspace",
+        "tool": "apply_patch",
+        "executed": true,
+        "output": "Exit code: 0\nWall time: 0.1 seconds\nOutput:\nSuccess. Updated the following files:\nM hardlink.txt\n",
+        "permissionHash": "bca11d568e33813a18c4ff94b30c0ffad2c21b2df6a6aef01bd78d8f3031cd92",
+        "configHash": "d1c54fa800c064241571d006f57e7feea4b1bc8f991102f5f6031e21c9b0230c",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": false,
+        "outcome": "allowed",
+        "failure": "expected denied, got allowed\n+ actual - expected\n\n+ 'allowed'\n- 'denied'\n"
+      },
+      {
+        "caseId": "hardlink-shell-3",
+        "mode": "workspace",
+        "tool": "exec_command",
+        "executed": true,
+        "output": "Chunk ID: 1989df\nWall time: 0.0000 seconds\nProcess exited with code 0\nOriginal token count: 0\nOutput:\n",
+        "permissionHash": "bca11d568e33813a18c4ff94b30c0ffad2c21b2df6a6aef01bd78d8f3031cd92",
+        "configHash": "6152147f0b2a06254da28643a44c621aee44ca8b352cd748feb9082b93782d17",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": false,
+        "outcome": "allowed",
+        "failure": "expected denied, got allowed\n+ actual - expected\n\n+ 'allowed'\n- 'denied'\n"
+      },
+      {
+        "caseId": "hardlink-patch-3",
+        "mode": "workspace",
+        "tool": "apply_patch",
+        "executed": true,
+        "output": "Exit code: 0\nWall time: 0 seconds\nOutput:\nSuccess. Updated the following files:\nM hardlink.txt\n",
+        "permissionHash": "bca11d568e33813a18c4ff94b30c0ffad2c21b2df6a6aef01bd78d8f3031cd92",
+        "configHash": "9b9dd5ce0f5bdc301e201ddc4c60369771f1fb8c453fc1edb7c755a65598bf04",
+        "tools": [
+          {
+            "name": "exec_command",
+            "type": "function"
+          },
+          {
+            "name": "write_stdin",
+            "type": "function"
+          },
+          {
+            "name": "apply_patch",
+            "type": "custom"
+          }
+        ],
+        "unchangedProtectedBytes": false,
+        "outcome": "allowed",
+        "failure": "expected denied, got allowed\n+ actual - expected\n\n+ 'allowed'\n- 'denied'\n"
+      }
+    ]
+  }
+}

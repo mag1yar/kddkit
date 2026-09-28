@@ -1,3 +1,4 @@
+import { assertLegacyTaskMutation } from './authority.js';
 import { execFileSync } from 'node:child_process';
 import type Database from 'better-sqlite3';
 import { redact } from './agent_events.js';
@@ -125,15 +126,17 @@ export function editTask(
   if (patch.track_id != null) mustGetTrack(db, patch.track_id);
   const fields = (Object.keys(patch) as (keyof typeof patch)[])
     .filter((k) => patch[k] !== undefined);
+  if (fields.some(key => !['title', 'body', 'priority', 'area', 'track_id', 'kind'].includes(key))) throw new KddError('invalid task patch');
   if (fields.length === 0) throw new KddError('nothing to edit');
   return db.transaction(() => {
+    assertLegacyTaskMutation(db, [id]);
     mustGetTask(db, id);
     const sets = fields.map((f) => `${f} = ?`).join(', ');
     db.prepare(`UPDATE tasks SET ${sets}, updated_at = ? WHERE id = ?`)
       .run(...fields.map((f) => patch[f]), now(), id);
     appendTaskMutationEvent(db, id, actor, 'edited', { fields });
     return mustGetTask(db, id);
-  })();
+  }).immediate();
 }
 
 export function commentTask(
@@ -145,6 +148,7 @@ export function commentTask(
   // соседнюю дверь. Человеку текст не трогаем: он пишет своё, а не пересказывает вывод тулов.
   const text = actor.type === 'ai' ? redact(body) : body;
   return db.transaction(() => {
+    assertLegacyTaskMutation(db, [id]);
     mustGetTask(db, id);
     const r = db.prepare(
       `INSERT INTO comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)`,
@@ -152,7 +156,7 @@ export function commentTask(
     appendTaskMutationEvent(db, id, actor, 'commented');
     return db.prepare(`SELECT * FROM comments WHERE id = ?`)
       .get(Number(r.lastInsertRowid)) as Comment;
-  })();
+  }).immediate();
 }
 
 function checkStatus(s: string): asserts s is Status {
@@ -196,6 +200,7 @@ export function moveTask(
 ): Task {
   checkStatus(to);
   return db.transaction(() => {
+    assertLegacyTaskMutation(db, [id]);
     const t = mustGetTask(db, id);
     const submitter = t.status === 'review' ? submittedBy(db, id) : null;
     const res = checkMove(t.status, to, actor, reason, openCriteria(db, id), t.claimed_by, submitter);
@@ -218,7 +223,7 @@ export function moveTask(
       ).run(id, authorOf(actor), reason, now());
     }
     return mustGetTask(db, id);
-  })();
+  }).immediate();
 }
 
 // Расстановка колонки-назначения по явному порядку id (drag на доске).
@@ -228,6 +233,7 @@ export function placeTask(
 ): Task {
   checkStatus(to);
   return db.transaction(() => {
+    assertLegacyTaskMutation(db, [id, ...orderedIds]);
     const t = mustGetTask(db, id);
     if (t.status !== to) {
       const res = checkMove(t.status, to, actor, undefined, openCriteria(db, id), t.claimed_by,
@@ -244,7 +250,7 @@ export function placeTask(
        WHERE id = ?`,
     ).run(to, now(), id);
     return mustGetTask(db, id);
-  })();
+  }).immediate();
 }
 
 export function blockTask(
@@ -252,53 +258,58 @@ export function blockTask(
 ): Task {
   if (!reason.trim()) throw new KddError('block reason must not be empty');
   return db.transaction(() => {
+    assertLegacyTaskMutation(db, [id]);
     mustGetTask(db, id);
     db.prepare(`UPDATE tasks SET blocked = 1, block_reason = ?, updated_at = ? WHERE id = ?`)
       .run(reason, now(), id);
     appendTaskMutationEvent(db, id, actor, 'blocked', { reason });
     return mustGetTask(db, id);
-  })();
+  }).immediate();
 }
 
 export function unblockTask(db: Database.Database, id: number, actor: Actor): Task {
   return db.transaction(() => {
+    assertLegacyTaskMutation(db, [id]);
     mustGetTask(db, id);
     db.prepare(`UPDATE tasks SET blocked = 0, block_reason = NULL, updated_at = ? WHERE id = ?`)
       .run(now(), id);
     appendTaskMutationEvent(db, id, actor, 'unblocked');
     return mustGetTask(db, id);
-  })();
+  }).immediate();
 }
 
 export function linkTasks(
   db: Database.Database, fromId: number, toId: number, kind: string, actor: Actor,
 ): void {
   db.transaction(() => {
+    assertLegacyTaskMutation(db, [fromId, toId]);
     mustGetTask(db, fromId);
     mustGetTask(db, toId);
     const r = db.prepare(
       `INSERT OR IGNORE INTO task_links (from_id, to_id, kind) VALUES (?, ?, ?)`,
     ).run(fromId, toId, kind);
     if (r.changes > 0) appendTaskMutationEvent(db, fromId, actor, 'linked', { to: toId, kind });
-  })();
+  }).immediate();
 }
 
 export function archiveTask(db: Database.Database, id: number, actor: Actor): Task {
   return db.transaction(() => {
+    assertLegacyTaskMutation(db, [id]);
     mustGetTask(db, id);
     db.prepare(`UPDATE tasks SET archived_at = ?, updated_at = ? WHERE id = ?`)
       .run(now(), now(), id);
     appendTaskMutationEvent(db, id, actor, 'archived');
     return mustGetTask(db, id);
-  })();
+  }).immediate();
 }
 
 export function unarchiveTask(db: Database.Database, id: number, actor: Actor): Task {
   return db.transaction(() => {
+    assertLegacyTaskMutation(db, [id]);
     mustGetTask(db, id);
     db.prepare(`UPDATE tasks SET archived_at = NULL, updated_at = ? WHERE id = ?`)
       .run(now(), id);
     appendTaskMutationEvent(db, id, actor, 'unarchived');
     return mustGetTask(db, id);
-  })();
+  }).immediate();
 }

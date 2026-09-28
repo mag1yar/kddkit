@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { ChildProcess } from 'node:child_process';
 
 declare const CAPS: {
     readonly briefBytes: 4096;
@@ -792,4 +793,186 @@ interface TaskBrief {
 }
 declare function taskBrief(db: Database.Database, decisionsDir: string, id: number): TaskBrief;
 
-export { type Actor, type AgentEvent, type AgentEventKind, type AttentionInbox, type AttentionItem, type AttentionReason, type AutoTick, BUG_BODY_TEMPLATE, type BindingKind, type BriefSection, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type EventRow, type FileRow, KINDS, KddError, type KillFn, type KillOutcome, type Kind, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, type ManualProvenance, type ManualSession, type NextAction, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ProjectRecord, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RepositoryAccess, type RepositoryBinding, type RepositoryRecord, type RunResult, STATUSES, type SessionHandoff, type SpawnFn, type Status, type StopResult, TICK_INTERVALS, TRANSITIONS, type Task, type TaskBrief, type TaskDetailCapped, type TaskListRow, type TickResult, type TickRun, type Track, type UpdateChannel, _cacheUntil, _resetCache, addCriterion, addDecision, addRepository, addTask, agentId, appendAgentEvent, appendEvent, appendTaskMutationEvent, archiveTask, assertLegacyDecisionSource, attachFile, attentionData, authorOf, bindRepository, bindingsOf, blockTask, boardData, canSyncLegacyDecisions, canonicalCommonDir, canonicalProjectPath, capDetail, capText, checkMove, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, contentHash, createTrack, decisionDetail, deleteTrack, detachFile, editTask, editTrack, ensureWorktree, expiredLeases, exportBoard, filePath, filesDir, getAutoTick, getFile, getLastRun, getReminded, headCommit, initializeProjectStore, isInlineMime, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listFiles, listProjectCheckouts, listProjects, listTracks, logError, lookupProjectStore, manualSessionFromEnv, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, normalizeSessionId, normalizeSourceTasks, now, openDb, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, projectOf, projectPathOf, projectToplevelOf, pruneAgentEvents, reapExpired, rebindRepository, rebuild, recall, reclaimExpired, recordFailedAttempt, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, repositoriesOf, resolveDbPath, resolveDecisionsDir, resolveToplevel, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, setReminded, slugify, statusDigest, stopWorkers, storeIdentity, sweepWorktrees, syncIndex, syncedTaskDetail, taskBranchHead, taskBrief, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, unsubmitted, updateDisposition, versionChannel, worktreePath };
+/** A successful scan is not a launch permit: start/resume must scan again under the controller lock. */
+declare function assertWritableRoots(roots: readonly string[]): readonly string[];
+/** Trusted controller filesystem/config mutations must use this same protected project directory. */
+declare function withNativeControllerLock<T>(controlDir: string, action: () => T | Promise<T>): Promise<T>;
+interface NativeLaunchInput {
+    controlDir: string;
+    writableRoots: readonly string[];
+    executable: string;
+    args: readonly string[];
+    cwd: string;
+    env: Readonly<Record<string, string>>;
+    phase: 'start' | 'resume';
+    verified?: VerifiedCodexPackage;
+}
+/** Trusted-host primitive; the runtime adapter must bind its arguments to the verified native package. */
+declare function spawnCheckedNative(input: NativeLaunchInput): Promise<ChildProcess>;
+interface CodexPermissionInput {
+    executable: string;
+    cwd: string;
+    controlDir: string;
+    model: string;
+    readableRoots: readonly string[];
+    writableRoot?: string;
+    scratchDir: string;
+    protectedPaths: readonly string[];
+    brokerConfigPath?: string;
+    brokerEntryPath?: string;
+}
+interface NativeProbeResult {
+    caseId: string;
+    tool: string;
+    outcome: 'allowed' | 'denied' | 'inconclusive';
+    executed: boolean;
+    unchangedProtectedBytes: boolean;
+}
+interface CodexBrokerBinding {
+    configPath: string;
+    entryPath: string;
+    dbPath: string;
+    nodePath: string;
+}
+interface VerifiedCodexPackage {
+    readonly executable: string;
+    readonly version: string;
+    readonly cwd: string;
+    readonly controlDir: string;
+    readonly readableRoots: readonly string[];
+    readonly writableRoot?: string;
+    readonly scratchDir: string;
+    readonly protectedPaths: readonly string[];
+    readonly argv: readonly string[];
+    readonly env: Readonly<Record<string, string>>;
+    readonly configHash: string;
+    readonly results: readonly NativeProbeResult[];
+}
+declare function assertVerifiedCodexPackage(packet: unknown): asserts packet is VerifiedCodexPackage;
+declare function preflightCodex(input: CodexPermissionInput): Promise<VerifiedCodexPackage>;
+
+type RunOperation = 'get_context' | 'submit_report' | 'request_question';
+interface ControllerHandle {
+    readonly kind: 'controller';
+}
+interface RunContext {
+    readonly kind: 'run';
+}
+interface IssueRunInput {
+    taskId: number;
+    workItemId: string;
+    runId: string;
+    expectedGeneration: number;
+    expiresAt: number;
+    operations: readonly RunOperation[];
+    repositories: readonly {
+        repoId: string;
+        checkoutPath: string;
+        write: boolean;
+    }[];
+    native: VerifiedCodexPackage;
+}
+interface IssuedRunAuthority {
+    authorityId: string;
+    generation: number;
+    token: string;
+}
+declare function openController(db: Database.Database): ControllerHandle;
+declare function assertLegacyTaskMutation(db: Database.Database, taskIds: readonly number[]): void;
+declare function protectTask(handle: ControllerHandle, taskId: number): void;
+declare function issueRunAuthority(handle: ControllerHandle, input: IssueRunInput): IssuedRunAuthority;
+declare function revokeRunAuthority(handle: ControllerHandle, authorityId: string): void;
+declare function openRunContext(db: Database.Database, token: string): RunContext;
+interface RunContextSnapshot {
+    projectId: string;
+    taskId: number;
+    workItemId: string;
+    runId: string;
+    generation: number;
+    task: {
+        title: string;
+        body: string | null;
+        status: string;
+    };
+    criteria: {
+        id: number;
+        text: string;
+        checked: boolean;
+    }[];
+    decisions: {
+        slug: string;
+        title: string;
+    }[];
+}
+declare function runOperations(context: RunContext): readonly RunOperation[];
+declare function readRunContext(context: RunContext): RunContextSnapshot;
+declare const submitRunReport: (context: RunContext, body: string) => number;
+declare const requestRunQuestion: (context: RunContext, body: string) => number;
+
+interface NativeTool {
+    name?: string;
+    type: string;
+    namespace?: string;
+    tools?: NativeTool[];
+}
+interface NativeObservation extends NativeProbeResult {
+    mode: 'readonly' | 'workspace';
+    control: boolean;
+    phase: 'start' | 'resume';
+    exitCode: number | null;
+    output: unknown;
+    timedOut: boolean;
+    providerError?: string;
+    requests: unknown[];
+    tools: NativeTool[];
+    permissionHash: string;
+    configHash: string;
+    challengeHash?: string;
+    protectedHashes: {
+        path: string;
+        before: string;
+        after: string;
+    }[];
+    diagnostic?: string;
+    failure?: string;
+    matchedControl?: string;
+}
+interface NativeFailure {
+    caseId?: string;
+    mode?: string;
+    reason?: string;
+    failure?: string;
+}
+interface NativeRefusal {
+    caseId: string;
+    phase: 'start' | 'resume';
+    outcome: 'denied';
+    executed: false;
+}
+interface NetworkControl {
+    caseId: string;
+    role: string;
+    exitCode: number;
+    commandHash: string;
+    output: string;
+}
+interface NativeEvidence {
+    version: string;
+    model: string;
+    executableHash: string;
+    scriptHash: string;
+    guardHash: string;
+    applicable: boolean;
+    rawDiagnostic: boolean;
+    preflight: NativeRefusal[];
+    networkControls: NetworkControl[];
+    attempted: number;
+    executed: number;
+    failures: NativeFailure[];
+    observations: NativeObservation[];
+    operations: readonly RunOperation[];
+}
+/** Actual Codex tools; the deterministic provider supplies model responses only. */
+declare function observeCodexNative(executablePath: string, rawDiagnostic?: boolean, model?: string, broker?: CodexBrokerBinding, brokerOnly?: boolean): Promise<NativeEvidence>;
+
+export { type Actor, type AgentEvent, type AgentEventKind, type AttentionInbox, type AttentionItem, type AttentionReason, type AutoTick, BUG_BODY_TEMPLATE, type BindingKind, type BriefSection, CAPS, type CodexPermissionInput, type Comment, type ControllerHandle, type Criterion, DEFAULT_TTL, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type EventRow, type FileRow, type IssueRunInput, type IssuedRunAuthority, KINDS, KddError, type KillFn, type KillOutcome, type Kind, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, type ManualProvenance, type ManualSession, type NativeEvidence, type NativeLaunchInput, type NativeProbeResult, type NextAction, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ProjectRecord, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RepositoryAccess, type RepositoryBinding, type RepositoryRecord, type RunContext, type RunContextSnapshot, type RunOperation, type RunResult, STATUSES, type SessionHandoff, type SpawnFn, type Status, type StopResult, TICK_INTERVALS, TRANSITIONS, type Task, type TaskBrief, type TaskDetailCapped, type TaskListRow, type TickResult, type TickRun, type Track, type UpdateChannel, type VerifiedCodexPackage, _cacheUntil, _resetCache, addCriterion, addDecision, addRepository, addTask, agentId, appendAgentEvent, appendEvent, appendTaskMutationEvent, archiveTask, assertLegacyDecisionSource, assertLegacyTaskMutation, assertVerifiedCodexPackage, assertWritableRoots, attachFile, attentionData, authorOf, bindRepository, bindingsOf, blockTask, boardData, canSyncLegacyDecisions, canonicalCommonDir, canonicalProjectPath, capDetail, capText, checkMove, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, contentHash, createTrack, decisionDetail, deleteTrack, detachFile, editTask, editTrack, ensureWorktree, expiredLeases, exportBoard, filePath, filesDir, getAutoTick, getFile, getLastRun, getReminded, headCommit, initializeProjectStore, isInlineMime, issueRunAuthority, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listFiles, listProjectCheckouts, listProjects, listTracks, logError, lookupProjectStore, manualSessionFromEnv, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, normalizeSessionId, normalizeSourceTasks, now, observeCodexNative, openController, openDb, openRunContext, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, preflightCodex, projectOf, projectPathOf, projectToplevelOf, protectTask, pruneAgentEvents, readRunContext, reapExpired, rebindRepository, rebuild, recall, reclaimExpired, recordFailedAttempt, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, repositoriesOf, requestRunQuestion, resolveDbPath, resolveDecisionsDir, resolveToplevel, revokeRunAuthority, runOperations, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, setReminded, slugify, spawnCheckedNative, statusDigest, stopWorkers, storeIdentity, submitRunReport, sweepWorktrees, syncIndex, syncedTaskDetail, taskBranchHead, taskBrief, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, unsubmitted, updateDisposition, versionChannel, withNativeControllerLock, worktreePath };

@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CAPS, addTask, addRepository, createTrack, editTrack, getAutoTick, openDb, resolveDbPath, setAutoTick, setLastRun } from '@kddkit/core';
+import { CAPS, addTask, addRepository, createTrack, editTrack, getAutoTick, openDb, openController, protectTask, resolveDbPath, setAutoTick, setLastRun } from '@kddkit/core';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
@@ -13,6 +13,28 @@ const mk = () => {
   const db = openDb(':memory:', 'x');
   return { db, app: createApp(() => db) };
 };
+
+it('refuses managed UI mutations and reordering through a legacy target without side effects', async () => {
+  const { db, app } = mk(), track = createTrack(db, { name: 'shared' });
+  const managed = addTask(db, { title: 'managed', criteria: ['proof'], track_id: track.id }, user);
+  const legacy = addTask(db, { title: 'legacy', track_id: track.id }, user);
+  protectTask(openController(db), managed.id);
+  const snapshot = () => ['tasks', 'criteria', 'comments', 'events', 'tracks'].map(table => db.prepare(`SELECT * FROM ${table}`).all());
+  const before = snapshot();
+  for (const [path, method, body] of [
+    [`/api/tasks/${managed.id}`, 'PATCH', { title: 'changed', actor: 'user', owner: true }],
+    [`/api/tasks/${managed.id}/move`, 'POST', { to: 'done', reason: 'user approved' }],
+    [`/api/tasks/${legacy.id}/move`, 'POST', { to: 'new', order: [legacy.id, managed.id] }],
+    [`/api/tasks/${managed.id}/block`, 'POST', { reason: 'needs human' }],
+    [`/api/tasks/${managed.id}/comments`, 'POST', { body: 'owner says yes' }],
+    [`/api/tracks/${track.id}`, 'DELETE', {}],
+  ] as const) {
+    const response = await app.request(path, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    expect(response.status).toBe(400); expect(await response.text()).toMatch(/managed/); expect(snapshot()).toEqual(before);
+  }
+  const response = await app.request(`/api/tasks/${legacy.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'ordinary' }) });
+  expect(response.status).toBe(200); db.close();
+});
 
 describe('GET /api/board', () => {
   it('keeps the original project address and one board after binding a backend', async () => {

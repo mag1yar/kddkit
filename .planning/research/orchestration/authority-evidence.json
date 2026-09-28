@@ -1,0 +1,14 @@
+{
+  "schema": 14,
+  "checks": [
+    "core user/reason and hidden multirow target",
+    "built CLI rejects forged user + acceptance reason",
+    "global MCP refuses owner metadata and managed update",
+    "global MCP checks detached file owner before editing a legacy target",
+    "real HTTP UI refuses protected reorder through a legacy target",
+    "real HTTP UI refuses managed edit with claimed owner identity",
+    "legacy core/CLI/MCP/UI behavior preserved"
+  ],
+  "refusedChanges": 0,
+  "blobPreserved": true
+}

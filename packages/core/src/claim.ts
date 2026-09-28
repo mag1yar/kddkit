@@ -1,3 +1,4 @@
+import { assertLegacyTaskMutation } from './authority.js';
 import type Database from 'better-sqlite3';
 import { now } from './db.js';
 import { MAX_FAILED_ATTEMPTS, type Actor } from './state.js';
@@ -14,16 +15,19 @@ const SYSTEM: Actor = { type: 'ai', id: 'system' }; // provenance ленивог
 export function recordFailedAttempt(
   db: Database.Database, id: number, actor: Actor, reason: string,
 ): void {
-  db.prepare(`UPDATE tasks SET failed_attempts = failed_attempts + 1, updated_at = ? WHERE id = ?`)
-    .run(now(), id);
-  const fa = (db.prepare(`SELECT failed_attempts FROM tasks WHERE id = ?`).get(id) as
-    { failed_attempts: number }).failed_attempts;
-  if (fa >= MAX_FAILED_ATTEMPTS) {
-    db.prepare(`UPDATE tasks SET blocked = 1, block_reason = ?, updated_at = ? WHERE id = ?`)
-      .run(`${fa} failed attempts (agent driver): ${reason}`, now(), id);
-    appendEvent(db, id, actor, 'blocked',
-      { reason: `${fa} failed attempts`, last: reason }, { type: 'claim', level: 'error' });
-  }
+  db.transaction(() => {
+    assertLegacyTaskMutation(db, [id]);
+    db.prepare(`UPDATE tasks SET failed_attempts = failed_attempts + 1, updated_at = ? WHERE id = ?`)
+      .run(now(), id);
+    const fa = (db.prepare(`SELECT failed_attempts FROM tasks WHERE id = ?`).get(id) as
+      { failed_attempts: number }).failed_attempts;
+    if (fa >= MAX_FAILED_ATTEMPTS) {
+      db.prepare(`UPDATE tasks SET blocked = 1, block_reason = ?, updated_at = ? WHERE id = ?`)
+        .run(`${fa} failed attempts (agent driver): ${reason}`, now(), id);
+      appendEvent(db, id, actor, 'blocked',
+        { reason: `${fa} failed attempts`, last: reason }, { type: 'claim', level: 'error' });
+    }
+  }).immediate();
 }
 
 // Освобождение claim без прогресса (sync spawn-fail): in_progress -> new, снять lease, засчитать неудачу.
@@ -31,12 +35,13 @@ export function releaseClaim(
   db: Database.Database, id: number, actor: Actor, reason: string,
 ): void {
   db.transaction(() => {
+    assertLegacyTaskMutation(db, [id]);
     db.prepare(
       `UPDATE tasks SET status='new', claimed_by=NULL, claim_expires=NULL, updated_at=? WHERE id=?`,
     ).run(now(), id);
     appendEvent(db, id, actor, 'released', { reason }, { type: 'claim', level: 'warn' });
     recordFailedAttempt(db, id, actor, reason);
-  })();
+  }).immediate();
 }
 
 // NaN/0/negative ttl -> claim_expires = NaN, который reclaimExpired (< ?) никогда не матчит: lease навечно.
@@ -53,6 +58,7 @@ function assertTtl(ttl: number): void {
 // человеку через явный `kdd claim <id>` research взять можно, агенту нет.
 const CLAIMABLE_SQL =
   `status = 'new' AND blocked = 0 AND archived_at IS NULL AND claimed_by IS NULL
+   AND NOT EXISTS (SELECT 1 FROM managed_task_policy p WHERE p.task_id=tasks.id)
    AND kind <> 'research'
    AND (SELECT COUNT(*) FROM criteria WHERE criteria.task_id = tasks.id) > 0`;
 
@@ -89,7 +95,8 @@ const isTickLease = (claimedBy: string | null): claimedBy is string =>
 export function expiredLeases(db: Database.Database): ReclaimedLease[] {
   return db.prepare(
     `SELECT id, claimed_by FROM tasks
-     WHERE status = 'in_progress' AND claim_expires IS NOT NULL AND claim_expires < ?`,
+     WHERE status = 'in_progress' AND claim_expires IS NOT NULL AND claim_expires < ?
+       AND NOT EXISTS (SELECT 1 FROM managed_task_policy p WHERE p.task_id=tasks.id)`,
   ).all(now()) as ReclaimedLease[];
 }
 
@@ -100,25 +107,28 @@ export function expiredLeases(db: Database.Database): ReclaimedLease[] {
 export function reclaimExpired(
   db: Database.Database, opts: { except?: ReadonlySet<number> } = {},
 ): ReclaimedLease[] {
-  const t = now();
-  const expired = expiredLeases(db).filter((e) => !opts.except?.has(e.id));
-  const clear = db.prepare(
-    `UPDATE tasks SET status='new', claimed_by=NULL, claim_expires=NULL, updated_at=? WHERE id=?`);
-  for (const e of expired) {
-    clear.run(t, e.id);
-    appendEvent(db, e.id, SYSTEM, 'reclaimed', { former: e.claimed_by }, { type: 'claim', level: 'warn' });
-    // только tick-спауны штрафуем: долгая/ручная user-claim, истёкшая по TTL, не должна авто-блокироваться
-    if (isTickLease(e.claimed_by)) {
-      recordFailedAttempt(db, e.id, SYSTEM, 'lease expired without progress');
-      // observability best-effort: закрытие осиротевшего рана НЕ должно ронять reclaim.
-      // appendAgentEvent открывает вложенный savepoint — его падение откатывает ТОЛЬКО себя;
-      // без catch оно бы пробилось наружу и откатило весь sweep (задачи застряли бы in_progress).
-      // Реклейм задачи (clear + reclaimed event) уже закоммичен выше — он durable, feed-запись нет.
-      try { closeOrphanRun(db, e.id, e.claimed_by, 'lease expired, reclaimed by driver'); }
-      catch { /* run-close потерян, задача всё равно reclaimed */ }
+  return db.transaction(() => {
+    const t = now();
+    const expired = expiredLeases(db).filter((e) => !opts.except?.has(e.id));
+    assertLegacyTaskMutation(db, expired.map(row => row.id));
+    const clear = db.prepare(
+      `UPDATE tasks SET status='new', claimed_by=NULL, claim_expires=NULL, updated_at=? WHERE id=?`);
+    for (const e of expired) {
+      clear.run(t, e.id);
+      appendEvent(db, e.id, SYSTEM, 'reclaimed', { former: e.claimed_by }, { type: 'claim', level: 'warn' });
+      // только tick-спауны штрафуем: долгая/ручная user-claim, истёкшая по TTL, не должна авто-блокироваться
+      if (isTickLease(e.claimed_by)) {
+        recordFailedAttempt(db, e.id, SYSTEM, 'lease expired without progress');
+        // observability best-effort: закрытие осиротевшего рана НЕ должно ронять reclaim.
+        // appendAgentEvent открывает вложенный savepoint — его падение откатывает ТОЛЬКО себя;
+        // без catch оно бы пробилось наружу и откатило весь sweep (задачи застряли бы in_progress).
+        // Реклейм задачи (clear + reclaimed event) уже закоммичен выше — он durable, feed-запись нет.
+        try { closeOrphanRun(db, e.id, e.claimed_by, 'lease expired, reclaimed by driver'); }
+        catch { /* run-close потерян, задача всё равно reclaimed */ }
+      }
     }
-  }
-  return expired;
+    return expired;
+  }).immediate();
 }
 
 // observability: закрыть осиротевший agent-run reclaim'нутого воркера, чтобы feed не показывал
@@ -178,7 +188,7 @@ export function reapExpired(db: Database.Database, kill?: KillFn): ReapResult {
       if (isTickLease(l.claimed_by) && !seen.some((s) => s.id === l.id)) except.add(l.id);
     }
     return reclaimExpired(db, { except });
-  })();
+  }).immediate();
   return { reclaimed, killed, stuck };
 }
 
@@ -192,7 +202,8 @@ export interface StopResult { killed: number; released: number; stuck: number }
 // держит слот дальше — его добьёт TTL-путь, повторять нечего.
 export function stopWorkers(db: Database.Database, kill?: KillFn): StopResult {
   const live = db.prepare(
-    `SELECT id, claimed_by FROM tasks WHERE status='in_progress' AND claimed_by IS NOT NULL`,
+    `SELECT id, claimed_by FROM tasks WHERE status='in_progress' AND claimed_by IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM managed_task_policy p WHERE p.task_id=tasks.id)`,
   ).all() as ReclaimedLease[];
   const dead: { id: number; claimedBy: string }[] = [];
   let killed = 0;
@@ -209,6 +220,7 @@ export function stopWorkers(db: Database.Database, kill?: KillFn): StopResult {
     dead.push({ id: l.id, claimedBy });
   }
   const released = db.transaction(() => {
+    assertLegacyTaskMutation(db, dead.map(row => row.id));
     // Снимок брали ДО убийства, а kill спит секундами — за это время воркер мог успеть честно
     // доделать работу и уйти в review, сняв claim. Без CAS мы вернули бы его готовую задачу в
     // new и следующим тиком посадили бы на неё второго агента. Условие в WHERE — та же защита,
@@ -226,7 +238,7 @@ export function stopWorkers(db: Database.Database, kill?: KillFn): StopResult {
       catch { /* фид — best effort, задача всё равно освобождена */ }
     }
     return n;
-  })();
+  }).immediate();
   return { killed, released, stuck };
 }
 
@@ -235,8 +247,10 @@ export function claimTask(
   opts: { kill?: KillFn } = {},
 ): { ok: true; task: Task } | { ok: false; error: string } {
   assertTtl(ttl);
+  assertLegacyTaskMutation(db, [id]);
   reapExpired(db, opts.kill); // ДО транзакции: внутри неё нельзя убивать
   return db.transaction((): { ok: true; task: Task } | { ok: false; error: string } => {
+    assertLegacyTaskMutation(db, [id]);
     const t = mustGetTask(db, id);
     // Только ai: человеку research брать можно, `kdd claim <id>` для него — «я это взял».
     // Контраст с CLAIMABLE_SQL выше: там research исключён для ВСЕХ (actor туда не приходит),
@@ -264,7 +278,7 @@ export function claimTask(
     }
     appendTaskMutationEvent(db, id, actor, 'claimed', { ttl, expires }, { type: 'claim' });
     return { ok: true, task: mustGetTask(db, id) };
-  })();
+  }).immediate();
 }
 
 // null = очередь пуста (не ошибка). Гонка разрешается перебором: проигравший CAS -> следующий кандидат.
@@ -291,7 +305,7 @@ export function claimNext(
       }
     }
     return null;
-  })();
+  }).immediate();
 }
 
 // Продление тем же CAS: rowcount 0 => «ты больше не владелец» (истёк/reclaim), агент обязан остановиться.
@@ -306,6 +320,7 @@ export function renewClaim(
 ): { ok: true; task: Task } | { ok: false; error: string } {
   assertTtl(ttl);
   return db.transaction((): { ok: true; task: Task } | { ok: false; error: string } => {
+    assertLegacyTaskMutation(db, [id]);
     mustGetTask(db, id);
     const expires = now() + ttl;
     const r = db.prepare(
@@ -319,5 +334,5 @@ export function renewClaim(
       appendEvent(db, id, actor, 'claim_renewed', { ttl, expires }, { type: 'claim' });
     }
     return { ok: true, task: mustGetTask(db, id) };
-  })();
+  }).immediate();
 }

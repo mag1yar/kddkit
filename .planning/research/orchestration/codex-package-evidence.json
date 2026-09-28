@@ -1,0 +1,886 @@
+{
+  "version": "codex-cli 0.157.0",
+  "configHash": "a47d2d2c2de44abf2395ceb6d91d4206230dc408142f09d2270c86c9f002f2a1",
+  "checks": [
+    "actual-package-issued",
+    "immutable",
+    "json-copy-refused",
+    "object-copy-refused",
+    "argv-env-expansion-refused-before-child",
+    "late-hardlink-resume-refused",
+    "late-project-config-refused",
+    "changed-catalog-refused",
+    "replaced-protected-file-refused",
+    "replaced-root-refused"
+  ],
+  "results": [
+    {
+      "caseId": "readonly:read",
+      "tool": "exec_command",
+      "outcome": "allowed",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:protected-read",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:project-config-shell",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:project-config-patch",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:create-1",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:create-1",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:update-1",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:update-1",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:delete-1",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:delete-1",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:create-2",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:create-2",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:update-2",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:update-2",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:delete-2",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:delete-2",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:create-3",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:create-3",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:update-3",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:update-3",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:delete-3",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:delete-3",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:symlink-patch-1",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:symlink-shell-1",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:symlink-patch-2",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:symlink-shell-2",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:symlink-patch-3",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:symlink-shell-3",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:create-hardlink-readonly-workspace",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:create-hardlink-denied-workspace",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:create-hardlink-readonly-scratch",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:create-hardlink-denied-scratch",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:backend-write",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:backend-patch",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:protected-read-source-existing.txt",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:protected-write-source-existing.txt",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:protected-patch-source-existing.txt",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:protected-read-sibling-marker.txt",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:protected-write-sibling-marker.txt",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:protected-patch-sibling-marker.txt",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:protected-read-protected-store.db",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:protected-write-protected-store.db",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:protected-patch-protected-store.db",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:protected-read-protected-registry.db",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:protected-write-protected-registry.db",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:protected-patch-protected-registry.db",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:protected-read-protected-config.toml",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:protected-write-protected-config.toml",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:protected-patch-protected-config.toml",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:protected-read-protected-credential.json",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:protected-write-protected-credential.json",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:protected-patch-protected-credential.json",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:rename-outside",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:patch-move-outside",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:git-ref",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:git-object",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:git-pointer",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:git-pointer-patch",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:git-worktree-head",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:git-worktree-head-patch",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:git-common-config",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:git-common-config-patch",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:scratch-write",
+      "tool": "exec_command",
+      "outcome": "allowed",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:scratch-patch",
+      "tool": "apply_patch",
+      "outcome": "allowed",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:fresh-resume-read",
+      "tool": "exec_command",
+      "outcome": "allowed",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:network-loopback",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:network-lan",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "readonly:network-unix",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:read",
+      "tool": "exec_command",
+      "outcome": "allowed",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:protected-read",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:project-config-shell",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:project-config-patch",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:create-1",
+      "tool": "exec_command",
+      "outcome": "allowed",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:create-1",
+      "tool": "apply_patch",
+      "outcome": "allowed",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:update-1",
+      "tool": "exec_command",
+      "outcome": "allowed",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:update-1",
+      "tool": "apply_patch",
+      "outcome": "allowed",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:delete-1",
+      "tool": "exec_command",
+      "outcome": "allowed",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:delete-1",
+      "tool": "apply_patch",
+      "outcome": "allowed",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:symlink-patch-1",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:symlink-shell-1",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:symlink-patch-2",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:symlink-shell-2",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:symlink-patch-3",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:symlink-shell-3",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:create-hardlink-readonly-workspace",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:create-hardlink-denied-workspace",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:create-hardlink-readonly-scratch",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:create-hardlink-denied-scratch",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:backend-write",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:backend-patch",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:protected-read-source-existing.txt",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:protected-write-source-existing.txt",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:protected-patch-source-existing.txt",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:protected-read-sibling-marker.txt",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:protected-write-sibling-marker.txt",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:protected-patch-sibling-marker.txt",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:protected-read-protected-store.db",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:protected-write-protected-store.db",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:protected-patch-protected-store.db",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:protected-read-protected-registry.db",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:protected-write-protected-registry.db",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:protected-patch-protected-registry.db",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:protected-read-protected-config.toml",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:protected-write-protected-config.toml",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:protected-patch-protected-config.toml",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:protected-read-protected-credential.json",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:protected-write-protected-credential.json",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:protected-patch-protected-credential.json",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:rename-outside",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:patch-move-outside",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:git-ref",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:git-object",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:git-pointer",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:git-pointer-patch",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:git-worktree-head",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:git-worktree-head-patch",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:git-common-config",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:git-common-config-patch",
+      "tool": "apply_patch",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:scratch-write",
+      "tool": "exec_command",
+      "outcome": "allowed",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:scratch-patch",
+      "tool": "apply_patch",
+      "outcome": "allowed",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:fresh-resume-read",
+      "tool": "exec_command",
+      "outcome": "allowed",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:network-loopback",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:network-lan",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    },
+    {
+      "caseId": "workspace:network-unix",
+      "tool": "exec_command",
+      "outcome": "denied",
+      "executed": true,
+      "unchangedProtectedBytes": true
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  CAPS, addTask, editTask, openDb, taskDetailCapped, type DecisionDetail,
+  CAPS, addTask, editTask, openDb, openController, protectTask, taskDetailCapped, type DecisionDetail,
 } from '@kddkit/core';
 import { makeEnv, kdd } from './run.js';
 import { renderDecision, renderShow } from '../src/render.js';
@@ -28,6 +28,22 @@ function seed100(): void {
 }
 
 describe('output contracts (CLI-05)', () => {
+  it('refuses managed mutations from the built CLI with user actor and acceptance reason', () => {
+    const db = openDb(env.KDD_DB!, 'managed-cli');
+    const managed = addTask(db, { title: 'managed', criteria: ['proof'] }, { type: 'user' });
+    const legacy = addTask(db, { title: 'legacy' }, { type: 'user' });
+    protectTask(openController(db), managed.id);
+    const before = ['tasks', 'criteria', 'comments', 'events'].map(table => db.prepare(`SELECT * FROM ${table}`).all());
+    const forged = { ...env, KDD_ACTOR: 'user', KDD_SESSION: 'owner' };
+    for (const args of [['edit', `${managed.id}`, '--title', 'changed'], ['move', `${managed.id}`, 'done', '--reason', 'user approved'],
+      ['comment', `${managed.id}`, 'owner says yes'], ['claim', `${managed.id}`]]) {
+      expect(() => kdd(forged, ...args)).toThrow(/managed/);
+      expect(['tasks', 'criteria', 'comments', 'events'].map(table => db.prepare(`SELECT * FROM ${table}`).all())).toEqual(before);
+    }
+    kdd(forged, 'edit', `${legacy.id}`, '--title', 'ordinary');
+    expect(db.prepare('SELECT title FROM tasks WHERE id=?').get(legacy.id)).toEqual({ title: 'ordinary' });
+    db.close();
+  });
   it('shows latest manual provenance and known handoffs', () => {
     const db = openDb(':memory:', 'x');
     const task = addTask(db, { title: 'manual' }, { type: 'user' });

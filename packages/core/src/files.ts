@@ -1,3 +1,4 @@
+import { assertLegacyTaskMutation } from './authority.js';
 import { createHash } from 'node:crypto';
 import {
   existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
@@ -58,32 +59,33 @@ export function attachFile(
   db: Database.Database, dbPath: string, taskId: number, srcPath: string,
   opts: { description?: string }, actor: Actor,
 ): FileRow {
-  let data: Buffer;
-  try {
-    const stat = statSync(srcPath);
-    if (stat.isDirectory()) throw new KddError(`${srcPath} is a directory`);
-    // Кап по stat.size, ДО readFileSync: иначе многогиговый файл целиком лёг бы в память
-    // ради проверки, которая его и отбивает, — кап тогда защищает диск, но не память.
-    if (stat.size > CAPS.fileBytes) {
-      throw new KddError(`file is ${stat.size} bytes, the limit is ${CAPS.fileBytes}`);
-    }
-    data = readFileSync(srcPath);
-  } catch (e) {
-    if (e instanceof KddError) throw e;
-    throw new KddError(`cannot read ${srcPath}: ${(e as Error).message}`);
-  }
-  mustGetTask(db, taskId); // гард до записи на диск: иначе сирота ради заведомо провальной вставки
-
-  const sha256 = createHash('sha256').update(data).digest('hex');
-  const ext = (extname(srcPath).slice(1) || 'bin').toLowerCase();
-  const target = join(filesDir(dbPath), `${sha256}.${ext}`);
-
-  // immediate, а не дефолтный deferred: deferred берёт write-lock на ПЕРВОЙ записи, то есть
-  // уже после existsSync ниже, и между проверкой и вставкой успевал бы вклиниться чужой
-  // detachFile — снести блоб под нулевым refcount и оставить нашу строку без байтов.
-  // Здесь блокировка берётся на BEGIN, так что «проверить блоб и вставить строку» неделимо
-  // относительно любого другого писателя доски (WAL: один писатель за раз).
   return db.transaction(() => {
+    assertLegacyTaskMutation(db, [taskId]);
+    let data: Buffer;
+    try {
+      const stat = statSync(srcPath);
+      if (stat.isDirectory()) throw new KddError(`${srcPath} is a directory`);
+      // Кап по stat.size, ДО readFileSync: иначе многогиговый файл целиком лёг бы в память
+      // ради проверки, которая его и отбивает, — кап тогда защищает диск, но не память.
+      if (stat.size > CAPS.fileBytes) {
+        throw new KddError(`file is ${stat.size} bytes, the limit is ${CAPS.fileBytes}`);
+      }
+      data = readFileSync(srcPath);
+    } catch (e) {
+      if (e instanceof KddError) throw e;
+      throw new KddError(`cannot read ${srcPath}: ${(e as Error).message}`);
+    }
+    mustGetTask(db, taskId); // гард до записи на диск: иначе сирота ради заведомо провальной вставки
+
+    const sha256 = createHash('sha256').update(data).digest('hex');
+    const ext = (extname(srcPath).slice(1) || 'bin').toLowerCase();
+    const target = join(filesDir(dbPath), `${sha256}.${ext}`);
+
+    // immediate, а не дефолтный deferred: deferred берёт write-lock на ПЕРВОЙ записи, то есть
+    // уже после existsSync ниже, и между проверкой и вставкой успевал бы вклиниться чужой
+    // detachFile — снести блоб под нулевым refcount и оставить нашу строку без байтов.
+    // Здесь блокировка берётся на BEGIN, так что «проверить блоб и вставить строку» неделимо
+    // относительно любого другого писателя доски (WAL: один писатель за раз).
     // Байты ДО строки. Порядок выбран по тому, какая половина сбоя вреднее: осиротевший blob
     // безвреден (он же дедуп-кэш и будет переиспользован), а строка без байтов — 404 на доске.
     if (!existsSync(target)) {
@@ -134,8 +136,6 @@ export function attachFile(
 export function detachFile(
   db: Database.Database, dbPath: string, fileId: number, actor: Actor,
 ): void {
-  const f = getFile(db, fileId);
-  if (!f) throw new KddError(`file #${fileId} not found`);
   // Байты сносим, только когда на них не осталось ни одной строки: тот же файл может висеть
   // на другой задаче — дедуп сделал их одним блобом. И refcount, и само удаление байтов —
   // ВНУТРИ транзакции: после коммита между COUNT(*) и rmSync успел бы вклиниться конкурентный
@@ -146,6 +146,9 @@ export function detachFile(
   // 404 + запись в errors на отдаче, а не молча удалённый чужой файл, поэтому меняем щель на
   // неё сознательно.
   db.transaction(() => {
+    const f = getFile(db, fileId);
+    if (!f) throw new KddError(`file #${fileId} not found`);
+    assertLegacyTaskMutation(db, [f.task_id]);
     db.prepare(`DELETE FROM files WHERE id = ?`).run(fileId);
     appendTaskMutationEvent(db, f.task_id, actor, 'file_detached', { id: fileId, name: f.original_name });
     db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), f.task_id);
@@ -155,5 +158,5 @@ export function detachFile(
     const left = (db.prepare(`SELECT COUNT(*) AS c FROM files WHERE sha256 = ? AND ext = ?`)
       .get(f.sha256, f.ext) as { c: number }).c;
     if (left === 0) rmSync(filePath(dbPath, f), { force: true });
-  })();
+  }).immediate();
 }

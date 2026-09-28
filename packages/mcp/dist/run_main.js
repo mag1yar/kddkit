@@ -85,23 +85,23 @@ var require_code = __commonJS({
     };
     exports._Code = _Code;
     exports.nil = new _Code("");
-    function _(strs, ...args) {
+    function _(strs, ...args2) {
       const code = [strs[0]];
       let i = 0;
-      while (i < args.length) {
-        addCodeArg(code, args[i]);
+      while (i < args2.length) {
+        addCodeArg(code, args2[i]);
         code.push(strs[++i]);
       }
       return new _Code(code);
     }
     exports._ = _;
     var plus = new _Code("+");
-    function str(strs, ...args) {
+    function str(strs, ...args2) {
       const expr = [safeStringify(strs[0])];
       let i = 0;
-      while (i < args.length) {
+      while (i < args2.length) {
         expr.push(plus);
-        addCodeArg(expr, args[i]);
+        addCodeArg(expr, args2[i]);
         expr.push(plus, safeStringify(strs[++i]));
       }
       optimize(expr);
@@ -656,10 +656,10 @@ var require_codegen = __commonJS({
       }
     };
     var Func = class extends BlockNode {
-      constructor(name, args, async) {
+      constructor(name, args2, async) {
         super();
         this.name = name;
-        this.args = args;
+        this.args = args2;
         this.async = async;
       }
       render(opts) {
@@ -934,8 +934,8 @@ var require_codegen = __commonJS({
         return this;
       }
       // `function` heading (or definition if funcBody is passed)
-      func(name, args = code_1.nil, async, funcBody) {
-        this._blockNode(new Func(name, args, async));
+      func(name, args2 = code_1.nil, async, funcBody) {
+        this._blockNode(new Func(name, args2, async));
         if (funcBody)
           this.code(funcBody).endFunc();
         return this;
@@ -1029,13 +1029,13 @@ var require_codegen = __commonJS({
     }
     exports.not = not;
     var andCode = mappend(exports.operators.AND);
-    function and(...args) {
-      return args.reduce(andCode);
+    function and(...args2) {
+      return args2.reduce(andCode);
     }
     exports.and = and;
     var orCode = mappend(exports.operators.OR);
-    function or(...args) {
-      return args.reduce(orCode);
+    function or(...args2) {
+      return args2.reduce(orCode);
     }
     exports.or = or;
     function mappend(op) {
@@ -1768,8 +1768,8 @@ var require_code2 = __commonJS({
       ];
       if (it.opts.dynamicRef)
         valCxt.push([names_1.default.dynamicAnchors, names_1.default.dynamicAnchors]);
-      const args = (0, codegen_1._)`${dataAndSchema}, ${gen.object(...valCxt)}`;
-      return context !== codegen_1.nil ? (0, codegen_1._)`${func}.call(${context}, ${args})` : (0, codegen_1._)`${func}(${args})`;
+      const args2 = (0, codegen_1._)`${dataAndSchema}, ${gen.object(...valCxt)}`;
+      return context !== codegen_1.nil ? (0, codegen_1._)`${func}.call(${context}, ${args2})` : (0, codegen_1._)`${func}(${args2})`;
     }
     exports.callValidateCode = callValidateCode;
     var newRegExp = (0, codegen_1._)`new RegExp`;
@@ -2230,10 +2230,10 @@ var require_resolve = __commonJS({
       }
       return count;
     }
-    function getFullPath(resolver, id2 = "", normalize2) {
-      if (normalize2 !== false)
-        id2 = normalizeId(id2);
-      const p = resolver.parse(id2);
+    function getFullPath(resolver, id = "", normalize) {
+      if (normalize !== false)
+        id = normalizeId(id);
+      const p = resolver.parse(id);
       return _getFullPath(resolver, p);
     }
     exports.getFullPath = getFullPath;
@@ -2243,13 +2243,13 @@ var require_resolve = __commonJS({
     }
     exports._getFullPath = _getFullPath;
     var TRAILING_SLASH_HASH = /#\/?$/;
-    function normalizeId(id2) {
-      return id2 ? id2.replace(TRAILING_SLASH_HASH, "") : "";
+    function normalizeId(id) {
+      return id ? id.replace(TRAILING_SLASH_HASH, "") : "";
     }
     exports.normalizeId = normalizeId;
-    function resolveUrl(resolver, baseId, id2) {
-      id2 = normalizeId(id2);
-      return resolver.resolve(baseId, id2);
+    function resolveUrl(resolver, baseId, id) {
+      id = normalizeId(id);
+      return resolver.resolve(baseId, id);
     }
     exports.resolveUrl = resolveUrl;
     var ANCHOR = /^[a-z_][-a-z0-9._]*$/i;
@@ -2979,7 +2979,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve3.call(this, root, ref);
+      let _sch = resolve.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a = root.localRefs) === null || _a === void 0 ? void 0 : _a[ref];
         const { schemaId } = this.opts;
@@ -3006,7 +3006,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve3(root, ref) {
+    function resolve(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3019,8 +3019,8 @@ var require_compile = __commonJS({
       if (Object.keys(root.schema).length > 0 && refPath === baseId) {
         return getJsonPointer.call(this, p, root);
       }
-      const id2 = (0, resolve_1.normalizeId)(refPath);
-      const schOrRef = this.refs[id2] || this.schemas[id2];
+      const id = (0, resolve_1.normalizeId)(refPath);
+      const schOrRef = this.refs[id] || this.schemas[id];
       if (typeof schOrRef == "string") {
         const sch = resolveSchema.call(this, root, schOrRef);
         if (typeof (sch === null || sch === void 0 ? void 0 : sch.schema) !== "object")
@@ -3031,7 +3031,7 @@ var require_compile = __commonJS({
         return;
       if (!schOrRef.validate)
         compileSchema.call(this, schOrRef);
-      if (id2 === (0, resolve_1.normalizeId)(ref)) {
+      if (id === (0, resolve_1.normalizeId)(ref)) {
         const { schema } = schOrRef;
         const { schemaId } = this.opts;
         const schId = schema[schemaId];
@@ -3627,7 +3627,7 @@ var require_fast_uri = __commonJS({
     "use strict";
     var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, escapePreservingEscapes, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils();
     var { SCHEMES, getSchemeHandler } = require_schemes();
-    function normalize2(uri, options) {
+    function normalize(uri, options) {
       if (typeof uri === "string") {
         uri = /** @type {T} */
         normalizeString(uri, options);
@@ -3637,55 +3637,55 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve3(baseURI, relativeURI, options) {
+    function resolve(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const resolved = resolveComponent(parse3(baseURI, schemelessOptions), parse3(relativeURI, schemelessOptions), schemelessOptions, true);
       schemelessOptions.skipEscape = true;
       return serialize(resolved, schemelessOptions);
     }
-    function resolveComponent(base, relative, options, skipNormalization) {
+    function resolveComponent(base, relative2, options, skipNormalization) {
       const target = {};
       if (!skipNormalization) {
         base = parse3(serialize(base, options), options);
-        relative = parse3(serialize(relative, options), options);
+        relative2 = parse3(serialize(relative2, options), options);
       }
       options = options || {};
-      if (!options.tolerant && relative.scheme) {
-        target.scheme = relative.scheme;
-        target.userinfo = relative.userinfo;
-        target.host = relative.host;
-        target.port = relative.port;
-        target.path = removeDotSegments(relative.path || "");
-        target.query = relative.query;
+      if (!options.tolerant && relative2.scheme) {
+        target.scheme = relative2.scheme;
+        target.userinfo = relative2.userinfo;
+        target.host = relative2.host;
+        target.port = relative2.port;
+        target.path = removeDotSegments(relative2.path || "");
+        target.query = relative2.query;
       } else {
-        if (relative.userinfo !== void 0 || relative.host !== void 0 || relative.port !== void 0) {
-          target.userinfo = relative.userinfo;
-          target.host = relative.host;
-          target.port = relative.port;
-          target.path = removeDotSegments(relative.path || "");
-          target.query = relative.query;
+        if (relative2.userinfo !== void 0 || relative2.host !== void 0 || relative2.port !== void 0) {
+          target.userinfo = relative2.userinfo;
+          target.host = relative2.host;
+          target.port = relative2.port;
+          target.path = removeDotSegments(relative2.path || "");
+          target.query = relative2.query;
         } else {
-          if (!relative.path) {
+          if (!relative2.path) {
             target.path = base.path;
-            if (relative.query !== void 0) {
-              target.query = relative.query;
+            if (relative2.query !== void 0) {
+              target.query = relative2.query;
             } else {
               target.query = base.query;
             }
           } else {
-            if (relative.path[0] === "/") {
-              target.path = removeDotSegments(relative.path);
+            if (relative2.path[0] === "/") {
+              target.path = removeDotSegments(relative2.path);
             } else {
               if ((base.userinfo !== void 0 || base.host !== void 0 || base.port !== void 0) && !base.path) {
-                target.path = "/" + relative.path;
+                target.path = "/" + relative2.path;
               } else if (!base.path) {
-                target.path = relative.path;
+                target.path = relative2.path;
               } else {
-                target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative.path;
+                target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative2.path;
               }
               target.path = removeDotSegments(target.path);
             }
-            target.query = relative.query;
+            target.query = relative2.query;
           }
           target.userinfo = base.userinfo;
           target.host = base.host;
@@ -3693,7 +3693,7 @@ var require_fast_uri = __commonJS({
         }
         target.scheme = base.scheme;
       }
-      target.fragment = relative.fragment;
+      target.fragment = relative2.fragment;
       return target;
     }
     function equal(uriA, uriB, options) {
@@ -3894,8 +3894,8 @@ var require_fast_uri = __commonJS({
     }
     var fastUri = {
       SCHEMES,
-      normalize: normalize2,
-      resolve: resolve3,
+      normalize,
+      resolve,
       resolveComponent,
       equal,
       serialize,
@@ -4059,19 +4059,19 @@ var require_core = __commonJS({
         this.addKeyword("$async");
       }
       _addDefaultMetaSchema() {
-        const { $data, meta: meta2, schemaId } = this.opts;
+        const { $data, meta, schemaId } = this.opts;
         let _dataRefSchema = $dataRefSchema;
         if (schemaId === "id") {
           _dataRefSchema = { ...$dataRefSchema };
           _dataRefSchema.id = _dataRefSchema.$id;
           delete _dataRefSchema.$id;
         }
-        if (meta2 && $data)
+        if (meta && $data)
           this.addMetaSchema(_dataRefSchema, _dataRefSchema[schemaId], false);
       }
       defaultMeta() {
-        const { meta: meta2, schemaId } = this.opts;
-        return this.opts.defaultMeta = typeof meta2 == "object" ? meta2[schemaId] || meta2 : void 0;
+        const { meta, schemaId } = this.opts;
+        return this.opts.defaultMeta = typeof meta == "object" ? meta[schemaId] || meta : void 0;
       }
       validate(schemaKeyRef, data) {
         let v;
@@ -4091,12 +4091,12 @@ var require_core = __commonJS({
         const sch = this._addSchema(schema, _meta);
         return sch.validate || this._compileSchemaEnv(sch);
       }
-      compileAsync(schema, meta2) {
+      compileAsync(schema, meta) {
         if (typeof this.opts.loadSchema != "function") {
           throw new Error("options.loadSchema should be a function");
         }
         const { loadSchema } = this.opts;
-        return runCompileAsync.call(this, schema, meta2);
+        return runCompileAsync.call(this, schema, meta);
         async function runCompileAsync(_schema, _meta) {
           await loadMetaSchema.call(this, _schema.$schema);
           const sch = this._addSchema(_schema, _meta);
@@ -4128,7 +4128,7 @@ var require_core = __commonJS({
           if (!this.refs[ref])
             await loadMetaSchema.call(this, _schema.$schema);
           if (!this.refs[ref])
-            this.addSchema(_schema, ref, meta2);
+            this.addSchema(_schema, ref, meta);
         }
         async function _loadSchema(ref) {
           const p = this._loading[ref];
@@ -4148,15 +4148,15 @@ var require_core = __commonJS({
             this.addSchema(sch, void 0, _meta, _validateSchema);
           return this;
         }
-        let id2;
+        let id;
         if (typeof schema === "object") {
           const { schemaId } = this.opts;
-          id2 = schema[schemaId];
-          if (id2 !== void 0 && typeof id2 != "string") {
+          id = schema[schemaId];
+          if (id !== void 0 && typeof id != "string") {
             throw new Error(`schema ${schemaId} must be string`);
           }
         }
-        key = (0, resolve_1.normalizeId)(key || id2);
+        key = (0, resolve_1.normalizeId)(key || id);
         this._checkUnique(key);
         this.schemas[key] = this._addSchema(schema, _meta, key, _validateSchema, true);
         return this;
@@ -4235,11 +4235,11 @@ var require_core = __commonJS({
           case "object": {
             const cacheKey = schemaKeyRef;
             this._cache.delete(cacheKey);
-            let id2 = schemaKeyRef[this.opts.schemaId];
-            if (id2) {
-              id2 = (0, resolve_1.normalizeId)(id2);
-              delete this.schemas[id2];
-              delete this.refs[id2];
+            let id = schemaKeyRef[this.opts.schemaId];
+            if (id) {
+              id = (0, resolve_1.normalizeId)(id);
+              delete this.schemas[id];
+              delete this.refs[id];
             }
             return this;
           }
@@ -4345,11 +4345,11 @@ var require_core = __commonJS({
           }
         }
       }
-      _addSchema(schema, meta2, baseId, validateSchema = this.opts.validateSchema, addSchema = this.opts.addUsedSchema) {
-        let id2;
+      _addSchema(schema, meta, baseId, validateSchema = this.opts.validateSchema, addSchema = this.opts.addUsedSchema) {
+        let id;
         const { schemaId } = this.opts;
         if (typeof schema == "object") {
-          id2 = schema[schemaId];
+          id = schema[schemaId];
         } else {
           if (this.opts.jtd)
             throw new Error("schema must be object");
@@ -4359,9 +4359,9 @@ var require_core = __commonJS({
         let sch = this._cache.get(schema);
         if (sch !== void 0)
           return sch;
-        baseId = (0, resolve_1.normalizeId)(id2 || baseId);
+        baseId = (0, resolve_1.normalizeId)(id || baseId);
         const localRefs = resolve_1.getSchemaRefs.call(this, schema, baseId);
-        sch = new compile_1.SchemaEnv({ schema, schemaId, meta: meta2, baseId, localRefs });
+        sch = new compile_1.SchemaEnv({ schema, schemaId, meta, baseId, localRefs });
         this._cache.set(sch.schema, sch);
         if (addSchema && !baseId.startsWith("#")) {
           if (baseId)
@@ -4372,9 +4372,9 @@ var require_core = __commonJS({
           this.validateSchema(schema, true);
         return sch;
       }
-      _checkUnique(id2) {
-        if (this.schemas[id2] || this.refs[id2]) {
-          throw new Error(`schema with key or id "${id2}" already exists`);
+      _checkUnique(id) {
+        if (this.schemas[id] || this.refs[id]) {
+          throw new Error(`schema with key or id "${id}" already exists`);
         }
       }
       _compileSchemaEnv(sch) {
@@ -6664,7 +6664,7 @@ var require_formats = __commonJS({
     }
     var TIME = /^(\d\d):(\d\d):(\d\d(?:\.\d+)?)(z|([+-])(\d\d)(?::?(\d\d))?)?$/i;
     function getTime(strictTimeZone) {
-      return function time4(str) {
+      return function time3(str) {
         const matches = TIME.exec(str);
         if (!matches)
           return false;
@@ -6710,10 +6710,10 @@ var require_formats = __commonJS({
     }
     var DATE_TIME_SEPARATOR = /t|\s/i;
     function getDateTime(strictTimeZone) {
-      const time4 = getTime(strictTimeZone);
+      const time3 = getTime(strictTimeZone);
       return function date_time(str) {
         const dateTime = str.split(DATE_TIME_SEPARATOR);
-        return dateTime.length === 2 && date3(dateTime[0]) && time4(dateTime[1]);
+        return dateTime.length === 2 && date3(dateTime[0]) && time3(dateTime[1]);
       };
     }
     function compareDateTime(dt1, dt2) {
@@ -6884,8 +6884,13 @@ var require_dist = __commonJS({
   }
 });
 
-// src/server.ts
-import { isAbsolute } from "path";
+// src/run_main.ts
+import { isAbsolute as isAbsolute4 } from "path";
+
+// src/run_server.ts
+import Database5 from "better-sqlite3";
+import { lstatSync, readFileSync as readFileSync2 } from "fs";
+import { isAbsolute as isAbsolute3 } from "path";
 
 // ../../node_modules/.pnpm/zod@3.25.76/node_modules/zod/v3/external.js
 var external_exports = {};
@@ -7843,24 +7848,24 @@ var base64Regex = /^([0-9a-zA-Z+/]{4})*(([0-9a-zA-Z+/]{2}==)|([0-9a-zA-Z+/]{3}=)
 var base64urlRegex = /^([0-9a-zA-Z-_]{4})*(([0-9a-zA-Z-_]{2}(==)?)|([0-9a-zA-Z-_]{3}(=)?))?$/;
 var dateRegexSource = `((\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-((0[13578]|1[02])-(0[1-9]|[12]\\d|3[01])|(0[469]|11)-(0[1-9]|[12]\\d|30)|(02)-(0[1-9]|1\\d|2[0-8])))`;
 var dateRegex = new RegExp(`^${dateRegexSource}$`);
-function timeRegexSource(args) {
+function timeRegexSource(args2) {
   let secondsRegexSource = `[0-5]\\d`;
-  if (args.precision) {
-    secondsRegexSource = `${secondsRegexSource}\\.\\d{${args.precision}}`;
-  } else if (args.precision == null) {
+  if (args2.precision) {
+    secondsRegexSource = `${secondsRegexSource}\\.\\d{${args2.precision}}`;
+  } else if (args2.precision == null) {
     secondsRegexSource = `${secondsRegexSource}(\\.\\d+)?`;
   }
-  const secondsQuantifier = args.precision ? "+" : "?";
+  const secondsQuantifier = args2.precision ? "+" : "?";
   return `([01]\\d|2[0-3]):[0-5]\\d(:${secondsRegexSource})${secondsQuantifier}`;
 }
-function timeRegex(args) {
-  return new RegExp(`^${timeRegexSource(args)}$`);
+function timeRegex(args2) {
+  return new RegExp(`^${timeRegexSource(args2)}$`);
 }
-function datetimeRegex(args) {
-  let regex = `${dateRegexSource}T${timeRegexSource(args)}`;
+function datetimeRegex(args2) {
+  let regex = `${dateRegexSource}T${timeRegexSource(args2)}`;
   const opts = [];
-  opts.push(args.local ? `Z?` : `Z`);
-  if (args.offset)
+  opts.push(args2.local ? `Z?` : `Z`);
+  if (args2.offset)
     opts.push(`([+-]\\d{2}:?\\d{2})`);
   regex = `${regex}(${opts.join("|")})`;
   return new RegExp(`^${regex}$`);
@@ -10168,9 +10173,9 @@ var ZodFunction = class _ZodFunction extends ZodType {
       });
       return INVALID;
     }
-    function makeArgsIssue(args, error2) {
+    function makeArgsIssue(args2, error2) {
       return makeIssue({
-        data: args,
+        data: args2,
         path: ctx.path,
         errorMaps: [ctx.common.contextualErrorMap, ctx.schemaErrorMap, getErrorMap(), en_default].filter((x) => !!x),
         issueData: {
@@ -10194,10 +10199,10 @@ var ZodFunction = class _ZodFunction extends ZodType {
     const fn = ctx.data;
     if (this._def.returns instanceof ZodPromise) {
       const me = this;
-      return OK(async function(...args) {
+      return OK(async function(...args2) {
         const error2 = new ZodError([]);
-        const parsedArgs = await me._def.args.parseAsync(args, params).catch((e) => {
-          error2.addIssue(makeArgsIssue(args, e));
+        const parsedArgs = await me._def.args.parseAsync(args2, params).catch((e) => {
+          error2.addIssue(makeArgsIssue(args2, e));
           throw error2;
         });
         const result = await Reflect.apply(fn, this, parsedArgs);
@@ -10209,10 +10214,10 @@ var ZodFunction = class _ZodFunction extends ZodType {
       });
     } else {
       const me = this;
-      return OK(function(...args) {
-        const parsedArgs = me._def.args.safeParse(args, params);
+      return OK(function(...args2) {
+        const parsedArgs = me._def.args.safeParse(args2, params);
         if (!parsedArgs.success) {
-          throw new ZodError([makeArgsIssue(args, parsedArgs.error)]);
+          throw new ZodError([makeArgsIssue(args2, parsedArgs.error)]);
         }
         const result = Reflect.apply(fn, this, parsedArgs.data);
         const parsedReturns = me._def.returns.safeParse(result, params);
@@ -10249,9 +10254,9 @@ var ZodFunction = class _ZodFunction extends ZodType {
     const validatedFunc = this.parse(func);
     return validatedFunc;
   }
-  static create(args, returns, params) {
+  static create(args2, returns, params) {
     return new _ZodFunction({
-      args: args ? args : ZodTuple.create([]).rest(ZodUnknown.create()),
+      args: args2 ? args2 : ZodTuple.create([]).rest(ZodUnknown.create()),
       returns: returns || ZodUnknown.create(),
       typeName: ZodFirstPartyTypeKind.ZodFunction,
       ...processCreateParams(params)
@@ -11486,8 +11491,8 @@ function getLengthableOrigin(input) {
     return "string";
   return "unknown";
 }
-function issue(...args) {
-  const [iss, input, inst] = args;
+function issue(...args2) {
+  const [iss, input, inst] = args2;
   if (typeof iss === "string") {
     return {
       message: iss,
@@ -11664,22 +11669,22 @@ var hostname = /^([a-zA-Z0-9-]+\.)*[a-zA-Z0-9-]+$/;
 var e164 = /^\+(?:[0-9]){6,14}[0-9]$/;
 var dateSource = `(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))`;
 var date = /* @__PURE__ */ new RegExp(`^${dateSource}$`);
-function timeSource(args) {
+function timeSource(args2) {
   const hhmm = `(?:[01]\\d|2[0-3]):[0-5]\\d`;
-  const regex = typeof args.precision === "number" ? args.precision === -1 ? `${hhmm}` : args.precision === 0 ? `${hhmm}:[0-5]\\d` : `${hhmm}:[0-5]\\d\\.\\d{${args.precision}}` : `${hhmm}(?::[0-5]\\d(?:\\.\\d+)?)?`;
+  const regex = typeof args2.precision === "number" ? args2.precision === -1 ? `${hhmm}` : args2.precision === 0 ? `${hhmm}:[0-5]\\d` : `${hhmm}:[0-5]\\d\\.\\d{${args2.precision}}` : `${hhmm}(?::[0-5]\\d(?:\\.\\d+)?)?`;
   return regex;
 }
-function time(args) {
-  return new RegExp(`^${timeSource(args)}$`);
+function time(args2) {
+  return new RegExp(`^${timeSource(args2)}$`);
 }
-function datetime(args) {
-  const time4 = timeSource({ precision: args.precision });
+function datetime(args2) {
+  const time3 = timeSource({ precision: args2.precision });
   const opts = ["Z"];
-  if (args.local)
+  if (args2.local)
     opts.push("");
-  if (args.offset)
+  if (args2.offset)
     opts.push(`([+-]\\d{2}:\\d{2})`);
-  const timeRegex2 = `${time4}(?:${opts.join("|")})`;
+  const timeRegex2 = `${time3}(?:${opts.join("|")})`;
   return new RegExp(`^${dateSource}T(?:${timeRegex2})$`);
 }
 var string = (params) => {
@@ -12080,11 +12085,11 @@ var $ZodCheckOverwrite = /* @__PURE__ */ $constructor("$ZodCheckOverwrite", (ins
 
 // ../../node_modules/.pnpm/zod@3.25.76/node_modules/zod/v4/core/doc.js
 var Doc = class {
-  constructor(args = []) {
+  constructor(args2 = []) {
     this.content = [];
     this.indent = 0;
     if (this)
-      this.args = args;
+      this.args = args2;
   }
   indented(fn) {
     this.indent += 1;
@@ -12107,10 +12112,10 @@ var Doc = class {
   }
   compile() {
     const F = Function;
-    const args = this?.args;
+    const args2 = this?.args;
     const content = this?.content ?? [``];
     const lines = [...content.map((x) => `  ${x}`)];
-    return new F(...args, lines.join("\n"));
+    return new F(...args2, lines.join("\n"));
   }
 };
 
@@ -12697,38 +12702,38 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
     doc.write(`const newResult = {}`);
     for (const key of normalized.keys) {
       if (normalized.optionalKeys.has(key)) {
-        const id2 = ids[key];
-        doc.write(`const ${id2} = ${parseStr(key)};`);
+        const id = ids[key];
+        doc.write(`const ${id} = ${parseStr(key)};`);
         const k = esc(key);
         doc.write(`
-        if (${id2}.issues.length) {
+        if (${id}.issues.length) {
           if (input[${k}] === undefined) {
             if (${k} in input) {
               newResult[${k}] = undefined;
             }
           } else {
             payload.issues = payload.issues.concat(
-              ${id2}.issues.map((iss) => ({
+              ${id}.issues.map((iss) => ({
                 ...iss,
                 path: iss.path ? [${k}, ...iss.path] : [${k}],
               }))
             );
           }
-        } else if (${id2}.value === undefined) {
+        } else if (${id}.value === undefined) {
           if (${k} in input) newResult[${k}] = undefined;
         } else {
-          newResult[${k}] = ${id2}.value;
+          newResult[${k}] = ${id}.value;
         }
         `);
       } else {
-        const id2 = ids[key];
-        doc.write(`const ${id2} = ${parseStr(key)};`);
+        const id = ids[key];
+        doc.write(`const ${id} = ${parseStr(key)};`);
         doc.write(`
-          if (${id2}.issues.length) payload.issues = payload.issues.concat(${id2}.issues.map(iss => ({
+          if (${id}.issues.length) payload.issues = payload.issues.concat(${id}.issues.map(iss => ({
             ...iss,
             path: iss.path ? [${esc(key)}, ...iss.path] : [${esc(key)}]
           })));`);
-        doc.write(`newResult[${esc(key)}] = ${id2}.value`);
+        doc.write(`newResult[${esc(key)}] = ${id}.value`);
       }
     }
     doc.write(`payload.value = newResult;`);
@@ -13484,13 +13489,13 @@ var $ZodRegistry = class {
     this._idmap = /* @__PURE__ */ new Map();
   }
   add(schema, ..._meta) {
-    const meta2 = _meta[0];
-    this._map.set(schema, meta2);
-    if (meta2 && typeof meta2 === "object" && "id" in meta2) {
-      if (this._idmap.has(meta2.id)) {
-        throw new Error(`ID ${meta2.id} already exists in the registry`);
+    const meta = _meta[0];
+    this._map.set(schema, meta);
+    if (meta && typeof meta === "object" && "id" in meta) {
+      if (this._idmap.has(meta.id)) {
+        throw new Error(`ID ${meta.id} already exists in the registry`);
       }
-      this._idmap.set(meta2.id, schema);
+      this._idmap.set(meta.id, schema);
     }
     return this;
   }
@@ -13500,9 +13505,9 @@ var $ZodRegistry = class {
     return this;
   }
   remove(schema) {
-    const meta2 = this._map.get(schema);
-    if (meta2 && typeof meta2 === "object" && "id" in meta2) {
-      this._idmap.delete(meta2.id);
+    const meta = this._map.get(schema);
+    if (meta && typeof meta === "object" && "id" in meta) {
+      this._idmap.delete(meta.id);
     }
     this._map.delete(schema);
     return this;
@@ -14431,9 +14436,9 @@ var JSONSchemaGenerator = class {
         }
       }
     }
-    const meta2 = this.metadataRegistry.get(schema);
-    if (meta2)
-      Object.assign(result.schema, meta2);
+    const meta = this.metadataRegistry.get(schema);
+    if (meta)
+      Object.assign(result.schema, meta);
     if (this.io === "input" && isTransforming(schema)) {
       delete result.schema.examples;
       delete result.schema.default;
@@ -14459,13 +14464,13 @@ var JSONSchemaGenerator = class {
       const defsSegment = this.target === "draft-2020-12" ? "$defs" : "definitions";
       if (params.external) {
         const externalId = params.external.registry.get(entry[0])?.id;
-        const uriGenerator = params.external.uri ?? ((id3) => id3);
+        const uriGenerator = params.external.uri ?? ((id2) => id2);
         if (externalId) {
           return { ref: uriGenerator(externalId) };
         }
-        const id2 = entry[1].defId ?? entry[1].schema.id ?? `schema${this.counter++}`;
-        entry[1].defId = id2;
-        return { defId: id2, ref: `${uriGenerator("__shared")}#/${defsSegment}/${id2}` };
+        const id = entry[1].defId ?? entry[1].schema.id ?? `schema${this.counter++}`;
+        entry[1].defId = id;
+        return { defId: id, ref: `${uriGenerator("__shared")}#/${defsSegment}/${id}` };
       }
       if (entry[1] === root) {
         return { ref: "#" };
@@ -14513,8 +14518,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
           continue;
         }
       }
-      const id2 = this.metadataRegistry.get(entry[0])?.id;
-      if (id2) {
+      const id = this.metadataRegistry.get(entry[0])?.id;
+      if (id) {
         extractToDef(entry);
         continue;
       }
@@ -14568,10 +14573,10 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
       console.warn(`Invalid target: ${this.target}`);
     }
     if (params.external?.uri) {
-      const id2 = params.external.registry.get(schema)?.id;
-      if (!id2)
+      const id = params.external.registry.get(schema)?.id;
+      if (!id)
         throw new Error("Schema is missing an `id` property");
-      result.$id = params.external.uri(id2);
+      result.$id = params.external.uri(id);
     }
     Object.assign(result, root.def);
     const defs = params.external?.defs ?? {};
@@ -14755,8 +14760,8 @@ var ZodMiniType = /* @__PURE__ */ $constructor("ZodMiniType", (inst, def) => {
   };
   inst.clone = (_def, params) => clone(inst, _def, params);
   inst.brand = () => inst;
-  inst.register = ((reg, meta2) => {
-    reg.add(inst, meta2);
+  inst.register = ((reg, meta) => {
+    reg.add(inst, meta);
     return inst;
   });
 });
@@ -15021,8 +15026,8 @@ var ZodType2 = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
   };
   inst.clone = (def2, params) => clone(inst, def2, params);
   inst.brand = () => inst;
-  inst.register = ((reg, meta2) => {
-    reg.add(inst, meta2);
+  inst.register = ((reg, meta) => {
+    reg.add(inst, meta);
     return inst;
   });
   inst.parse = (data, params) => parse2(inst, data, params, { callee: inst.parse });
@@ -15057,12 +15062,12 @@ var ZodType2 = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
     },
     configurable: true
   });
-  inst.meta = (...args) => {
-    if (args.length === 0) {
+  inst.meta = (...args2) => {
+    if (args2.length === 0) {
       return globalRegistry.get(inst);
     }
     const cl = inst.clone();
-    globalRegistry.add(cl, args[0]);
+    globalRegistry.add(cl, args2[0]);
     return cl;
   };
   inst.isOptional = () => inst.safeParse(void 0).success;
@@ -15076,18 +15081,18 @@ var _ZodString = /* @__PURE__ */ $constructor("_ZodString", (inst, def) => {
   inst.format = bag.format ?? null;
   inst.minLength = bag.minimum ?? null;
   inst.maxLength = bag.maximum ?? null;
-  inst.regex = (...args) => inst.check(_regex(...args));
-  inst.includes = (...args) => inst.check(_includes(...args));
-  inst.startsWith = (...args) => inst.check(_startsWith(...args));
-  inst.endsWith = (...args) => inst.check(_endsWith(...args));
-  inst.min = (...args) => inst.check(_minLength(...args));
-  inst.max = (...args) => inst.check(_maxLength(...args));
-  inst.length = (...args) => inst.check(_length(...args));
-  inst.nonempty = (...args) => inst.check(_minLength(1, ...args));
+  inst.regex = (...args2) => inst.check(_regex(...args2));
+  inst.includes = (...args2) => inst.check(_includes(...args2));
+  inst.startsWith = (...args2) => inst.check(_startsWith(...args2));
+  inst.endsWith = (...args2) => inst.check(_endsWith(...args2));
+  inst.min = (...args2) => inst.check(_minLength(...args2));
+  inst.max = (...args2) => inst.check(_maxLength(...args2));
+  inst.length = (...args2) => inst.check(_length(...args2));
+  inst.nonempty = (...args2) => inst.check(_minLength(1, ...args2));
   inst.lowercase = (params) => inst.check(_lowercase(params));
   inst.uppercase = (params) => inst.check(_uppercase(params));
   inst.trim = () => inst.check(_trim());
-  inst.normalize = (...args) => inst.check(_normalize(...args));
+  inst.normalize = (...args2) => inst.check(_normalize(...args2));
   inst.toLowerCase = () => inst.check(_toLowerCase());
   inst.toUpperCase = () => inst.check(_toUpperCase());
 });
@@ -15297,8 +15302,8 @@ var ZodObject2 = /* @__PURE__ */ $constructor("ZodObject", (inst, def) => {
   inst.merge = (other) => util_exports.merge(inst, other);
   inst.pick = (mask) => util_exports.pick(inst, mask);
   inst.omit = (mask) => util_exports.omit(inst, mask);
-  inst.partial = (...args) => util_exports.partial(ZodOptional2, inst, args[0]);
-  inst.required = (...args) => util_exports.required(ZodNonOptional, inst, args[0]);
+  inst.partial = (...args2) => util_exports.partial(ZodOptional2, inst, args2[0]);
+  inst.required = (...args2) => util_exports.required(ZodNonOptional, inst, args2[0]);
 });
 function object2(shape, params) {
   const def = {
@@ -18978,7 +18983,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve3) => setTimeout(resolve3, pollInterval));
+        await new Promise((resolve) => setTimeout(resolve, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -18995,7 +19000,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve3, reject) => {
+    return new Promise((resolve, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -19073,7 +19078,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve3(parseResult.data);
+            resolve(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -19334,12 +19339,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve3, reject) => {
+    return new Promise((resolve, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve3, interval);
+      const timeoutId = setTimeout(resolve, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -19588,7 +19593,7 @@ var ExperimentalServerTasks = class {
       if (hasPreviousToolUse) {
         const toolUseIds = new Set(previousContent.filter((c) => c.type === "tool_use").map((c) => c.id));
         const toolResultIds = new Set(lastContent.filter((c) => c.type === "tool_result").map((c) => c.toolUseId));
-        if (toolUseIds.size !== toolResultIds.size || ![...toolUseIds].every((id2) => toolResultIds.has(id2))) {
+        if (toolUseIds.size !== toolResultIds.size || ![...toolUseIds].every((id) => toolResultIds.has(id))) {
           throw new Error("ids of tool_result blocks and tool_use blocks from previous message do not match");
         }
       }
@@ -20022,7 +20027,7 @@ var Server = class extends Protocol {
       if (hasPreviousToolUse) {
         const toolUseIds = new Set(previousContent.filter((c) => c.type === "tool_use").map((c) => c.id));
         const toolResultIds = new Set(lastContent.filter((c) => c.type === "tool_result").map((c) => c.toolUseId));
-        if (toolUseIds.size !== toolResultIds.size || ![...toolUseIds].every((id2) => toolResultIds.has(id2))) {
+        if (toolUseIds.size !== toolResultIds.size || ![...toolUseIds].every((id) => toolResultIds.has(id))) {
           throw new Error("ids of tool_result blocks and tool_use blocks from previous message do not match");
         }
       }
@@ -20134,8 +20139,8 @@ function isCompletable(schema) {
   return !!schema && typeof schema === "object" && COMPLETABLE_SYMBOL in schema;
 }
 function getCompleter(schema) {
-  const meta2 = schema[COMPLETABLE_SYMBOL];
-  return meta2?.complete;
+  const meta = schema[COMPLETABLE_SYMBOL];
+  return meta?.complete;
 }
 var McpZodTypeKind;
 (function(McpZodTypeKind2) {
@@ -20318,8 +20323,8 @@ var McpServer = class {
         if (taskSupport === "optional" && !isTaskRequest && isTaskHandler) {
           return await this.handleAutomaticTaskPolling(tool, request, extra);
         }
-        const args = await this.validateToolInput(tool, request.params.arguments, request.params.name);
-        const result = await this.executeToolHandler(tool, args, extra);
+        const args2 = await this.validateToolInput(tool, request.params.arguments, request.params.name);
+        const result = await this.executeToolHandler(tool, args2, extra);
         if (isTaskRequest) {
           return result;
         }
@@ -20356,13 +20361,13 @@ var McpServer = class {
   /**
    * Validates tool input arguments against the tool's input schema.
    */
-  async validateToolInput(tool, args, toolName) {
+  async validateToolInput(tool, args2, toolName) {
     if (!tool.inputSchema) {
       return void 0;
     }
     const inputObj = normalizeObjectSchema(tool.inputSchema);
     const schemaToParse = inputObj ?? tool.inputSchema;
-    const parseResult = await safeParseAsync2(schemaToParse, args);
+    const parseResult = await safeParseAsync2(schemaToParse, args2);
     if (!parseResult.success) {
       const error2 = "error" in parseResult ? parseResult.error : "Unknown error";
       const errorMessage = getParseErrorMessage(error2);
@@ -20397,7 +20402,7 @@ var McpServer = class {
   /**
    * Executes a tool handler (either regular or task-based).
    */
-  async executeToolHandler(tool, args, extra) {
+  async executeToolHandler(tool, args2, extra) {
     const handler = tool.handler;
     const isTaskHandler = "createTask" in handler;
     if (isTaskHandler) {
@@ -20407,7 +20412,7 @@ var McpServer = class {
       const taskExtra = { ...extra, taskStore: extra.taskStore };
       if (tool.inputSchema) {
         const typedHandler = handler;
-        return await Promise.resolve(typedHandler.createTask(args, taskExtra));
+        return await Promise.resolve(typedHandler.createTask(args2, taskExtra));
       } else {
         const typedHandler = handler;
         return await Promise.resolve(typedHandler.createTask(taskExtra));
@@ -20415,7 +20420,7 @@ var McpServer = class {
     }
     if (tool.inputSchema) {
       const typedHandler = handler;
-      return await Promise.resolve(typedHandler(args, extra));
+      return await Promise.resolve(typedHandler(args2, extra));
     } else {
       const typedHandler = handler;
       return await Promise.resolve(typedHandler(extra));
@@ -20428,10 +20433,10 @@ var McpServer = class {
     if (!extra.taskStore) {
       throw new Error("No task store provided for task-capable tool.");
     }
-    const args = await this.validateToolInput(tool, request.params.arguments, request.params.name);
+    const args2 = await this.validateToolInput(tool, request.params.arguments, request.params.name);
     const handler = tool.handler;
     const taskExtra = { ...extra, taskStore: extra.taskStore };
-    const createTaskResult = args ? await Promise.resolve(handler.createTask(args, taskExtra)) : (
+    const createTaskResult = args2 ? await Promise.resolve(handler.createTask(args2, taskExtra)) : (
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await Promise.resolve(handler.createTask(taskExtra))
     );
@@ -20439,7 +20444,7 @@ var McpServer = class {
     let task = createTaskResult.task;
     const pollInterval = task.pollInterval ?? 5e3;
     while (task.status !== "completed" && task.status !== "failed" && task.status !== "cancelled") {
-      await new Promise((resolve3) => setTimeout(resolve3, pollInterval));
+      await new Promise((resolve) => setTimeout(resolve, pollInterval));
       const updatedTask = await extra.taskStore.getTask(taskId);
       if (!updatedTask) {
         throw new McpError(ErrorCode.InternalError, `Task ${taskId} not found during polling`);
@@ -20606,9 +20611,9 @@ var McpServer = class {
           const errorMessage = getParseErrorMessage(error2);
           throw new McpError(ErrorCode.InvalidParams, `Invalid arguments for prompt ${request.params.name}: ${errorMessage}`);
         }
-        const args = parseResult.data;
+        const args2 = parseResult.data;
         const cb = prompt.callback;
-        return await Promise.resolve(cb(args, extra));
+        return await Promise.resolve(cb(args2, extra));
       } else {
         const cb = prompt.callback;
         return await Promise.resolve(cb(extra));
@@ -21088,12 +21093,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve3) => {
+    return new Promise((resolve) => {
       const json = serializeMessage(message);
       if (this._stdout.write(json)) {
-        resolve3();
+        resolve();
       } else {
-        this._stdout.once("drain", resolve3);
+        this._stdout.once("drain", resolve);
       }
     });
   }
@@ -21101,38 +21106,15 @@ var StdioServerTransport = class {
 
 // ../core/dist/index.js
 import Database2 from "better-sqlite3";
-import { mkdirSync as mkdirSync2, renameSync as renameSync2, rmSync as rmSync2 } from "fs";
-import { dirname as dirname2, join as join2 } from "path";
 import Database from "better-sqlite3";
 import { execFileSync } from "child_process";
-import { randomBytes } from "crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "fs";
-import { basename, dirname, join, resolve } from "path";
-import { homedir } from "os";
-import { execFileSync as execFileSync2 } from "child_process";
-import { createHash } from "crypto";
-import { homedir as homedir2 } from "os";
-import { join as join3, resolve as resolve2 } from "path";
 import Database3 from "better-sqlite3";
-import { realpathSync as realpathSync2 } from "fs";
+import { createHash as createHash4, randomBytes as randomBytes2 } from "crypto";
+import { lstatSync as lstatSync3, realpathSync as realpathSync5 } from "fs";
+import { isAbsolute as isAbsolute2 } from "path";
+import { dirname as dirname3, isAbsolute, join as join5, relative, resolve as resolve3, sep } from "path";
 import Database4 from "better-sqlite3";
-import { execFileSync as execFileSync5 } from "child_process";
-import { createHash as createHash5 } from "crypto";
-import {
-  existsSync as existsSync5,
-  mkdirSync as mkdirSync5,
-  readFileSync as readFileSync4,
-  renameSync as renameSync3,
-  rmSync as rmSync4,
-  statSync,
-  writeFileSync as writeFileSync4
-} from "fs";
-import { basename as basename2, dirname as dirname4, extname, join as join6 } from "path";
-import { createHash as createHash6 } from "crypto";
-import { existsSync as existsSync7, readFileSync as readFileSync6, readdirSync as readdirSync6, realpathSync as realpathSync7 } from "fs";
-import { dirname as dirname6, join as join8 } from "path";
-import { existsSync as existsSync10, readFileSync as readFileSync9, readdirSync as readdirSync7, realpathSync as realpathSync10 } from "fs";
-import { dirname as dirname9, join as join11 } from "path";
 var CAPS = {
   briefBytes: 4096,
   // JSON/MCP payload для детерминированного resume-пакета
@@ -21193,252 +21175,20 @@ var CAPS = {
   agentPruneBatch: 5e3
   // строк за один проход ротации: DELETE держит write-lock, рядом пишут воркеры
 };
-function capText(s, n) {
-  if (s.length <= n) return s;
-  const cut = n - ((s.charCodeAt(n - 1) & 64512) === 55296 ? 1 : 0);
-  return `${s.slice(0, cut)}\u2026 [+${s.length - cut} chars]`;
-}
 var KddError = class extends Error {
 };
-function logError(db, source, message) {
-  db.prepare(`INSERT INTO errors (source, message, created_at) VALUES (?, ?, ?)`).run(source, message, now());
-}
-var MIGRATIONS = [
-  `
-  CREATE TABLE tasks (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    title        TEXT NOT NULL,
-    body         TEXT,
-    status       TEXT NOT NULL DEFAULT 'new'
-                 CHECK (status IN ('backlog','new','in_progress','review','done')),
-    blocked      INTEGER NOT NULL DEFAULT 0,
-    block_reason TEXT,
-    priority     TEXT NOT NULL DEFAULT 'medium'
-                 CHECK (priority IN ('low','medium','high','urgent')),
-    area         TEXT,
-    position     INTEGER NOT NULL DEFAULT 0,
-    archived_at  INTEGER,
-    created_at   INTEGER NOT NULL,
-    updated_at   INTEGER NOT NULL
-  );
-  CREATE TABLE comments (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id    INTEGER NOT NULL REFERENCES tasks(id),
-    author     TEXT NOT NULL,
-    body       TEXT NOT NULL,
-    created_at INTEGER NOT NULL
-  );
-  CREATE TABLE task_links (
-    from_id INTEGER NOT NULL REFERENCES tasks(id),
-    to_id   INTEGER NOT NULL REFERENCES tasks(id),
-    kind    TEXT NOT NULL DEFAULT 'relates_to',
-    PRIMARY KEY (from_id, to_id, kind)
-  );
-  CREATE TABLE events (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id    INTEGER REFERENCES tasks(id),
-    actor_type TEXT NOT NULL CHECK (actor_type IN ('user','ai')),
-    actor_id   TEXT,
-    action     TEXT NOT NULL CHECK (action IN
-               ('created','moved','edited','commented','blocked','unblocked','linked','archived','unarchived')),
-    detail     TEXT,
-    created_at INTEGER NOT NULL
-  );
-  CREATE TABLE errors (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source TEXT, message TEXT, created_at INTEGER NOT NULL
-  );
-  CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-  CREATE INDEX idx_tasks_status ON tasks(status);
-  CREATE INDEX idx_comments_task ON comments(task_id, created_at);
-  CREATE INDEX idx_events_task ON events(task_id, created_at);
-  `,
-  `
-  CREATE TABLE decisions (
-    slug          TEXT PRIMARY KEY,
-    title         TEXT NOT NULL,
-    path          TEXT NOT NULL,
-    content_hash  TEXT NOT NULL,
-    created       TEXT,
-    superseded_by TEXT
-  );
-  CREATE INDEX idx_decisions_hash ON decisions(content_hash);
-  CREATE VIRTUAL TABLE search_index USING fts5(
-    kind UNINDEXED,
-    ref UNINDEXED,
-    title,
-    body,
-    tokenize = 'unicode61 remove_diacritics 2'
-  );
-  INSERT OR IGNORE INTO meta (key, value) VALUES ('fts_last_event_id', '0');
-  `,
-  `
-  CREATE TABLE tracks (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    name        TEXT NOT NULL UNIQUE,
-    description TEXT,
-    status      TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','done')),
-    created_at  INTEGER NOT NULL
-  );
-  ALTER TABLE tasks ADD COLUMN track_id INTEGER REFERENCES tracks(id);
-  CREATE INDEX idx_tasks_track ON tasks(track_id);
-  `,
-  `
-  CREATE TABLE criteria (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id    INTEGER NOT NULL REFERENCES tasks(id),
-    text       TEXT NOT NULL,
-    checked_at INTEGER,
-    position   INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL
-  );
-  CREATE INDEX idx_criteria_task ON criteria(task_id, position);
-  -- \u043F\u0435\u0440\u0435\u0441\u0431\u043E\u0440\u043A\u0430 events: \u0441\u043D\u044F\u0442 CHECK \u0441 action \u2014 \u0441\u043B\u043E\u0432\u0430\u0440\u044C \u043E\u0442\u043A\u0440\u044B\u0442\u044B\u0439 (criterion_*, \u0434\u0430\u043B\u044C\u0448\u0435 claim/verify)
-  CREATE TABLE events_new (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id    INTEGER REFERENCES tasks(id),
-    actor_type TEXT NOT NULL CHECK (actor_type IN ('user','ai')),
-    actor_id   TEXT,
-    action     TEXT NOT NULL,
-    detail     TEXT,
-    created_at INTEGER NOT NULL
-  );
-  INSERT INTO events_new SELECT * FROM events;
-  DROP TABLE events;
-  ALTER TABLE events_new RENAME TO events;
-  CREATE INDEX idx_events_task ON events(task_id, created_at);
-  `,
-  `
-  -- \u0438\u0435\u0440\u0430\u0440\u0445\u0438\u044F \u0438 \u0442\u0438\u043F\u0438\u0437\u0430\u0446\u0438\u044F \u0441\u043E\u0431\u044B\u0442\u0438\u0439 (observability \u0430\u0433\u0435\u043D\u0442\u043E\u0432); \u0441\u0442\u0430\u0440\u044B\u0435 \u0441\u0442\u0440\u043E\u043A\u0438: NULL/NULL/'info'
-  ALTER TABLE events ADD COLUMN parent_id INTEGER REFERENCES events(id);
-  ALTER TABLE events ADD COLUMN type TEXT;
-  ALTER TABLE events ADD COLUMN level TEXT NOT NULL DEFAULT 'info';
-  `,
-  `
-  -- claim-\u043F\u0440\u043E\u0442\u043E\u043A\u043E\u043B: \u0430\u0433\u0435\u043D\u0442 \u0431\u0435\u0440\u0451\u0442 \u0437\u0430\u0434\u0430\u0447\u0443 \u0430\u0442\u043E\u043C\u0430\u0440\u043D\u043E (CAS), lease \u0441 TTL.
-  -- \u0418\u043D\u0432\u0430\u0440\u0438\u0430\u043D\u0442: claimed_by IS NOT NULL <=> status='in_progress'. \u0421\u0442\u0430\u0440\u044B\u0435 \u0437\u0430\u0434\u0430\u0447\u0438: NULL.
-  ALTER TABLE tasks ADD COLUMN claimed_by TEXT;
-  ALTER TABLE tasks ADD COLUMN claim_expires INTEGER;
-  `,
-  `
-  -- driver-\u0441\u043B\u0430\u0439\u0441: \u0441\u0447\u0451\u0442\u0447\u0438\u043A \u043D\u0435\u0443\u0434\u0430\u0447\u043D\u044B\u0445 \u043F\u043E\u043F\u044B\u0442\u043E\u043A \u0430\u0433\u0435\u043D\u0442\u0430 (spawn-fail + \u043D\u0435\u043F\u0440\u043E\u0434\u0443\u043A\u0442\u0438\u0432\u043D\u044B\u0439 reclaim).
-  -- reset \u043F\u0440\u0438 \u0434\u043E\u0441\u0442\u0438\u0436\u0435\u043D\u0438\u0438 review; \u043F\u0440\u0438 K \u043F\u043E\u043F\u044B\u0442\u043E\u043A \u0437\u0430\u0434\u0430\u0447\u0430 \u0430\u0432\u0442\u043E-\u0431\u043B\u043E\u043A\u0438\u0440\u0443\u0435\u0442\u0441\u044F. \u0421\u0442\u0430\u0440\u044B\u0435 \u0437\u0430\u0434\u0430\u0447\u0438: 0.
-  ALTER TABLE tasks ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0;
-  `,
-  `
-  -- Tier1 feed: \u043F\u043E\u0442\u043E\u043A \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0441\u0442\u0438 \u0432\u043E\u0440\u043A\u0435\u0440\u0430 (\u0442\u0435\u043A\u0441\u0442, tool-\u0432\u044B\u0437\u043E\u0432\u044B) \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E \u043E\u0442 audit-events.
-  -- \u0418\u0437\u043E\u043B\u0438\u0440\u043E\u0432\u0430\u043D \u043D\u0430\u043C\u0435\u0440\u0435\u043D\u043D\u043E: get_task/status/MCP \u0435\u0433\u043E \u041D\u0415 \u0447\u0438\u0442\u0430\u044E\u0442 \u2014 \u0438\u043D\u0430\u0447\u0435 \u043F\u043E\u0442\u043E\u043A \u0437\u0430\u0431\u044C\u0451\u0442 LLM-\u043A\u043E\u043D\u0442\u0435\u043A\u0441\u0442.
-  CREATE TABLE agent_events (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id    INTEGER NOT NULL REFERENCES tasks(id),
-    worker_id  TEXT NOT NULL,
-    kind       TEXT NOT NULL,
-    name       TEXT,
-    detail     TEXT,
-    created_at INTEGER NOT NULL
-  );
-  CREATE INDEX idx_agent_events_task ON agent_events(task_id, id);
-  `,
-  `
-  -- \u0422\u0438\u043F \u0440\u0430\u0431\u043E\u0442\u044B. \u0414\u0435\u0444\u043E\u043B\u0442 'feature' \u041C\u041E\u041B\u0427\u0410\u041B\u0418\u0412\u042B\u0419: \u043A\u0430\u0440\u0442\u043E\u0447\u043A\u0430 \u0435\u0433\u043E \u043D\u0435 \u0440\u0438\u0441\u0443\u0435\u0442, \u043F\u043E\u044D\u0442\u043E\u043C\u0443
-  -- \u0437\u0430\u0434\u0430\u0447\u0438, \u0437\u0430\u0432\u0435\u0434\u0451\u043D\u043D\u044B\u0435 \u0434\u043E \u044D\u0442\u043E\u0439 \u043C\u0438\u0433\u0440\u0430\u0446\u0438\u0438, \u043D\u0435 \u043D\u0430\u0447\u0438\u043D\u0430\u044E\u0442 \u0443\u0442\u0432\u0435\u0440\u0436\u0434\u0430\u0442\u044C \xAB\u044D\u0442\u043E \u0444\u0438\u0447\u0430\xBB. NOT NULL, \u0430 \u043D\u0435
-  -- nullable: \u043A \u0442\u0438\u043F\u0443 \u043F\u0440\u0438\u0432\u044F\u0437\u0430\u043D\u043E \u043F\u043E\u0432\u0435\u0434\u0435\u043D\u0438\u0435 (claim, \u043F\u0440\u043E\u043C\u043F\u0442, \u0442\u0438\u043F \u043A\u043E\u043C\u043C\u0438\u0442\u0430), \u0438 NULL-\u0432\u0435\u0442\u043A\u0430 \u0432 \u043A\u0430\u0436\u0434\u043E\u043C
-  -- \u043F\u043E\u0442\u0440\u0435\u0431\u0438\u0442\u0435\u043B\u0435 \u0431\u044B\u043B\u0430 \u0431\u044B \u0446\u0435\u043D\u043E\u0439 \u0431\u0435\u0437 \u0432\u044B\u0433\u043E\u0434\u044B.
-  ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'feature'
-    CHECK (kind IN ('feature','bug','chore','research'));
-  `,
-  `
-  -- \u0412\u043B\u043E\u0436\u0435\u043D\u0438\u044F. \u0421\u0442\u0440\u043E\u043A\u0430 \u043D\u0430 \u0421\u0412\u042F\u0417\u041A\u0423 \u0437\u0430\u0434\u0430\u0447\u0430+\u0444\u0430\u0439\u043B, \u0430 \u043D\u0435 \u043D\u0430 \u0444\u0430\u0439\u043B: \u043E\u043F\u0438\u0441\u0430\u043D\u0438\u0435 \u043F\u0440\u0438\u043D\u0430\u0434\u043B\u0435\u0436\u0438\u0442 \u0441\u0432\u044F\u0437\u043A\u0435 \u2014
-  -- \u043E\u0434\u043D\u0430 \u0438 \u0442\u0430 \u0436\u0435 \u0441\u0445\u0435\u043C\u0430 \u043D\u0430 \u0434\u0432\u0443\u0445 \u0437\u0430\u0434\u0430\u0447\u0430\u0445 \u043E\u043F\u0438\u0441\u044B\u0432\u0430\u0435\u0442\u0441\u044F \u043F\u043E-\u0440\u0430\u0437\u043D\u043E\u043C\u0443. \u0414\u0435\u0434\u0443\u043F \u043F\u0440\u0438 \u044D\u0442\u043E\u043C \u043E\u0441\u0442\u0430\u0451\u0442\u0441\u044F,
-  -- \u043E\u043D \u043D\u0430 \u0443\u0440\u043E\u0432\u043D\u0435 \u0431\u0430\u0439\u0442\u043E\u0432: \u0438\u043C\u044F \u0444\u0430\u0439\u043B\u0430 \u043D\u0430 \u0434\u0438\u0441\u043A\u0435 \u2014 sha256 \u0441\u043E\u0434\u0435\u0440\u0436\u0438\u043C\u043E\u0433\u043E.
-  CREATE TABLE files (
-    id INTEGER PRIMARY KEY,
-    task_id INTEGER NOT NULL REFERENCES tasks(id),
-    sha256 TEXT NOT NULL,
-    ext TEXT NOT NULL,
-    original_name TEXT NOT NULL,
-    mime_type TEXT,
-    size_bytes INTEGER NOT NULL,
-    description TEXT,
-    created_at INTEGER NOT NULL,
-    UNIQUE(task_id, sha256)
-  );
-  CREATE INDEX idx_files_task_id ON files(task_id);
-  CREATE INDEX idx_files_sha256 ON files(sha256);
-  `,
-  `
-  -- \u0422\u0435\u043A\u0443\u0449\u0438\u0439 verification snapshot \u043A\u0440\u0438\u0442\u0435\u0440\u0438\u044F. \u0418\u0441\u0442\u043E\u0440\u0438\u044F \u043E\u0441\u0442\u0430\u0451\u0442\u0441\u044F \u0432 events; \u044D\u0442\u0438 nullable-\u043F\u043E\u043B\u044F
-  -- \u043D\u0443\u0436\u043D\u044B \u0442\u043E\u043B\u044C\u043A\u043E \u0434\u043B\u044F \u0431\u044B\u0441\u0442\u0440\u043E\u0433\u043E \u0447\u0442\u0435\u043D\u0438\u044F \u0430\u043A\u0442\u0443\u0430\u043B\u044C\u043D\u043E\u0433\u043E evidence \u0438 \u0430\u0432\u0442\u043E\u0440\u0430. \u0421\u0442\u0430\u0440\u044B\u0435 criteria \u0432\u0430\u043B\u0438\u0434\u043D\u044B.
-  ALTER TABLE criteria ADD COLUMN evidence TEXT;
-  ALTER TABLE criteria ADD COLUMN checked_by TEXT;
-  `,
-  `
-  -- \u041A\u0430\u043D\u043E\u043D provenance \u0436\u0438\u0432\u0451\u0442 \u0432\u043E frontmatter decision Markdown. \u042D\u0442\u0430 JSON-\u043A\u043E\u043B\u043E\u043D\u043A\u0430 \u2014 \u0442\u043E\u043B\u044C\u043A\u043E
-  -- rebuildable \u0438\u043D\u0434\u0435\u043A\u0441 \u0434\u043B\u044F \u043E\u0431\u0440\u0430\u0442\u043D\u043E\u0433\u043E \u0437\u0430\u043F\u0440\u043E\u0441\u0430 task -> decisions.
-  ALTER TABLE decisions ADD COLUMN source_tasks TEXT NOT NULL DEFAULT '[]';
-  `,
-  `
-  CREATE TABLE repositories (
-    repo_id TEXT PRIMARY KEY CHECK(length(repo_id) = 32 AND repo_id NOT GLOB '*[^0-9a-f]*'),
-    purpose TEXT NOT NULL CHECK(length(trim(purpose)) > 0),
-    access TEXT NOT NULL CHECK(access IN ('context_only','implementation')),
-    remote TEXT,
-    created_at INTEGER NOT NULL
-  );
-  CREATE TABLE project (
-    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-    project_id TEXT NOT NULL UNIQUE CHECK(length(project_id) = 32 AND project_id NOT GLOB '*[^0-9a-f]*'),
-    primary_repo_id TEXT REFERENCES repositories(repo_id),
-    legacy_decisions_dir TEXT,
-    autonomy_enabled INTEGER NOT NULL DEFAULT 0 CHECK(autonomy_enabled IN (0,1)),
-    default_execution_mode TEXT NOT NULL DEFAULT 'manual' CHECK(default_execution_mode IN ('manual','orchestrated')),
-    created_at INTEGER NOT NULL
-  );
-  INSERT INTO project(singleton,project_id,created_at)
-    VALUES(1,lower(hex(randomblob(16))),CAST(strftime('%s','now') AS INTEGER));
-  CREATE TABLE repository_bindings (
-    common_dir TEXT PRIMARY KEY,
-    repo_id TEXT NOT NULL REFERENCES repositories(repo_id),
-    checkout_path TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK(kind IN ('source','managed')),
-    created_at INTEGER NOT NULL
-  );
-  CREATE INDEX idx_repository_bindings_repo ON repository_bindings(repo_id);
-  `,
-  `
-  CREATE TABLE managed_task_policy (
-    task_id INTEGER PRIMARY KEY REFERENCES tasks(id),
-    created_at INTEGER NOT NULL,
-    source TEXT NOT NULL
-  );
-  CREATE TABLE run_authorities (
-    authority_id TEXT PRIMARY KEY,
-    task_id INTEGER NOT NULL REFERENCES tasks(id),
-    work_item_id TEXT NOT NULL,
-    run_id TEXT NOT NULL,
-    generation INTEGER NOT NULL CHECK(typeof(generation)='integer' AND generation > 0),
-    expires_at REAL NOT NULL,
-    revoked_at INTEGER,
-    token_hash TEXT NOT NULL UNIQUE,
-    grant_json TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    UNIQUE(task_id,work_item_id,generation)
-  );
-  CREATE UNIQUE INDEX idx_run_authorities_current ON run_authorities(task_id,work_item_id)
-    WHERE revoked_at IS NULL;
-  `
-];
 function projectOf(db) {
   const row = db.prepare("SELECT project_id,primary_repo_id,legacy_decisions_dir,autonomy_enabled,default_execution_mode,created_at FROM project WHERE singleton=1").get();
   return { ...row, autonomy_enabled: row.autonomy_enabled === 1 };
 }
+function repositoriesOf(db) {
+  return db.prepare("SELECT * FROM repositories ORDER BY repo_id").all();
+}
 function bindingsOf(db) {
   return db.prepare("SELECT * FROM repository_bindings ORDER BY common_dir").all();
 }
-var time3 = () => Math.floor(Date.now() / 1e3);
-var id = () => randomBytes(16).toString("hex");
-function git(cwd, args) {
-  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+function git(cwd, args2) {
+  return execFileSync("git", args2, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
 }
 function canonicalCommonDir(cwd) {
   try {
@@ -21447,387 +21197,10 @@ function canonicalCommonDir(cwd) {
     throw new KddError(`not in a git repository: ${cwd}`);
   }
 }
-function canonicalProjectPath(path) {
-  path = resolve(path);
-  if (existsSync(path)) return realpathSync(path);
-  const parent = dirname(resolve(path));
-  return parent === resolve(path) ? resolve(path) : join(canonicalProjectPath(parent), path.slice(dirname(path).length + 1));
-}
-function worktrees(common) {
-  return git(common, ["--git-dir", common, "worktree", "list", "--porcelain"]).split(/\r?\n\r?\n/).filter((block) => !/^bare$/m.test(block)).flatMap((block) => block.match(/^worktree (.+)$/m)?.[1] ?? []).filter((path) => {
-    try {
-      return existsSync(path) && canonicalCommonDir(path) === common && realpathSync(git(path, ["rev-parse", "--show-toplevel"])) === realpathSync(path);
-    } catch {
-      return false;
-    }
-  });
-}
-function withRegistry(home, fn) {
-  mkdirSync(home, { recursive: true });
-  const db = new Database(join(home, "registry.db"));
-  try {
-    db.pragma("busy_timeout = 5000");
-    const version2 = db.pragma("user_version", { simple: true });
-    if (version2 > 1) throw new KddError(`registry has unknown schema version ${version2}`);
-    db.transaction(() => {
-      if (db.pragma("user_version", { simple: true }) === 0) {
-        db.exec(`CREATE TABLE bindings(common_dir TEXT PRIMARY KEY, db_path TEXT NOT NULL, project_id TEXT NOT NULL, repo_id TEXT NOT NULL); PRAGMA user_version = 1`);
-      }
-    }).immediate();
-    return fn(db);
-  } finally {
-    db.close();
-  }
-}
-function readonly2(path, fn) {
-  if (!existsSync(path)) throw new KddError(`project store is missing: ${path}`);
-  const db = new Database(path, { readonly: true, fileMustExist: true });
-  try {
-    const version2 = db.pragma("user_version", { simple: true });
-    if (version2 < 1 || version2 > MIGRATIONS.length) throw new KddError(`unknown project schema version ${version2}: ${path}`);
-    return fn(db, version2);
-  } finally {
-    db.close();
-  }
-}
-function storePaths(home) {
-  if (!existsSync(home)) return [];
-  const paths = readdirSync(home, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => join(home, e.name, "kdd.db")).filter((path) => existsSync(path));
-  const catalog = join(home, "project-stores");
-  if (existsSync(catalog)) for (const name of readdirSync(catalog).filter((n) => n.endsWith(".json"))) {
-    const record2 = JSON.parse(readFileSync(join(catalog, name), "utf8"));
-    if (!/^[0-9a-f]{32}\.json$/.test(name) || record2.project_id !== name.slice(0, -5) || typeof record2.db_path !== "string" || resolve(record2.db_path) !== record2.db_path) throw new KddError("invalid project store catalog");
-    readonly2(record2.db_path, (db, version2) => {
-      if (version2 < 13 || projectOf(db).project_id !== record2.project_id) throw new KddError("project store catalog identity mismatch");
-    });
-    paths.push(record2.db_path);
-  }
-  return [...new Set(paths.map((path) => resolve(path)))];
-}
-function catalogStore(db, dbPath, home) {
-  if (canonicalProjectPath(dirname(dirname(dbPath))) === canonicalProjectPath(home) && dbPath.endsWith("/kdd.db")) return;
-  const projectId = projectOf(db).project_id;
-  const dir = join(home, "project-stores");
-  mkdirSync(dir, { recursive: true });
-  const path = join(dir, `${projectId}.json`);
-  const record2 = JSON.stringify({ db_path: resolve(dbPath), project_id: projectId });
-  if (existsSync(path)) {
-    if (readFileSync(path, "utf8") !== record2) throw new KddError("project store location conflict");
-    return;
-  }
-  const tmp = `${path}.${process.pid}.tmp`;
-  try {
-    writeFileSync(tmp, record2, { mode: 384 });
-    renameSync(tmp, path);
-  } finally {
-    rmSync(tmp, { force: true });
-  }
-}
-function meta(db, key) {
-  return db.prepare("SELECT value FROM meta WHERE key=?").get(key)?.value;
-}
-function discover(common, home) {
-  const matches = storePaths(home).flatMap((path) => readonly2(path, (db, version2) => {
-    if (version2 >= 13) {
-      const binding = bindingsOf(db).find((b) => b.common_dir === common);
-      if (binding) return [{ dbPath: path, projectPath: common, locator: {
-        common_dir: common,
-        db_path: resolve(path),
-        project_id: projectOf(db).project_id,
-        repo_id: binding.repo_id
-      } }];
-    }
-    const source = meta(db, "project_path");
-    try {
-      return source && existsSync(source) && canonicalCommonDir(source) === common ? [{ dbPath: path, projectPath: source }] : [];
-    } catch {
-      return [];
-    }
-  }));
-  if (matches.length > 1) throw new KddError(`conflicting project stores for ${common}`);
-  return matches[0];
-}
-function validateLocator(row) {
-  readonly2(row.db_path, (db, version2) => {
-    const binding = version2 >= 13 ? bindingsOf(db).find((b) => b.common_dir === row.common_dir) : void 0;
-    if (!binding || binding.repo_id !== row.repo_id || projectOf(db).project_id !== row.project_id) {
-      throw new KddError(`stale or mismatched registry binding for ${row.common_dir}; repeat explicit binding/rebind`);
-    }
-  });
-}
-function putLocator(registry2, row) {
-  registry2.prepare("INSERT INTO bindings(common_dir,db_path,project_id,repo_id) VALUES(@common_dir,@db_path,@project_id,@repo_id) ON CONFLICT(common_dir) DO UPDATE SET db_path=excluded.db_path,project_id=excluded.project_id,repo_id=excluded.repo_id").run(row);
-}
-function lookupProjectStore(commonDir, home) {
-  return withRegistry(home, (registry2) => registry2.transaction(() => {
-    const row = registry2.prepare("SELECT * FROM bindings WHERE common_dir=?").get(commonDir);
-    if (row) {
-      validateLocator(row);
-      return { dbPath: row.db_path, projectPath: commonDir };
-    }
-    const found = discover(commonDir, home);
-    if (found?.locator) putLocator(registry2, found.locator);
-    return found ? { dbPath: found.dbPath, projectPath: found.projectPath } : void 0;
-  }).immediate());
-}
-function initializeProjectStore(db, dbPath, home, projectPath, checkout = process.cwd(), options = {}) {
-  if (dbPath === ":memory:") return;
-  const savedSource = meta(db, "project_path");
-  const source = savedSource ?? projectPath;
-  if (!source || !existsSync(source)) return;
-  let common;
-  let paths;
-  try {
-    common = savedSource && (options.legacyUpgrade || projectOf(db).primary_repo_id) ? canonicalCommonDir(savedSource) : realpathSync(source);
-    paths = worktrees(common).map((path) => realpathSync(path));
-  } catch {
-    return;
-  }
-  let sourceCaller = false;
-  try {
-    if (canonicalCommonDir(checkout) === common) {
-      sourceCaller = true;
-      paths = [realpathSync(git(checkout, ["rev-parse", "--show-toplevel"])), ...paths];
-    }
-  } catch {
-  }
-  const toplevel = meta(db, "project_toplevel");
-  if (toplevel) {
-    try {
-      if (canonicalCommonDir(toplevel) === common) paths.unshift(realpathSync(toplevel));
-    } catch {
-    }
-  }
-  if (!paths.length) return;
-  withRegistry(home, (registry2) => registry2.transaction(() => {
-    catalogStore(db, dbPath, home);
-    const found = registry2.prepare("SELECT * FROM bindings WHERE common_dir=?").get(common);
-    if (found && (found.project_id !== projectOf(db).project_id || resolve(found.db_path) !== resolve(dbPath))) {
-      throw new KddError(`registry binding conflict for ${common}`);
-    }
-    const other = discover(common, home);
-    if (other && resolve(other.dbPath) !== resolve(dbPath)) throw new KddError(`project store conflict for ${common}`);
-    db.transaction(() => {
-      const project = projectOf(db);
-      if (project.primary_repo_id) return;
-      let decisionsDir = project.legacy_decisions_dir;
-      if (!decisionsDir) {
-        const cachedPaths = db.prepare("SELECT path FROM decisions").all().map((row) => resolve(dirname(row.path)));
-        const cachedDirs = new Set(cachedPaths.map(canonicalProjectPath));
-        const cachedDefault = cachedPaths.some((dir) => basename(dir) === "decisions" && basename(dirname(dir)) === ".planning" && paths.includes(canonicalProjectPath(dirname(dirname(dir)))));
-        if (cachedDirs.size === 1 && !cachedDefault) decisionsDir = [...cachedDirs][0];
-        if (!decisionsDir && sourceCaller && options.configuredDecisions) decisionsDir = canonicalProjectPath(options.configuredDecisions);
-      }
-      const repoId = id();
-      db.prepare("INSERT INTO repositories VALUES(?,?,?,NULL,?)").run(repoId, "primary", "implementation", time3());
-      db.prepare("INSERT INTO repository_bindings VALUES(?,?,?,?,?)").run(common, repoId, paths[0], "source", time3());
-      db.prepare("UPDATE project SET primary_repo_id=?,legacy_decisions_dir=? WHERE singleton=1").run(repoId, decisionsDir ?? join(paths[0], ".planning", "decisions"));
-    }).immediate();
-    const binding = bindingsOf(db).find((b) => b.common_dir === common);
-    if (binding) putLocator(registry2, { common_dir: common, db_path: resolve(dbPath), project_id: projectOf(db).project_id, repo_id: binding.repo_id });
-  }).immediate());
-}
-function listProjectCheckouts(home) {
-  return [...new Set(storePaths(home).flatMap((path) => readonly2(path, (db, version2) => {
-    const bindings = version2 >= 13 ? bindingsOf(db) : [];
-    const commons = version2 >= 13 ? bindings.map((b) => b.common_dir) : [meta(db, "project_path")].filter((p) => !!p);
-    const checkoutPaths = bindings.flatMap((b) => {
-      try {
-        return canonicalCommonDir(b.checkout_path) === b.common_dir ? [realpathSync(b.checkout_path)] : [];
-      } catch {
-        return [];
-      }
-    });
-    return [...checkoutPaths, ...commons.filter((p) => existsSync(p)).flatMap((common) => worktrees(realpathSync(common)))];
-  })))];
-}
-function canSyncLegacyDecisions(db, decisionsDir) {
-  const project = projectOf(db);
-  if (!project.primary_repo_id && db.memory) return true;
-  const bindings = bindingsOf(db);
-  const source = bindings.find((b) => b.repo_id === project.primary_repo_id && b.kind === "source");
-  if (project.primary_repo_id && (!source || !existsSync(source.common_dir))) return false;
-  const path = canonicalProjectPath(decisionsDir);
-  if (project.legacy_decisions_dir && (!source || resolve(project.legacy_decisions_dir) !== join(source.checkout_path, ".planning", "decisions"))) {
-    return path === resolve(project.legacy_decisions_dir);
-  }
-  if (!project.primary_repo_id) return false;
-  let ancestor = path;
-  while (!existsSync(ancestor) && dirname(ancestor) !== ancestor) ancestor = dirname(ancestor);
-  try {
-    const common = canonicalCommonDir(ancestor);
-    return bindings.some((b) => b.repo_id === project.primary_repo_id && b.kind === "source" && b.common_dir === common);
-  } catch {
-    return false;
-  }
-}
 var now = () => Math.floor(Date.now() / 1e3);
-function backupBeforeMigrate(db, dbPath, from) {
-  const backup = `${dbPath}.v${from}.bak`;
-  const tmp = `${backup}.${process.pid}.tmp`;
-  const q = (p) => p.replace(/'/g, "''");
-  try {
-    rmSync2(tmp, { force: true });
-    db.exec(`VACUUM INTO '${q(tmp)}'`);
-    const copy = new Database2(tmp, { readonly: true });
-    const copied = copy.pragma("user_version", { simple: true });
-    copy.close();
-    if (copied !== from) {
-      rmSync2(tmp, { force: true });
-      return;
-    }
-    renameSync2(tmp, backup);
-  } catch (e) {
-    rmSync2(tmp, { force: true });
-    db.close();
-    throw new KddError(
-      `cannot back up the board before migrating it to v${MIGRATIONS.length}: ${e instanceof Error ? e.message : String(e)} (wanted ${backup})`
-    );
-  }
-}
-function openDb(dbPath, projectPath, checkout) {
-  if (dbPath !== ":memory:") mkdirSync2(dirname2(dbPath), { recursive: true });
-  const db = new Database2(dbPath);
-  db.pragma("journal_mode = WAL");
-  db.pragma("busy_timeout = 5000");
-  db.pragma("foreign_keys = ON");
-  const from = db.pragma("user_version", { simple: true });
-  if (from > MIGRATIONS.length) {
-    db.close();
-    throw new KddError(
-      `board at ${dbPath} has schema v${from}, this kdd only knows v${MIGRATIONS.length} \u2014 update kdd (npm i -g @kddkit/cli), or run the version that created it`
-    );
-  }
-  if (from > 0 && from < MIGRATIONS.length && dbPath !== ":memory:") {
-    backupBeforeMigrate(db, dbPath, from);
-  }
-  for (let i = from; i < MIGRATIONS.length; i++) {
-    db.transaction(() => {
-      const current = db.pragma("user_version", { simple: true });
-      if (current > MIGRATIONS.length) throw new KddError("board schema changed to an unknown version during migration");
-      if (current > i) return;
-      db.exec(MIGRATIONS[i]);
-      db.pragma(`user_version = ${i + 1}`);
-    }).immediate();
-  }
-  if (from === 0 && projectPath) {
-    db.prepare(`INSERT OR IGNORE INTO meta (key, value) VALUES ('project_path', ?)`).run(projectPath);
-  }
-  const configuredDecisions = process.env.KDD_DECISIONS_DIR;
-  if (from === 0 && configuredDecisions) {
-    db.transaction(() => db.prepare("UPDATE project SET legacy_decisions_dir=? WHERE singleton=1").run(canonicalProjectPath(configuredDecisions)))();
-  }
-  try {
-    initializeProjectStore(
-      db,
-      dbPath,
-      process.env.KDD_HOME ?? join2(homedir(), ".kdd"),
-      projectPath,
-      checkout,
-      { legacyUpgrade: from > 0 && from < 13, configuredDecisions: from < 13 ? configuredDecisions : void 0 }
-    );
-    return db;
-  } catch (e) {
-    db.close();
-    throw e;
-  }
-}
-var kddHome = () => process.env.KDD_HOME ?? join3(homedir2(), ".kdd");
-function resolveDbPath(cwd = process.cwd()) {
-  if (process.env.KDD_DB) return { dbPath: process.env.KDD_DB, projectPath: cwd };
-  let common;
-  try {
-    common = execFileSync2(
-      "git",
-      ["rev-parse", "--path-format=absolute", "--git-common-dir"],
-      { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
-    ).trim();
-  } catch {
-    throw new KddError("not in a git repository (kdd resolves its store via git)");
-  }
-  const registered2 = lookupProjectStore(realpathSync2(common), kddHome());
-  if (registered2) return registered2;
-  const hash = createHash("sha256").update(common).digest("hex").slice(0, 16);
-  return { dbPath: join3(kddHome(), hash, "kdd.db"), projectPath: common };
-}
-function resolveDecisionsDir(cwd = process.cwd()) {
-  if (process.env.KDD_DECISIONS_DIR) return process.env.KDD_DECISIONS_DIR;
-  let top;
-  try {
-    top = execFileSync2(
-      "git",
-      ["rev-parse", "--show-toplevel"],
-      { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
-    ).trim();
-  } catch {
-    throw new KddError("not in a git repository (kdd resolves .planning via git)");
-  }
-  return join3(top, ".planning", "decisions");
-}
-var STATUSES = ["backlog", "new", "in_progress", "review", "done"];
-var PRIORITIES = ["low", "medium", "high", "urgent"];
-var KINDS = ["feature", "bug", "chore", "research"];
-function normalizeSessionId(raw) {
-  return typeof raw === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(raw) ? raw : void 0;
-}
-function manualSessionFromEnv(cwd = process.cwd()) {
-  const e = process.env;
-  if (e.KDD_SESSION) return void 0;
-  if (e.CLAUDECODE === "1" || e.CLAUDE_CODE_SESSION_ID) {
-    return { client: "claude", sessionId: normalizeSessionId(e.CLAUDE_CODE_SESSION_ID), cwd };
-  }
-  if (e.CODEX_SESSION_ID || e.CODEX_THREAD_ID) {
-    return {
-      client: "codex",
-      sessionId: normalizeSessionId(e.CODEX_SESSION_ID) ?? normalizeSessionId(e.CODEX_THREAD_ID),
-      cwd
-    };
-  }
-  return void 0;
-}
-var TRANSITIONS = {
-  backlog: ["new"],
-  new: ["backlog", "in_progress"],
-  in_progress: ["new", "review"],
-  review: ["in_progress", "done"],
-  done: ["review"]
-};
-var authorOf = (a) => a.type === "ai" ? `ai:${a.id ?? "?"}` : "user";
-function agentId() {
-  const e = process.env;
-  const cc = e.CLAUDE_CODE_SESSION_ID ? `cc:${e.CLAUDE_CODE_SESSION_ID.slice(0, 8)}` : void 0;
-  const codex = e.CODEX_SESSION_ID || e.CODEX_THREAD_ID;
-  return e.KDD_SESSION || cc || (e.CLAUDE_PID ? `cc:pid-${e.CLAUDE_PID}` : void 0) || (codex ? `codex:${codex}` : void 0);
-}
-function checkMove(from, to, actor, reason, openCriteria2 = 0, claimedBy = null, submittedBy2 = null) {
-  if (from === to) return { ok: false, error: `task is already in ${to}` };
-  if (actor.type === "user") return { ok: true };
-  if (reason) return { ok: true };
-  if (from === "review" && to === "done" && submittedBy2 === authorOf(actor)) {
-    return {
-      ok: false,
-      error: `you submitted this task for review yourself; accepting it is someone else's call \u2014 ask the user, and pass a reason if they told you to close it`
-    };
-  }
-  if (from === "in_progress" && claimedBy?.startsWith("ai:") && claimedBy !== `ai:${actor.id ?? "?"}`) {
-    return {
-      ok: false,
-      error: `lease lost (held by ${claimedBy}); you no longer own this task \u2014 stop work`
-    };
-  }
-  if (!TRANSITIONS[from].includes(to)) {
-    return {
-      ok: false,
-      error: `invalid transition ${from} \u2192 ${to} for ai; allowed: ${TRANSITIONS[from].join(", ")}; pass a reason if the user requested a skip`
-    };
-  }
-  if (to === "review" && openCriteria2 > 0) {
-    return {
-      ok: false,
-      error: `cannot move to review: ${openCriteria2} unchecked acceptance criteria; check them (kdd criteria check) or pass a reason if the user asked to skip`
-    };
-  }
-  return { ok: true };
+function inside(parent, path) {
+  const suffix = relative(parent, path);
+  return suffix === "" || suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix);
 }
 var SECRETS = [
   [/-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----/g, "[redacted key]"],
@@ -21863,28 +21236,118 @@ function listCriteria(db, taskId) {
     `SELECT * FROM criteria WHERE task_id = ? ORDER BY position, id`
   ).all(taskId);
 }
-function assertLegacyTaskMutation(db, taskIds) {
-  const ids = [...new Set(taskIds)];
-  if (ids.some((id2) => !Number.isSafeInteger(id2) || id2 < 1)) throw new KddError("invalid task ids");
-  if (ids.length && db.prepare(`SELECT task_id FROM managed_task_policy WHERE task_id IN (${ids.map(() => "?").join(",")}) LIMIT 1`).get(...ids)) {
-    throw new KddError("managed task requires controller authority");
+var operations = ["get_context", "submit_report", "request_question"];
+var contexts = /* @__PURE__ */ new WeakMap();
+var denied = () => new KddError("run authority denied");
+var tokenHash = (token) => createHash4("sha256").update(token).digest("hex");
+function canonicalCheckout(path) {
+  if (typeof path !== "string" || !isAbsolute2(path) || !lstatSync3(path).isDirectory()) throw new KddError("invalid repository scope");
+  return realpathSync5(path);
+}
+function repositoryScope(db, input, native) {
+  if (!Array.isArray(input) || !input.length) throw new KddError("empty repository scope");
+  const repos = repositoriesOf(db), bindings = bindingsOf(db);
+  const scope = input.map((resource) => {
+    const checkoutPath = canonicalCheckout(resource.checkoutPath), commonDir = canonicalCommonDir(checkoutPath);
+    const repo = repos.find((repo2) => repo2.repo_id === resource.repoId);
+    const binding = bindings.find((binding2) => binding2.repo_id === resource.repoId && binding2.common_dir === commonDir);
+    if (!repo || !binding || typeof resource.write !== "boolean" || resource.write && (repo.access !== "implementation" || binding.kind !== "managed")) throw new KddError("repository write/scope denied");
+    return { repoId: repo.repo_id, checkoutPath, commonDir, write: resource.write };
+  });
+  const paths = scope.map((resource) => resource.checkoutPath), writes = scope.filter((resource) => resource.write).map((resource) => resource.checkoutPath);
+  if (new Set(paths).size !== paths.length || writes.length > 1 || JSON.stringify([...paths].sort()) !== JSON.stringify([...native.readableRoots].sort()) || writes[0] !== native.writableRoot) throw new KddError("native repository scope differs from grant");
+  return scope;
+}
+function privateStore(db, scope, native) {
+  if (db.memory) return;
+  const path = realpathSync5(db.name);
+  if (db.name !== path) throw new KddError("project store alias denied");
+  if (scope.some((resource) => inside(resource.checkoutPath, path) || inside(resource.commonDir, path))) throw new KddError("native repository scope exposes project store");
+  const writableRoots = [canonicalCheckout(native.scratchDir), ...native.writableRoot ? [canonicalCheckout(native.writableRoot)] : []];
+  for (const file of [path, `${path}-wal`, `${path}-shm`]) {
+    if (writableRoots.some((root) => inside(root, file))) throw new KddError("native writable scope exposes project store");
+    try {
+      if (!lstatSync3(file).isFile() || lstatSync3(file).nlink !== 1) throw new KddError("project store alias denied");
+    } catch (error2) {
+      if (error2.code !== "ENOENT") throw error2;
+    }
   }
 }
-function mustGetTrack(db, id2) {
-  const t = db.prepare(`SELECT * FROM tracks WHERE id = ?`).get(id2);
-  if (!t) throw new KddError(`track #${id2} not found`);
-  return t;
+function lookup(db, token) {
+  if (typeof token !== "string" || !/^[0-9a-f]{64}$/.test(token)) throw denied();
+  const row = db.prepare("SELECT * FROM run_authorities WHERE token_hash=?").get(tokenHash(token));
+  if (!row || row.revoked_at !== null || !Number.isFinite(row.expires_at) || row.expires_at <= now()) throw denied();
+  let grant;
+  try {
+    grant = JSON.parse(row.grant_json);
+  } catch {
+    throw denied();
+  }
+  const latest = db.prepare("SELECT MAX(generation) generation FROM run_authorities WHERE task_id=? AND work_item_id=?").get(row.task_id, row.work_item_id).generation;
+  if (!grant || !Array.isArray(grant.operations) || !grant.operations.length || new Set(grant.operations).size !== grant.operations.length || grant.operations.some((operation) => !operations.includes(operation)) || grant.projectId !== projectOf(db).project_id || grant.taskId !== row.task_id || grant.workItemId !== row.work_item_id || grant.runId !== row.run_id || grant.generation !== row.generation || latest !== row.generation || !db.prepare("SELECT task_id FROM managed_task_policy WHERE task_id=?").get(row.task_id)) throw denied();
+  mustGetTask(db, row.task_id);
+  try {
+    const repositories = repositoryScope(db, grant.repositories, grant.native);
+    if (JSON.stringify(repositories) !== JSON.stringify(grant.repositories)) throw denied();
+    privateStore(db, repositories, grant.native);
+  } catch {
+    throw denied();
+  }
+  return { row, grant };
 }
-function listTracks(db, opts = {}) {
-  const where = opts.status ? `WHERE tr.status = @status` : "";
-  return db.prepare(
-    `SELECT tr.*, COUNT(t.id) AS open_tasks
-     FROM tracks tr
-     LEFT JOIN tasks t ON t.track_id = tr.id AND t.archived_at IS NULL AND t.status <> 'done'
-     ${where}
-     GROUP BY tr.id ORDER BY tr.status, tr.name`
-  ).all({ status: opts.status ?? null });
+function openRunContext(db, token) {
+  return db.transaction(() => {
+    const { row, grant } = lookup(db, token);
+    const context = Object.freeze({ kind: "run" });
+    contexts.set(context, { db, token, authorityId: row.authority_id, grant });
+    return context;
+  }).immediate();
 }
+function registered(context) {
+  const stored = typeof context === "object" && context !== null ? contexts.get(context) : void 0;
+  if (!stored?.db.open) throw denied();
+  return stored;
+}
+function live(context, operation) {
+  const stored = registered(context), { row, grant } = lookup(stored.db, stored.token);
+  if (row.authority_id !== stored.authorityId || JSON.stringify(grant) !== JSON.stringify(stored.grant) || operation && !grant.operations.includes(operation)) throw denied();
+  return { ...stored, grant };
+}
+function runOperations(context) {
+  return registered(context).db.transaction(() => Object.freeze([...live(context).grant.operations])).immediate();
+}
+function readRunContext(context) {
+  return registered(context).db.transaction(() => {
+    const { db, grant } = live(context, "get_context"), task = mustGetTask(db, grant.taskId);
+    return {
+      projectId: grant.projectId,
+      taskId: grant.taskId,
+      workItemId: grant.workItemId,
+      runId: grant.runId,
+      generation: grant.generation,
+      task: { title: task.title, body: task.body, status: task.status },
+      criteria: listCriteria(db, task.id).map((c) => ({ id: c.id, text: c.text, checked: c.checked_at !== null })),
+      decisions: db.prepare(`SELECT d.slug,d.title FROM decisions d,json_each(d.source_tasks) s
+        WHERE CAST(s.value AS INTEGER)=? ORDER BY d.slug`).all(task.id)
+    };
+  }).immediate();
+}
+function runEvent(context, operation, body) {
+  return registered(context).db.transaction(() => {
+    const { db, token, grant } = live(context, operation);
+    if (typeof body !== "string" || !body.trim() || body.length > CAPS.agentFieldChars) throw new KddError("invalid run body");
+    const safe = redact(body.replaceAll(token, "[redacted]").replaceAll(tokenHash(token), "[redacted]"));
+    return appendEvent(
+      db,
+      grant.taskId,
+      { type: "ai", id: grant.runId },
+      operation === "submit_report" ? "run_report" : "run_question",
+      { work_item_id: grant.workItemId, run_id: grant.runId, generation: grant.generation, untrusted: true, body: safe }
+    );
+  }).immediate();
+}
+var submitRunReport = (context, body) => runEvent(context, "submit_report", body);
+var requestRunQuestion = (context, body) => runEvent(context, "request_question", body);
 function appendEvent(db, taskId, actor, action, detail, opts) {
   const r = db.prepare(
     `INSERT INTO events (task_id, actor_type, actor_id, action, detail, created_at,
@@ -21903,1069 +21366,75 @@ function appendEvent(db, taskId, actor, action, detail, opts) {
   );
   return Number(r.lastInsertRowid);
 }
-function appendTaskMutationEvent(db, taskId, actor, action, detail, opts) {
-  const session = actor.type === "ai" ? actor.manualSession : void 0;
-  if (!session) return appendEvent(db, taskId, actor, action, detail, opts);
-  const git3 = (args) => {
-    try {
-      return execFileSync5("git", args, {
-        cwd: session.cwd,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"]
-      }).trim() || void 0;
-    } catch {
-      return void 0;
-    }
-  };
-  const worktree = git3(["rev-parse", "--show-toplevel"]);
-  const branch = worktree ? git3(["symbolic-ref", "--quiet", "--short", "HEAD"]) : void 0;
-  const head = worktree ? git3(["rev-parse", "--verify", "HEAD"]) : void 0;
-  return appendEvent(db, taskId, actor, action, {
-    ...detail ?? {},
-    manual_provenance: {
-      client: session.client,
-      ...normalizeSessionId(session.sessionId) ? { session_id: session.sessionId } : {},
-      ...worktree ? { worktree } : {},
-      ...branch ? { branch } : {},
-      ...head ? { head_commit: head } : {}
-    }
-  }, opts);
-}
 function mustGetTask(db, id2) {
   const t = db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id2);
   if (!t) throw new KddError(`task #${id2} not found`);
   return t;
 }
-function checkPriority(p) {
-  if (!PRIORITIES.includes(p)) {
-    throw new KddError(`invalid priority '${p}'; allowed: ${PRIORITIES.join(", ")}`);
-  }
-}
-function checkKind(k) {
-  if (!KINDS.includes(k)) {
-    throw new KddError(`invalid kind '${k}'; allowed: ${KINDS.join(", ")}`);
-  }
-}
-function editTask(db, id2, patch, actor) {
-  if (patch.priority !== void 0) checkPriority(patch.priority);
-  if (patch.kind !== void 0) checkKind(patch.kind);
-  if (patch.track_id != null) mustGetTrack(db, patch.track_id);
-  const fields = Object.keys(patch).filter((k) => patch[k] !== void 0);
-  if (fields.some((key) => !["title", "body", "priority", "area", "track_id", "kind"].includes(key))) throw new KddError("invalid task patch");
-  if (fields.length === 0) throw new KddError("nothing to edit");
-  return db.transaction(() => {
-    assertLegacyTaskMutation(db, [id2]);
-    mustGetTask(db, id2);
-    const sets = fields.map((f) => `${f} = ?`).join(", ");
-    db.prepare(`UPDATE tasks SET ${sets}, updated_at = ? WHERE id = ?`).run(...fields.map((f) => patch[f]), now(), id2);
-    appendTaskMutationEvent(db, id2, actor, "edited", { fields });
-    return mustGetTask(db, id2);
-  }).immediate();
-}
-function commentTask(db, id2, body, actor) {
-  if (!body.trim()) throw new KddError("comment must not be empty");
-  const text = actor.type === "ai" ? redact(body) : body;
-  return db.transaction(() => {
-    assertLegacyTaskMutation(db, [id2]);
-    mustGetTask(db, id2);
-    const r = db.prepare(
-      `INSERT INTO comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)`
-    ).run(id2, authorOf(actor), text, now());
-    appendTaskMutationEvent(db, id2, actor, "commented");
-    return db.prepare(`SELECT * FROM comments WHERE id = ?`).get(Number(r.lastInsertRowid));
-  }).immediate();
-}
-function checkStatus(s) {
-  if (!STATUSES.includes(s)) {
-    throw new KddError(`invalid status '${s}'; allowed: ${STATUSES.join(", ")}`);
-  }
-}
-function openCriteria(db, taskId) {
-  return db.prepare(
-    `SELECT COUNT(*) AS c FROM criteria WHERE task_id = ? AND checked_at IS NULL`
-  ).get(taskId).c;
-}
-function submittedBy(db, taskId) {
-  const r = db.prepare(
-    `SELECT actor_type, actor_id FROM events
-      WHERE task_id = ? AND action = 'moved' AND detail LIKE '%"to":"review"%'
-      ORDER BY id DESC LIMIT 1`
-  ).get(taskId);
-  return r ? authorOf({ type: r.actor_type, id: r.actor_id ?? void 0 }) : null;
-}
-function nextPosition(db, status) {
-  return db.prepare(
-    `SELECT COALESCE(MAX(position), -1) + 1 AS p
-     FROM tasks WHERE status = ? AND archived_at IS NULL`
-  ).get(status).p;
-}
-function moveTask(db, id2, to, actor, reason) {
-  checkStatus(to);
-  return db.transaction(() => {
-    assertLegacyTaskMutation(db, [id2]);
-    const t = mustGetTask(db, id2);
-    const submitter = t.status === "review" ? submittedBy(db, id2) : null;
-    const res = checkMove(t.status, to, actor, reason, openCriteria(db, id2), t.claimed_by, submitter);
-    if (!res.ok) throw new KddError(res.error);
-    const self = t.status === "review" && to === "done" && submitter === authorOf(actor);
-    const leaving = t.status === "in_progress" && to !== "in_progress";
-    const reset = to === "review";
-    db.prepare(
-      `UPDATE tasks SET status = ?, position = ?, updated_at = ?${leaving ? ", claimed_by = NULL, claim_expires = NULL" : ""}${reset ? ", failed_attempts = 0" : ""}
-       WHERE id = ?`
-    ).run(to, nextPosition(db, to), now(), id2);
-    appendTaskMutationEvent(db, id2, actor, "moved", {
-      from: t.status,
-      to,
-      ...reason ? { reason } : {},
-      ...self ? { self_accepted: true } : {}
-    });
-    if (reason) {
-      db.prepare(
-        `INSERT INTO comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)`
-      ).run(id2, authorOf(actor), reason, now());
-    }
-    return mustGetTask(db, id2);
-  }).immediate();
-}
-var MIME = {
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  gif: "image/gif",
-  webp: "image/webp",
-  bmp: "image/bmp",
-  ico: "image/x-icon",
-  tif: "image/tiff",
-  tiff: "image/tiff",
-  svg: "image/svg+xml",
-  pdf: "application/pdf",
-  zip: "application/zip",
-  json: "application/json",
-  csv: "text/csv",
-  md: "text/markdown",
-  txt: "text/plain",
-  log: "text/plain"
-};
-var filesDir = (dbPath) => {
-  if (dbPath === ":memory:") throw new KddError("attachments need a real board file, not :memory:");
-  return join6(dirname4(dbPath), "files");
-};
-var filePath = (dbPath, f) => join6(filesDir(dbPath), `${f.sha256}.${f.ext}`);
-function listFiles(db, taskId) {
-  return db.prepare(`SELECT * FROM files WHERE task_id = ? ORDER BY id`).all(taskId);
-}
-function getFile(db, id2) {
-  return db.prepare(`SELECT * FROM files WHERE id = ?`).get(id2);
-}
-function attachFile(db, dbPath, taskId, srcPath, opts, actor) {
-  return db.transaction(() => {
-    assertLegacyTaskMutation(db, [taskId]);
-    let data;
-    try {
-      const stat = statSync(srcPath);
-      if (stat.isDirectory()) throw new KddError(`${srcPath} is a directory`);
-      if (stat.size > CAPS.fileBytes) {
-        throw new KddError(`file is ${stat.size} bytes, the limit is ${CAPS.fileBytes}`);
-      }
-      data = readFileSync4(srcPath);
-    } catch (e) {
-      if (e instanceof KddError) throw e;
-      throw new KddError(`cannot read ${srcPath}: ${e.message}`);
-    }
-    mustGetTask(db, taskId);
-    const sha256 = createHash5("sha256").update(data).digest("hex");
-    const ext = (extname(srcPath).slice(1) || "bin").toLowerCase();
-    const target = join6(filesDir(dbPath), `${sha256}.${ext}`);
-    if (!existsSync5(target)) {
-      mkdirSync5(filesDir(dbPath), { recursive: true });
-      const tmp = `${target}.${process.pid}.tmp`;
-      writeFileSync4(tmp, data);
-      renameSync3(tmp, target);
-    }
-    const name = capText(basename2(srcPath), CAPS.fileNameChars);
-    const r = db.prepare(
-      `INSERT INTO files (task_id, sha256, ext, original_name, mime_type, size_bytes,
-                          description, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(task_id, sha256) DO NOTHING`
-    ).run(
-      taskId,
-      sha256,
-      ext,
-      name,
-      MIME[ext] ?? null,
-      data.length,
-      opts.description ?? null,
-      now()
-    );
-    const row = db.prepare(`SELECT * FROM files WHERE task_id = ? AND sha256 = ?`).get(taskId, sha256);
-    if (r.changes === 0) {
-      if (opts.description && opts.description !== row.description) {
-        db.prepare(`UPDATE files SET description = ? WHERE id = ?`).run(opts.description, row.id);
-        appendTaskMutationEvent(db, taskId, actor, "file_attached", { id: row.id, name, described: true });
-        db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
-        return { ...row, description: opts.description };
-      }
-      return row;
-    }
-    appendTaskMutationEvent(db, taskId, actor, "file_attached", { id: row.id, name });
-    db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
-    return row;
-  }).immediate();
-}
-function detachFile(db, dbPath, fileId, actor) {
-  db.transaction(() => {
-    const f = getFile(db, fileId);
-    if (!f) throw new KddError(`file #${fileId} not found`);
-    assertLegacyTaskMutation(db, [f.task_id]);
-    db.prepare(`DELETE FROM files WHERE id = ?`).run(fileId);
-    appendTaskMutationEvent(db, f.task_id, actor, "file_detached", { id: fileId, name: f.original_name });
-    db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), f.task_id);
-    const left = db.prepare(`SELECT COUNT(*) AS c FROM files WHERE sha256 = ? AND ext = ?`).get(f.sha256, f.ext).c;
-    if (left === 0) rmSync4(filePath(dbPath, f), { force: true });
-  }).immediate();
-}
-var normalize = (s) => s.replace(/\r\n/g, "\n").trim();
-function contentHash(title, body) {
-  return createHash6("sha256").update(`${normalize(title)}
-${normalize(body)}`).digest("hex");
-}
-function normalizeSourceTasks(ids = []) {
-  for (const id2 of ids) {
-    if (!Number.isInteger(id2) || id2 < 1) throw new KddError(`invalid source task id '${id2}'`);
-  }
-  return [...new Set(ids)].sort((a, b) => a - b);
-}
-function parseSourceTasks(value) {
-  if (value === void 0) return [];
-  let parsed;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    throw new KddError("invalid source_tasks frontmatter");
-  }
-  if (!Array.isArray(parsed)) throw new KddError("invalid source_tasks frontmatter");
-  try {
-    return normalizeSourceTasks(parsed);
-  } catch {
-    throw new KddError("invalid source_tasks frontmatter");
-  }
-}
-function parseDecisionMd(raw) {
-  const text = raw.replace(/\r\n/g, "\n");
-  const fm = {};
-  let rest = text;
-  if (text.startsWith("---\n")) {
-    const end = text.indexOf("\n---\n", 4);
-    if (end !== -1) {
-      for (const line of text.slice(4, end).split("\n")) {
-        const m = line.match(/^(\w+):\s*(.*)$/);
-        if (m) fm[m[1]] = m[2].trim();
-      }
-      rest = text.slice(end + 5);
-    }
-  }
-  const tm = rest.match(/^# (.+)$/m);
-  const title = tm ? tm[1].trim() : "";
-  const indexBody = tm ? rest.slice(rest.indexOf(tm[0]) + tm[0].length).trim() : rest.trim();
-  return {
-    title,
-    created: fm.created ?? "",
-    status: fm.status || "active",
-    supersededBy: fm.superseded_by ?? "",
-    indexBody,
-    hash: contentHash(title, indexBody),
-    sourceTasks: parseSourceTasks(fm.source_tasks)
-  };
-}
-function syncIndex(db, decisionsDir) {
-  db.transaction(() => {
-    if (canSyncLegacyDecisions(db, decisionsDir)) {
-      const files = existsSync7(decisionsDir) ? readdirSync6(decisionsDir).filter((f) => f.endsWith(".md")) : [];
-      const inDb = new Map(
-        db.prepare(
-          `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`
-        ).all().map((r) => [r.slug, r])
-      );
-      const seen = /* @__PURE__ */ new Set();
-      for (const f of files) {
-        const slug = f.slice(0, -3);
-        seen.add(slug);
-        const path = join8(decisionsDir, f);
-        if (!canSyncLegacyDecisions(db, dirname6(realpathSync7(path)))) continue;
-        const doc = parseDecisionMd(readFileSync6(path, "utf8"));
-        const title = doc.title || slug;
-        const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
-        const sourceTasks = JSON.stringify(doc.sourceTasks);
-        const row = inDb.get(slug);
-        if (row && row.content_hash === doc.hash && (row.superseded_by ?? null) === (supersededBy ?? null)) {
-          if (row.path !== path || row.source_tasks !== sourceTasks || row.created !== (doc.created || null)) {
-            db.prepare(`UPDATE decisions SET path = ?, source_tasks = ?, created = ? WHERE slug = ?`).run(path, sourceTasks, doc.created || null, slug);
-          }
-          continue;
-        }
-        db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
-        db.prepare(
-          `INSERT OR REPLACE INTO decisions
-             (slug, title, path, content_hash, created, superseded_by, source_tasks)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
-        ).run(slug, title, path, doc.hash, doc.created || null, supersededBy, sourceTasks);
-        db.prepare(
-          `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`
-        ).run(slug, title, doc.indexBody);
-      }
-      for (const slug of inDb.keys()) {
-        if (seen.has(slug)) continue;
-        db.prepare(`DELETE FROM decisions WHERE slug = ?`).run(slug);
-        db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
-      }
-    }
-    const last = Number(
-      db.prepare(`SELECT value FROM meta WHERE key='fts_last_event_id'`).get()?.value ?? "0"
-    );
-    const max = db.prepare(`SELECT MAX(id) AS m FROM events`).get().m ?? 0;
-    if (max <= last) return;
-    const ids = db.prepare(
-      `SELECT DISTINCT task_id AS id FROM events WHERE id > ? AND task_id IS NOT NULL`
-    ).all(last);
-    const getTask = db.prepare(`SELECT * FROM tasks WHERE id = ?`);
-    const getComments = db.prepare(`SELECT body FROM comments WHERE task_id = ? ORDER BY id`);
-    for (const { id: id2 } of ids) {
-      db.prepare(`DELETE FROM search_index WHERE kind='task' AND ref = ?`).run(String(id2));
-      const t = getTask.get(id2);
-      if (!t || t.archived_at) continue;
-      const body = [t.body ?? "", ...getComments.all(id2).map((c) => c.body)].filter(Boolean).join("\n");
-      db.prepare(
-        `INSERT INTO search_index (kind, ref, title, body) VALUES ('task', ?, ?, ?)`
-      ).run(String(id2), t.title, body);
-    }
-    db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_last_event_id', ?)`).run(String(max));
-  })();
-}
-function sanitizeQuery(q) {
-  const parts = [];
-  for (const m of q.matchAll(/"([^"]+)"|[\p{L}\p{N}_][\p{L}\p{N}_.-]*/gu)) {
-    const raw = m[1] !== void 0 ? m[1].trim() : m[0].replace(/^[._-]+|[._-]+$/g, "");
-    if (raw) parts.push(`"${raw.replace(/"/g, '""')}"`);
-  }
-  if (parts.length === 0) throw new KddError("empty query");
-  return parts.join(" ");
-}
-function recall(db, decisionsDir, query, opts = {}) {
-  if (opts.kind && opts.kind !== "decision" && opts.kind !== "task") {
-    throw new KddError(`invalid kind '${opts.kind}'; allowed: decision, task`);
-  }
-  const k = opts.k ?? CAPS.recallK;
-  if (!Number.isInteger(k) || k < 1 || k > CAPS.recallKMax) {
-    throw new KddError(`k must be 1..${CAPS.recallKMax}`);
-  }
-  syncIndex(db, decisionsDir);
-  return db.prepare(`
-    SELECT search_index.kind AS kind, search_index.ref AS ref,
-      search_index.title AS title,
-      snippet(search_index, 3, '', '', '...', ${CAPS.recallSnippetTokens}) AS snippet,
-      COALESCE(d.superseded_by, '') AS superseded_by,
-      t.status AS status
-    FROM search_index
-    LEFT JOIN decisions d ON search_index.kind = 'decision' AND d.slug = search_index.ref
-    LEFT JOIN tasks t ON search_index.kind = 'task' AND t.id = CAST(search_index.ref AS INTEGER)
-    WHERE search_index MATCH @q
-      AND (@kind IS NULL OR search_index.kind = @kind)
-    ORDER BY (COALESCE(d.superseded_by, '') <> ''),
-      bm25(search_index, 0, 0, 3.0, 1.0)
-    LIMIT @k
-  `).all({
-    q: sanitizeQuery(query),
-    kind: opts.kind ?? null,
-    k
-  });
-}
-var PRIORITY_ORDER = `CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
-function manualEvent(event) {
-  if (event.actor_type !== "ai" || !event.detail) return void 0;
-  try {
-    const detail = JSON.parse(event.detail);
-    if (!detail || typeof detail !== "object") return void 0;
-    const raw = detail.manual_provenance;
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return void 0;
-    const p = raw;
-    if (p.client !== "claude" && p.client !== "codex") return void 0;
-    return {
-      client: p.client,
-      ...normalizeSessionId(p.session_id) ? { session_id: p.session_id } : {},
-      ...typeof p.worktree === "string" ? { worktree: p.worktree } : {},
-      ...typeof p.branch === "string" ? { branch: p.branch } : {},
-      ...typeof p.head_commit === "string" ? { head_commit: p.head_commit } : {}
-    };
-  } catch {
-    return void 0;
-  }
-}
-function manualHistory(events) {
-  let latest;
-  let previous;
-  const handoffs = [];
-  for (const event of [...events].sort((a, b) => a.id - b.id)) {
-    const current = manualEvent(event);
-    if (!current) continue;
-    latest = current;
-    if (!current.session_id) continue;
-    if (previous && (previous.client !== current.client || previous.session_id !== current.session_id)) {
-      handoffs.push({
-        from_client: previous.client,
-        from_session_id: previous.session_id,
-        to_client: current.client,
-        to_session_id: current.session_id,
-        event_id: event.id,
-        at: event.created_at
-      });
-    }
-    previous = { client: current.client, session_id: current.session_id };
-  }
-  return { ...latest ? { manual_provenance: latest } : {}, handoffs };
-}
-var READY_SQL = `(status = 'new' AND blocked = 0 AND archived_at IS NULL AND kind <> 'research')`;
-function boardData(db, f = {}) {
-  const where = [f.archived ? "archived_at IS NOT NULL" : "archived_at IS NULL"];
-  const params = [];
-  if (f.area) {
-    where.push("area = ?");
-    params.push(f.area);
-  }
-  if (f.kind) {
-    where.push("kind = ?");
-    params.push(f.kind);
-  }
-  if (f.track_id != null) {
-    where.push("track_id = ?");
-    params.push(f.track_id);
-  }
-  if (f.status) {
-    where.push("status = ?");
-    params.push(f.status);
-  }
-  if (f.ready != null) where.push(f.ready ? READY_SQL : `NOT ${READY_SQL}`);
-  const rows = db.prepare(
-    `SELECT *,
-       ${READY_SQL} AS ready,
-       (SELECT COUNT(*) FROM criteria WHERE criteria.task_id = tasks.id) AS criteria_total,
-       (SELECT COUNT(*) FROM criteria WHERE criteria.task_id = tasks.id AND checked_at IS NOT NULL)
-         AS criteria_checked
-     FROM tasks WHERE ${where.join(" AND ")}
-     ORDER BY position, ${PRIORITY_ORDER}, created_at`
-  ).all(...params);
-  const out = Object.fromEntries(STATUSES.map((s) => [s, []]));
-  for (const r of rows) out[r.status].push(r);
-  return out;
-}
-function taskDetail(db, id2) {
-  const task = mustGetTask(db, id2);
-  const criteria = listCriteria(db, id2);
-  const comments = db.prepare(
-    `SELECT * FROM comments WHERE task_id = ? ORDER BY created_at, id`
-  ).all(id2);
-  const events = db.prepare(
-    `SELECT * FROM events WHERE task_id = ? ORDER BY created_at, id`
-  ).all(id2);
-  const links = db.prepare(
-    `SELECT t.id, t.title, l.kind FROM task_links l
-     JOIN tasks t ON t.id = CASE WHEN l.from_id = ? THEN l.to_id ELSE l.from_id END
-     WHERE l.from_id = ? OR l.to_id = ?`
-  ).all(id2, id2, id2);
-  const agent_runs_total = db.prepare(
-    `SELECT COUNT(*) c FROM agent_events WHERE task_id = ? AND kind = 'run_start'`
-  ).get(id2).c;
-  const files = listFiles(db, id2).map((f) => ({ ...f, path: filePath(db.name, f) }));
-  const decisions = db.prepare(
-    `SELECT d.slug, d.title, d.created, d.superseded_by
-       FROM decisions d, json_each(d.source_tasks) source
-      WHERE CAST(source.value AS INTEGER) = ?
-      ORDER BY d.slug`
-  ).all(id2);
-  return {
-    task,
-    criteria,
-    comments,
-    events,
-    links,
-    decisions,
-    files,
-    agent_runs_total,
-    ...manualHistory(events)
-  };
-}
-function taskDetailCapped(db, id2) {
-  const d = taskDetail(db, id2);
-  return {
-    task: {
-      ...d.task,
-      body: d.task.body === null ? null : capText(d.task.body, CAPS.bodyChars)
-    },
-    // criteria не режем: неполный список приёмки бесполезен
-    criteria: d.criteria,
-    comments: d.comments.slice(-CAPS.comments).map((c) => ({ ...c, body: capText(c.body, CAPS.commentChars) })),
-    comments_total: d.comments.length,
-    events: d.events.slice(-CAPS.events),
-    events_total: d.events.length,
-    links: d.links,
-    decisions: d.decisions.slice(0, CAPS.decisions).map((decision) => ({ ...decision, title: capText(decision.title, CAPS.titleChars) })),
-    decisions_total: d.decisions.length,
-    // Вложения режем с НАЧАЛА списка (он упорядочен по id, то есть по времени): первым
-    // приложили — первым и показываем. У комментариев обратная политика — там свежий важнее.
-    files: d.files.slice(0, CAPS.files).map((f) => ({
-      ...f,
-      description: f.description === null ? null : capText(f.description, CAPS.fileDescChars)
-    })),
-    files_total: d.files.length,
-    ...d.manual_provenance ? { manual_provenance: d.manual_provenance } : {},
-    handoffs: d.handoffs.slice(-CAPS.events),
-    handoffs_total: d.handoffs.length
-  };
-}
-function syncedTaskDetail(db, decisionsDir, id2, full = false) {
-  syncIndex(db, decisionsDir);
-  return full ? taskDetail(db, id2) : taskDetailCapped(db, id2);
-}
 var DEFAULT_TTL = 15 * 60;
 var OK_TTL = 60 * 60 * 1e3;
 var ERR_TTL = 5 * 60 * 1e3;
-var lexical = (a, b) => a < b ? -1 : a > b ? 1 : 0;
-function detailObject(detail) {
-  if (!detail) return {};
-  try {
-    const value = JSON.parse(detail);
-    return value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
-  } catch {
-    return {};
-  }
-}
-function stringField(key, ...objects) {
-  for (const object3 of objects) {
-    const value = object3[key];
-    if (typeof value === "string") return value;
-  }
-  return void 0;
-}
-function readRunProvenance(db, taskId) {
-  const row = db.prepare(
-    `WITH latest_start AS (
-       SELECT id, worker_id, detail
-         FROM agent_events
-        WHERE task_id = ? AND kind = 'run_start'
-        ORDER BY id DESC
-        LIMIT 1
-     )
-     SELECT s.worker_id,
-            s.detail AS start_detail,
-            (SELECT ae.detail FROM agent_events ae
-              WHERE ae.task_id = ? AND ae.worker_id = s.worker_id
-                AND ae.kind = 'run_end' AND ae.id > s.id
-              ORDER BY ae.id ASC LIMIT 1) AS end_detail,
-            (SELECT ae.detail FROM agent_events ae
-              WHERE ae.task_id = ? AND ae.worker_id = s.worker_id
-                AND ae.kind = 'error' AND ae.id > s.id
-              ORDER BY ae.id DESC LIMIT 1) AS error_detail
-       FROM latest_start s`
-  ).get(taskId, taskId, taskId);
-  if (!row) return void 0;
-  const start = detailObject(row.start_detail);
-  const end = detailObject(row.end_detail);
-  const error2 = detailObject(row.error_detail);
-  const provenance = { worker_id: row.worker_id };
-  const sessionId = stringField("session_id", start, end, error2);
-  const branch = stringField("branch", start, end, error2);
-  const worktree = stringField("worktree", start, end, error2);
-  const beforeCommit = stringField("head", start);
-  const afterCommit = stringField("head", end);
-  const message = stringField("message", error2);
-  if (sessionId !== void 0) provenance.session_id = sessionId;
-  if (branch !== void 0) provenance.branch = branch;
-  if (worktree !== void 0) provenance.worktree = worktree;
-  if (beforeCommit !== void 0) provenance.before_commit = beforeCommit;
-  if (afterCommit !== void 0) provenance.after_commit = afterCommit;
-  if (message !== void 0) provenance.error = message;
-  return provenance;
-}
-function readTaskDecisions(db, decisionsDir, taskId) {
-  if (!canSyncLegacyDecisions(db, decisionsDir)) {
-    return db.prepare("SELECT slug,title,created,superseded_by,source_tasks FROM decisions ORDER BY slug").all().filter((row) => JSON.parse(row.source_tasks).includes(taskId)).map(({ source_tasks, ...row }) => ({ ...row, title: capText(row.title, CAPS.titleChars) }));
-  }
-  if (!existsSync10(decisionsDir)) return [];
-  return readdirSync7(decisionsDir).filter((file) => file.endsWith(".md")).flatMap((file) => {
-    const slug = file.slice(0, -3);
-    if (!canSyncLegacyDecisions(db, dirname9(realpathSync10(join11(decisionsDir, file))))) return [];
-    const decision = parseDecisionMd(readFileSync9(join11(decisionsDir, file), "utf8"));
-    if (!decision.sourceTasks.includes(taskId)) return [];
-    return [{
-      slug,
-      title: capText(decision.title || slug, CAPS.titleChars),
-      created: decision.created || null,
-      superseded_by: decision.status === "superseded" ? decision.supersededBy || "?" : decision.supersededBy || null
-    }];
-  });
-}
-function nextAction(task, criteria) {
-  if (task.status === "done") return { kind: "done", text: "Task is done; no action remains." };
-  if (task.archived_at !== null) {
-    return { kind: "archived", text: "Task is archived; no action remains." };
-  }
-  if (task.blocked) {
-    return {
-      kind: "resolve_blocker",
-      text: task.block_reason ? `Resolve blocker: ${task.block_reason}` : "Resolve the task blocker."
-    };
-  }
-  if (task.status === "backlog") {
-    return { kind: "start_work", text: "Move the task to new and start work." };
-  }
-  if (task.status === "new") return { kind: "start_work", text: "Start work on the task." };
-  const open = criteria.find((criterion) => criterion.checked_at === null);
-  if (open) {
-    return {
-      kind: "complete_criterion",
-      criterion_id: open.id,
-      text: `Complete criterion #${open.id}: ${open.text}`
-    };
-  }
-  if (task.status !== "review") {
-    return { kind: "submit_review", text: "Submit the task to review." };
-  }
-  return { kind: "await_acceptance", text: "Await human acceptance or requested changes." };
-}
-var briefBytes = (brief) => Buffer.byteLength(JSON.stringify(brief), "utf8");
-function omitLastItem(section) {
-  if (section.items.length === 0) return false;
-  section.items.pop();
-  section.omitted += 1;
-  return true;
-}
-function drain(brief, section) {
-  while (briefBytes(brief) > CAPS.briefBytes && omitLastItem(section)) {
-  }
-}
-function fitBrief(brief, sources, errorSource) {
-  if (briefBytes(brief) <= CAPS.briefBytes) return brief;
-  drain(brief, brief.events);
-  drain(brief, brief.comments);
-  drain(brief, brief.files);
-  drain(brief, brief.links);
-  drain(brief, brief.decisions);
-  drain(brief, brief.handoffs);
-  if (briefBytes(brief) > CAPS.briefBytes && brief.provenance?.error && errorSource) {
-    for (const cap of [128, 64, 32, 16]) {
-      brief.provenance.error = capText(errorSource, cap);
-      if (briefBytes(brief) <= CAPS.briefBytes) return brief;
-    }
-    delete brief.provenance.error;
-  }
-  for (const source of [brief.manual_provenance, brief.provenance]) {
-    for (const field of ["worktree", "branch"]) {
-      if (briefBytes(brief) > CAPS.briefBytes && source?.[field]) delete source[field];
-    }
-  }
-  const caps = {
-    block_reason: CAPS.blockReasonChars,
-    goal: 512,
-    next_action: 128,
-    area: 128,
-    title: CAPS.titleChars
-  };
-  const tighten = (key) => {
-    if (sources[key] === null) {
-      caps[key] = 16;
-      return;
-    }
-    if (caps[key] <= 16) return;
-    caps[key] = Math.max(16, Math.floor(caps[key] / 2));
-    const value = capText(sources[key], caps[key]);
-    if (key === "next_action") brief.next_action.text = value;
-    else if (key === "block_reason") brief.task.block_reason = value;
-    else if (key === "goal") brief.task.goal = value;
-    else if (key === "area") brief.task.area = value;
-    else brief.task.title = value;
-  };
-  while (briefBytes(brief) > CAPS.briefBytes && Object.values(caps).some((cap) => cap > 16)) {
-    for (const key of ["block_reason", "goal", "next_action", "area", "title"]) {
-      tighten(key);
-      if (briefBytes(brief) <= CAPS.briefBytes) return brief;
-    }
-  }
-  while (briefBytes(brief) > CAPS.briefBytes && brief.criteria.items.at(-1)?.checked_at !== null && brief.criteria.items.length > 0) {
-    omitLastItem(brief.criteria);
-  }
-  if (briefBytes(brief) > CAPS.briefBytes && brief.provenance) {
-    delete brief.provenance;
-    brief.worker_provenance_omitted = true;
-  }
-  drain(brief, brief.criteria);
-  if (briefBytes(brief) > CAPS.briefBytes) {
-    throw new Error("task brief cannot fit the 4096-byte JSON budget");
-  }
-  return brief;
-}
-function taskBrief(db, decisionsDir, id2) {
-  const detail = taskDetail(db, id2);
-  const criteria = [...detail.criteria].sort((a, b) => {
-    const rank = (criterion) => criterion.checked_at === null ? 0 : criterion.evidence ? 1 : 2;
-    return rank(a) - rank(b) || a.position - b.position || a.id - b.id;
-  });
-  const provenance = readRunProvenance(db, id2);
-  const errorSource = provenance?.error;
-  if (provenance?.error) provenance.error = capText(provenance.error, 256);
-  const task = {
-    id: detail.task.id,
-    title: capText(detail.task.title, CAPS.titleChars),
-    goal: detail.task.body === null ? null : capText(detail.task.body, 512),
-    status: detail.task.status,
-    blocked: !!detail.task.blocked,
-    block_reason: detail.task.block_reason === null ? null : capText(detail.task.block_reason, CAPS.blockReasonChars),
-    priority: detail.task.priority,
-    kind: detail.task.kind,
-    area: detail.task.area === null ? null : capText(detail.task.area, 128),
-    archived_at: detail.task.archived_at
-  };
-  const projectedCriteria = {
-    items: criteria.map((criterion) => ({
-      id: criterion.id,
-      text: capText(criterion.text, 128),
-      checked_at: criterion.checked_at,
-      ...criterion.evidence ? { evidence: capText(criterion.evidence, 128) } : {},
-      ...criterion.checked_by ? { checked_by: criterion.checked_by } : {}
-    })),
-    omitted: 0
-  };
-  const action = nextAction(task, projectedCriteria.items);
-  const actionSource = action.text;
-  action.text = capText(action.text, 128);
-  const brief = {
-    task,
-    criteria: projectedCriteria,
-    comments: {
-      items: detail.comments.map((comment) => ({
-        id: comment.id,
-        author: comment.author,
-        body: capText(comment.body, 256),
-        created_at: comment.created_at
-      })).sort((a, b) => b.created_at - a.created_at || b.id - a.id),
-      omitted: 0
-    },
-    events: {
-      items: detail.events.filter((event) => event.action !== "commented").map((event) => ({
-        id: event.id,
-        actor_type: event.actor_type,
-        ...event.actor_id ? { actor_id: event.actor_id } : {},
-        action: event.action,
-        ...event.detail ? { detail: capText(event.detail, 256) } : {},
-        created_at: event.created_at
-      })).sort((a, b) => b.created_at - a.created_at || b.id - a.id),
-      omitted: 0
-    },
-    links: {
-      items: detail.links.map((link) => ({ ...link, title: capText(link.title, CAPS.titleChars) })).sort((a, b) => a.id - b.id || lexical(a.kind, b.kind)),
-      omitted: 0
-    },
-    decisions: {
-      items: readTaskDecisions(db, decisionsDir, id2).sort((a, b) => lexical(a.slug, b.slug)),
-      omitted: 0
-    },
-    files: {
-      items: detail.files.map((file) => ({
-        id: file.id,
-        name: file.original_name,
-        mime_type: file.mime_type,
-        size_bytes: file.size_bytes,
-        description: file.description === null ? null : capText(file.description, 128),
-        path: file.path
-      })).sort((a, b) => a.id - b.id),
-      omitted: 0
-    },
-    ...detail.manual_provenance ? { manual_provenance: detail.manual_provenance } : {},
-    handoffs: {
-      items: detail.handoffs.slice(-3).reverse(),
-      omitted: Math.max(0, detail.handoffs.length - 3)
-    },
-    ...provenance ? { provenance } : {},
-    next_action: action,
-    budget: { max_bytes: CAPS.briefBytes }
-  };
-  return fitBrief(brief, {
-    block_reason: detail.task.block_reason,
-    goal: detail.task.body,
-    next_action: actionSource,
-    area: detail.task.area,
-    title: detail.task.title
-  }, errorSource);
-}
 
-// src/handlers.ts
-import { statSync as statSync2 } from "fs";
-function listTracksTool(db) {
-  return listTracks(db, {}).map((t) => ({
-    id: t.id,
-    name: t.name,
-    description: t.description === null ? null : capText(t.description, CAPS.trackDescChars),
-    status: t.status,
-    open_tasks: t.open_tasks
-  }));
-}
-function listTasks(db, filter = {}) {
-  const board = boardData(db, filter);
-  const tasks = {};
-  const omitted = {};
-  for (const [status, rows] of Object.entries(board)) {
-    if (rows.length > CAPS.listRows) omitted[status] = rows.length - CAPS.listRows;
-    tasks[status] = rows.slice(0, CAPS.listRows).map((t) => ({
-      id: t.id,
-      title: t.title,
-      status: t.status,
-      kind: t.kind,
-      priority: t.priority,
-      blocked: !!t.blocked,
-      ready: !!t.ready,
-      criteria: { checked: t.criteria_checked, total: t.criteria_total }
-    }));
-  }
-  return Object.keys(omitted).length ? { tasks, omitted } : { tasks };
-}
-function recallTool(db, dir, query, opts = {}) {
-  return recall(db, dir, query, opts);
-}
-function updateTask(db, input, actor) {
-  if (!input.edit && !input.move && !input.comment && !input.attach && input.detach === void 0) {
-    throw new KddError("nothing to update");
-  }
-  const detached = input.detach === void 0 ? void 0 : getFile(db, input.detach);
-  assertLegacyTaskMutation(db, [input.id, ...detached ? [detached.task_id] : []]);
-  if (input.detach !== void 0 && detached?.task_id !== input.id) {
-    throw new KddError(`file ${input.detach} is not attached to task ${input.id}`);
-  }
-  mustGetTask(db, input.id);
-  if (input.attach) {
+// src/run_server.ts
+function createRunServer(context) {
+  const server = new McpServer({ name: "kdd-run", version: "0.1.0" });
+  const granted = runOperations(context);
+  const body = external_exports.object({ body: external_exports.string().min(1).max(CAPS.agentFieldChars) }).strict();
+  const annotations = { destructiveHint: false, openWorldHint: false };
+  const result = (fn) => {
     try {
-      statSync2(input.attach.path);
-    } catch (e) {
-      throw new KddError(`cannot read ${input.attach.path}: ${e.message}`);
-    }
-  }
-  if (input.edit || input.move || input.comment) {
-    db.transaction(() => {
-      if (input.edit) editTask(db, input.id, input.edit, actor);
-      if (input.move) moveTask(db, input.id, input.move.to, actor, input.move.reason);
-      if (input.comment) commentTask(db, input.id, input.comment, actor);
-    })();
-  }
-  if (input.attach) {
-    attachFile(
-      db,
-      db.name,
-      input.id,
-      input.attach.path,
-      { description: input.attach.description },
-      actor
-    );
-  }
-  if (input.detach !== void 0) {
-    detachFile(db, db.name, input.detach, actor);
-  }
-  return mustGetTask(db, input.id);
-}
-
-// src/server.ts
-var ok = (data) => ({ content: [{ type: "text", text: JSON.stringify(data) }] });
-var fail = (text) => ({ content: [{ type: "text", text }], isError: true });
-function guard(getCtx, meta2, project, fn) {
-  let c;
-  try {
-    c = getCtx(meta2, project);
-  } catch (e) {
-    return fail(e instanceof KddError ? e.message : String(e));
-  }
-  try {
-    return ok(fn(c));
-  } catch (e) {
-    if (e instanceof KddError) return fail(e.message);
-    try {
-      logError(c.db, "mcp", String(e));
+      return { content: [{ type: "text", text: JSON.stringify(fn()) }] };
     } catch {
+      return { content: [{ type: "text", text: "run operation denied" }], isError: true };
     }
-    return fail("internal error");
-  }
-}
-var statusEnum = external_exports.enum(STATUSES);
-var priorityEnum = external_exports.enum(PRIORITIES);
-var kindEnum = external_exports.enum(KINDS);
-var projectField = external_exports.string().min(1).optional().describe("Absolute path inside the git repository; use list_projects to find known projects");
-function knownProjects() {
-  return listProjectCheckouts(kddHome());
-}
-function createServer(getCtx, actor) {
-  const server = new McpServer({ name: "kdd", version: "0.1.0" });
-  server.registerTool(
-    "get_task",
-    {
-      description: `Task with links, last ${CAPS.comments} comments and last ${CAPS.events} events (comments_total/events_total show the full counts); full=true returns the complete uncapped history; brief=true returns only the deterministic resume packet; brief and full are exclusive`,
-      inputSchema: {
-        id: external_exports.number().int().positive(),
-        full: external_exports.boolean().optional(),
-        brief: external_exports.boolean().optional(),
-        project: projectField
-      }
-    },
-    async ({ id: id2, full, brief, project }, extra) => guard(getCtx, extra._meta, project, (c) => {
-      if (brief && full) throw new KddError("brief and full are mutually exclusive");
-      return brief ? taskBrief(c.db, c.dir, id2) : syncedTaskDetail(c.db, c.dir, id2, full);
-    })
-  );
-  server.registerTool(
-    "list_tasks",
-    {
-      description: `Compact board rows in tasks, grouped by status (no body), top ${CAPS.listRows} per status; each row has kind (feature|bug|chore|research), ready (takeable now) and criteria {checked,total}; an omitted map names truncated columns \u2014 narrow with status/kind/track_id/area/ready`,
-      inputSchema: {
-        status: statusEnum.optional(),
-        area: external_exports.string().optional(),
-        kind: kindEnum.optional(),
-        track_id: external_exports.number().int().positive().optional(),
-        ready: external_exports.boolean().optional(),
-        project: projectField
-      }
-    },
-    async (a, extra) => guard(getCtx, extra._meta, a.project, (c) => listTasks(c.db, a))
-  );
-  server.registerTool(
-    "list_projects",
-    {
-      description: "Absolute git worktree paths for known local KDD projects; pass one path as project to other tools",
-      inputSchema: {}
-    },
-    async () => {
-      try {
-        return ok(knownProjects());
-      } catch (e) {
-        return fail(String(e));
-      }
-    }
-  );
-  server.registerTool(
-    "list_tracks",
-    {
-      description: 'Tracks with their "use when\u2026" description and status. Route new tasks to an active track matching the current branch/worktree; status=done marks a finished body of work (kept for context, not a routing target)',
-      inputSchema: { project: projectField }
-    },
-    async ({ project }, extra) => guard(getCtx, extra._meta, project, (c) => listTracksTool(c.db))
-  );
-  server.registerTool(
-    "recall",
-    {
-      description: `FTS5 search over decisions and tasks, top-k (k 1..${CAPS.recallKMax})`,
-      inputSchema: {
-        query: external_exports.string(),
-        k: external_exports.number().int().min(1).max(CAPS.recallKMax).optional(),
-        kind: external_exports.enum(["decision", "task"]).optional(),
-        project: projectField
-      }
-    },
-    async ({ query, k, kind, project }, extra) => guard(
-      getCtx,
-      extra._meta,
-      project,
-      (c) => recallTool(c.db, c.dir, query, { k, kind })
-    )
-  );
-  server.registerTool(
-    "update_task",
-    {
-      description: "Edit, move, comment and/or attach a file to a single task (actor=ai). A move may be refused (unchecked criteria, a task you submitted for review yourself) \u2014 the way through is move.reason, and only once the user has asked for it. attach.path is a path on this machine \u2014 download the file first if it lives elsewhere",
-      inputSchema: {
-        id: external_exports.number().int().positive(),
-        project: projectField,
-        edit: external_exports.object({
-          title: external_exports.string().optional(),
-          body: external_exports.string().optional(),
-          priority: priorityEnum.optional(),
-          kind: kindEnum.optional(),
-          area: external_exports.string().optional(),
-          track_id: external_exports.number().int().positive().nullable().optional()
-        }).optional(),
-        move: external_exports.object({ to: statusEnum, reason: external_exports.string().optional() }).optional(),
-        comment: external_exports.string().optional(),
-        attach: external_exports.object({
-          path: external_exports.string(),
-          description: external_exports.string().optional().describe("what is in the file \u2014 read by whoever has no picture")
-        }).optional(),
-        detach: external_exports.number().int().positive().optional().describe("file id from get_task files[]")
-      }
-    },
-    async (a, extra) => guard(getCtx, extra._meta, a.project, (c) => updateTask(
-      c.db,
-      a,
-      actor ?? mcpActor(extra._meta, a.project)
-    ))
-  );
+  };
+  if (granted.includes("get_context")) server.registerTool("get_context", {
+    description: "Read this run\u2019s task context",
+    inputSchema: external_exports.object({}).strict(),
+    annotations: { ...annotations, readOnlyHint: true, idempotentHint: true }
+  }, async () => result(() => readRunContext(context)));
+  if (granted.includes("submit_report")) server.registerTool("submit_report", {
+    description: "Record an untrusted report for this run",
+    inputSchema: body,
+    annotations: { ...annotations, readOnlyHint: false, idempotentHint: false }
+  }, async ({ body: body2 }) => result(() => ({ eventId: submitRunReport(context, body2) })));
+  if (granted.includes("request_question")) server.registerTool("request_question", {
+    description: "Record an untrusted question for this run",
+    inputSchema: body,
+    annotations: { ...annotations, readOnlyHint: false, idempotentHint: false }
+  }, async ({ body: body2 }) => result(() => ({ eventId: requestRunQuestion(context, body2) })));
   return server;
 }
-function lazyCtx() {
-  const contexts = /* @__PURE__ */ new Map();
-  return (meta2, project) => {
-    if (project && !isAbsolute(project)) throw new KddError("project must be an absolute repository path");
-    if (project && (process.env.KDD_DB || process.env.KDD_DECISIONS_DIR)) {
-      throw new KddError("project cannot be used with KDD_DB or KDD_DECISIONS_DIR overrides");
-    }
-    const cwd = project ?? mcpWorkspace(meta2) ?? process.cwd();
-    const cached2 = contexts.get(cwd);
-    if (cached2) return cached2;
-    let dbPath, projectPath;
-    try {
-      ({ dbPath, projectPath } = resolveDbPath(cwd));
-    } catch (e) {
-      if (e instanceof KddError && e.message.startsWith("not in a git repository")) {
-        throw new KddError(`Cannot resolve KDD store: git found no repository at '${cwd}'. Use list_projects and pass project to the tool.`);
-      }
-      throw e;
-    }
-    const dir = resolveDecisionsDir(cwd);
-    const ctx = { db: openDb(dbPath, projectPath, cwd), dir };
-    contexts.set(cwd, ctx);
-    return ctx;
-  };
-}
-var codexTurn = (meta2) => {
-  const raw = meta2?.["x-codex-turn-metadata"];
-  let turn = raw;
-  if (typeof raw === "string") {
-    try {
-      turn = JSON.parse(raw);
-    } catch {
-      turn = void 0;
-    }
+async function startRunServer(configPath) {
+  let db;
+  try {
+    if (!isAbsolute3(configPath)) throw new Error();
+    const stat = lstatSync(configPath);
+    if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 511) !== 384) throw new Error();
+    const config2 = external_exports.object({ dbPath: external_exports.string().refine(isAbsolute3), token: external_exports.string().regex(/^[0-9a-f]{64}$/) }).strict().parse(JSON.parse(readFileSync2(configPath, "utf8")));
+    db = new Database5(config2.dbPath, { fileMustExist: true });
+    if (db.pragma("user_version", { simple: true }) !== 14) throw new Error();
+    db.pragma("foreign_keys=ON");
+    db.pragma("busy_timeout=5000");
+    const server = createRunServer(openRunContext(db, config2.token));
+    const connection = db;
+    server.server.onclose = () => {
+      if (connection.open) connection.close();
+    };
+    await server.connect(new StdioServerTransport());
+  } catch {
+    db?.close();
+    throw new Error("run broker startup denied");
   }
-  return turn && typeof turn === "object" ? turn : void 0;
-};
-var mcpWorkspace = (meta2) => {
-  const workspaces = codexTurn(meta2)?.workspaces;
-  if (!workspaces || typeof workspaces !== "object" || Array.isArray(workspaces)) return void 0;
-  return Object.keys(workspaces).find(Boolean);
-};
-var mcpActor = (meta2, project) => {
-  const hasTurnMetadata = !!meta2 && Object.hasOwn(meta2, "x-codex-turn-metadata");
-  const values = codexTurn(meta2);
-  const cwd = project ?? mcpWorkspace(meta2) ?? process.cwd();
-  const normalizedTurnId = normalizeSessionId(values?.session_id) ?? normalizeSessionId(values?.thread_id) ?? normalizeSessionId(values?.threadId);
-  const manualSession = process.env.KDD_SESSION ? void 0 : normalizedTurnId ? { client: "codex", sessionId: normalizedTurnId, cwd } : hasTurnMetadata ? { client: "codex", cwd } : manualSessionFromEnv(cwd);
-  if (values) {
-    const id2 = values.session_id ?? values.thread_id ?? values.threadId;
-    if (typeof id2 === "string" && id2) {
-      return { type: "ai", id: "codex:" + id2, ...manualSession ? { manualSession } : {} };
-    }
-  }
-  return { type: "ai", id: agentId() ?? "mcp", ...manualSession ? { manualSession } : {} };
-};
-async function startServer() {
-  await createServer(lazyCtx()).connect(new StdioServerTransport());
 }
 
-// src/main.ts
-startServer().catch((e) => {
-  console.error(String(e));
+// src/run_main.ts
+var args = process.argv.slice(2);
+if (args.length !== 2 || args[0] !== "--config" || !isAbsolute4(args[1])) {
+  console.error("run broker startup denied");
+  process.exit(1);
+}
+startRunServer(args[1]).catch(() => {
+  console.error("run broker startup denied");
   process.exit(1);
 });

@@ -1,3 +1,4 @@
+import { assertLegacyTaskMutation } from './authority.js';
 import type Database from 'better-sqlite3';
 import { redact } from './agent_events.js';
 import { now } from './db.js';
@@ -13,9 +14,9 @@ export function listCriteria(db: Database.Database, taskId: number): Criterion[]
 }
 
 function mustGetCriterion(db: Database.Database, taskId: number, id: number): Criterion {
-  const c = db.prepare(`SELECT * FROM criteria WHERE id = ? AND task_id = ?`)
-    .get(id, taskId) as Criterion | undefined;
-  if (!c) throw new KddError(`criterion #${id} not found on task #${taskId}`);
+  const c = db.prepare(`SELECT * FROM criteria WHERE id = ?`).get(id) as Criterion | undefined;
+  assertLegacyTaskMutation(db, [taskId, ...(c ? [c.task_id] : [])]);
+  if (!c || c.task_id !== taskId) throw new KddError(`criterion #${id} not found on task #${taskId}`);
   return c;
 }
 
@@ -28,6 +29,7 @@ export function addCriterion(
 ): Criterion {
   if (!text.trim()) throw new KddError('criterion text must not be empty');
   return db.transaction(() => {
+    assertLegacyTaskMutation(db, [taskId]);
     mustGetTask(db, taskId);
     const pos = (db.prepare(
       `SELECT COALESCE(MAX(position), -1) + 1 AS p FROM criteria WHERE task_id = ?`,
@@ -39,7 +41,7 @@ export function addCriterion(
     appendTaskMutationEvent(db, taskId, actor, 'criterion_added', { id, text });
     touchTask(db, taskId);
     return mustGetCriterion(db, taskId, id);
-  })();
+  }).immediate();
 }
 
 export function setCriterionChecked(
@@ -59,7 +61,7 @@ export function setCriterionChecked(
       { id, text: c.text, ...(checked && stored ? { evidence: stored } : {}) });
     touchTask(db, taskId);
     return mustGetCriterion(db, taskId, id);
-  })();
+  }).immediate();
 }
 
 export function removeCriterion(
@@ -70,5 +72,5 @@ export function removeCriterion(
     db.prepare(`DELETE FROM criteria WHERE id = ?`).run(id);
     appendTaskMutationEvent(db, taskId, actor, 'criterion_removed', { id, text: c.text });
     touchTask(db, taskId);
-  })();
+  }).immediate();
 }

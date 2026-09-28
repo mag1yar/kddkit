@@ -2,7 +2,7 @@ import { statSync } from 'node:fs';
 import type Database from 'better-sqlite3';
 import {
   CAPS, capText, boardData, recall, editTask, moveTask,
-  commentTask, mustGetTask, listTracks, attachFile, detachFile, listFiles, KddError,
+  commentTask, mustGetTask, listTracks, attachFile, detachFile, getFile, KddError, assertLegacyTaskMutation,
   type Actor, type Priority, type Status, type Kind,
 } from '@kddkit/core';
 
@@ -69,6 +69,11 @@ export function updateTask(db: Database.Database, input: UpdateInput, actor: Act
   if (!input.edit && !input.move && !input.comment && !input.attach && input.detach === undefined) {
     throw new KddError('nothing to update');
   }
+  const detached = input.detach === undefined ? undefined : getFile(db, input.detach);
+  assertLegacyTaskMutation(db, [input.id, ...(detached ? [detached.task_id] : [])]);
+  if (input.detach !== undefined && detached?.task_id !== input.id) {
+    throw new KddError(`file ${input.detach} is not attached to task ${input.id}`);
+  }
   mustGetTask(db, input.id); // validate the task exists before any attach/detach side effect touches disk
   // Исходник проверяем ДО транзакции, хотя прикладываем после неё: attachFile отбивает
   // несуществующий путь сам, но к тому моменту move уже закоммичен, и вызывающий получил бы
@@ -100,9 +105,6 @@ export function updateTask(db: Database.Database, input: UpdateInput, actor: Act
     // detachFile сам по себе не знает про task_id вызывающего — id файла и так уникален
     // глобально. Гейт "файл действительно висит на этой задаче" — забота адаптера, раз
     // схема тула обещает "file id from get_task files[]" (т.е. файл этой задачи).
-    if (!listFiles(db, input.id).some((f) => f.id === input.detach)) {
-      throw new KddError(`file ${input.detach} is not attached to task ${input.id}`);
-    }
     detachFile(db, db.name, input.detach, actor);
   }
   return mustGetTask(db, input.id);

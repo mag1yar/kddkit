@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -55,7 +56,13 @@ try {
   raw.prepare('INSERT INTO decisions VALUES(?,?,?,?,?,NULL,?)').run(slug,'Original',path,parsed.hash,'2026-01-01','[41]');
   raw.prepare('INSERT INTO search_index VALUES(?,?,?,?)').run('decision',slug,'Original',parsed.indexBody);
   const artifact=join(root,'evidence.txt');writeFileSync(artifact,'retained evidence');
-  const attached=core.attachFile(raw,resolved.dbPath,41,artifact,{},user);
+  // Seed the historical v12 fixture directly: current task writers require the current schema.
+  const sha=createHash('sha256').update(readFileSync(artifact)).digest('hex');
+  mkdirSync(core.filesDir(resolved.dbPath),{recursive:true});
+  writeFileSync(join(core.filesDir(resolved.dbPath),`${sha}.txt`),readFileSync(artifact));
+  const fileInsert=raw.prepare("INSERT INTO files(task_id,sha256,ext,original_name,mime_type,size_bytes,created_at) VALUES(41,?,'txt','evidence.txt','text/plain',17,1)").run(sha);
+  const attached=raw.prepare('SELECT * FROM files WHERE id=?').get(fileInsert.lastInsertRowid);
+  core.appendEvent(raw,41,user,'file_attached',{id:attached.id,name:'evidence.txt'});
   const attachedPath=core.filePath(resolved.dbPath,attached);
   const workspace=join(home,'retained-workspace','dirty.txt');mkdirSync(dirname(workspace),{recursive:true});writeFileSync(workspace,'dirty retained');
   const before=snapshot(raw);
