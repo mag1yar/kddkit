@@ -182,7 +182,7 @@ describe('project store migration', () => {
     }
     const db = core.openDb(path);
     handles.push(db);
-    expect(snapshot(db)).toEqual(before);
+    expect(snapshot(db).map((rows,index) => index === 0 ? (rows as Record<string, unknown>[]).map(({parent_id,execution_mode,...old}) => old) : rows)).toEqual(before);
     expect(db.prepare('PRAGMA table_info(project)').all().map((r: any) => r.name)).toContain('project_id');
     const project = core.projectOf(db);
     expect(project.project_id).toMatch(/^[0-9a-f]{32}$/);

@@ -222,4 +222,111 @@ export const MIGRATIONS: string[] = [
   CREATE UNIQUE INDEX idx_run_authorities_current ON run_authorities(task_id,work_item_id)
     WHERE revoked_at IS NULL;
   `,
+  // v15: task membership, immutable execution contracts and fenced ownership.
+  `
+ALTER TABLE tasks ADD COLUMN parent_id INTEGER REFERENCES tasks(id);
+ALTER TABLE tasks ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'manual'
+  CHECK(execution_mode IN ('manual','orchestrated'));
+CREATE INDEX idx_tasks_parent ON tasks(parent_id);
+CREATE TRIGGER task_parent_insert BEFORE INSERT ON tasks WHEN NEW.parent_id IS NOT NULL BEGIN
+  SELECT CASE WHEN NEW.parent_id=NEW.id OR NOT EXISTS
+    (SELECT 1 FROM tasks WHERE id=NEW.parent_id AND parent_id IS NULL)
+    THEN RAISE(ABORT,'invalid root parent') END;
+END;
+CREATE TRIGGER task_parent_update BEFORE UPDATE OF parent_id ON tasks
+WHEN NEW.parent_id IS NOT OLD.parent_id BEGIN
+  SELECT CASE WHEN NEW.parent_id IS NOT NULL AND
+    (NEW.parent_id=NEW.id OR NOT EXISTS
+      (SELECT 1 FROM tasks WHERE id=NEW.parent_id AND parent_id IS NULL)
+      OR EXISTS (SELECT 1 FROM tasks WHERE parent_id=OLD.id))
+    THEN RAISE(ABORT,'invalid root parent') END;
+END;
+CREATE TABLE work_items (
+  id TEXT PRIMARY KEY, task_id INTEGER NOT NULL REFERENCES tasks(id),
+  current_revision INTEGER NOT NULL CHECK(typeof(current_revision)='integer' AND current_revision BETWEEN 1 AND 9007199254740991),
+  state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN
+    ('pending','ready','running','waiting_input','retry_wait','completed','failed','cancelled')),
+  fence INTEGER NOT NULL DEFAULT 0 CHECK(typeof(fence)='integer' AND fence BETWEEN 0 AND 9007199254740991),
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY(id,current_revision) REFERENCES work_item_revisions(work_item_id,revision) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX idx_work_items_task ON work_items(task_id);
+CREATE TABLE work_item_revisions (
+  work_item_id TEXT NOT NULL REFERENCES work_items(id),
+  revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision BETWEEN 1 AND 9007199254740991),
+  definition_json TEXT NOT NULL CHECK(json_valid(definition_json)),
+  inputs_json TEXT NOT NULL CHECK(json_valid(inputs_json)),
+  inputs_hash TEXT NOT NULL, created_at INTEGER NOT NULL,
+  PRIMARY KEY(work_item_id,revision)
+);
+CREATE TABLE work_item_dependencies (
+  consumer_id TEXT NOT NULL, consumer_revision INTEGER NOT NULL,
+  edge_key TEXT NOT NULL, producer_id TEXT NOT NULL, producer_revision INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('contract','code','merged','readiness')),
+  output_key TEXT NOT NULL, binding_json TEXT NOT NULL CHECK(json_valid(binding_json)),
+  pinned_result_id TEXT REFERENCES work_item_results(id),
+  PRIMARY KEY(consumer_id,consumer_revision,edge_key), CHECK(consumer_id<>producer_id),
+  FOREIGN KEY(consumer_id,consumer_revision) REFERENCES work_item_revisions(work_item_id,revision),
+  FOREIGN KEY(producer_id,producer_revision) REFERENCES work_item_revisions(work_item_id,revision)
+);
+CREATE INDEX idx_work_item_dependencies_producer ON work_item_dependencies(producer_id);
+CREATE TABLE work_item_results (
+  id TEXT PRIMARY KEY, command_id TEXT NOT NULL UNIQUE, command_hash TEXT NOT NULL,
+  producer_id TEXT NOT NULL, producer_revision INTEGER NOT NULL, output_key TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('contract','code','merged','readiness')),
+  payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+  source_json TEXT NOT NULL CHECK(json_valid(source_json)), created_at INTEGER NOT NULL,
+  invalidated_at INTEGER, invalidation_reason TEXT,
+  successor_id TEXT REFERENCES work_item_results(id) DEFERRABLE INITIALLY DEFERRED,
+  FOREIGN KEY(producer_id,producer_revision) REFERENCES work_item_revisions(work_item_id,revision)
+);
+CREATE UNIQUE INDEX idx_work_item_results_current
+  ON work_item_results(producer_id,producer_revision,output_key) WHERE invalidated_at IS NULL;
+CREATE TABLE work_item_owners (
+  work_item_id TEXT NOT NULL, fence INTEGER NOT NULL
+    CHECK(typeof(fence)='integer' AND fence BETWEEN 1 AND 9007199254740991),
+  revision INTEGER NOT NULL, owner_id TEXT NOT NULL,
+  mode TEXT NOT NULL CHECK(mode IN ('manual','orchestrated')),
+  write_access INTEGER NOT NULL CHECK(write_access IN (0,1)),
+  inputs_json TEXT NOT NULL CHECK(json_valid(inputs_json)),
+  launch_id TEXT, launch_json TEXT CHECK(launch_json IS NULL OR json_valid(launch_json)),
+  created_at INTEGER NOT NULL, released_at INTEGER, release_handoff_id TEXT REFERENCES execution_handoffs(id),
+  PRIMARY KEY(work_item_id,fence),
+  FOREIGN KEY(work_item_id,revision) REFERENCES work_item_revisions(work_item_id,revision),
+  CHECK((launch_id IS NULL)=(launch_json IS NULL)),
+  CHECK((released_at IS NULL)=(release_handoff_id IS NULL))
+);
+CREATE UNIQUE INDEX idx_work_item_owners_live ON work_item_owners(work_item_id) WHERE released_at IS NULL;
+CREATE TABLE execution_handoffs (
+  id TEXT PRIMARY KEY, command_id TEXT NOT NULL UNIQUE, task_id INTEGER NOT NULL REFERENCES tasks(id),
+  expected_mode TEXT NOT NULL CHECK(expected_mode IN ('manual','orchestrated')),
+  target_mode TEXT NOT NULL CHECK(target_mode IN ('manual','orchestrated')),
+  snapshot_json TEXT NOT NULL CHECK(json_valid(snapshot_json)), created_at INTEGER NOT NULL,
+  completed_at INTEGER, receipt_json TEXT CHECK(receipt_json IS NULL OR json_valid(receipt_json)),
+  CHECK((completed_at IS NULL)=(receipt_json IS NULL))
+);
+CREATE UNIQUE INDEX idx_execution_handoffs_live ON execution_handoffs(task_id) WHERE completed_at IS NULL;
+CREATE TRIGGER work_item_revisions_immutable_update BEFORE UPDATE ON work_item_revisions
+BEGIN SELECT RAISE(ABORT,'immutable work item revision'); END;
+CREATE TRIGGER work_item_revisions_immutable_delete BEFORE DELETE ON work_item_revisions
+BEGIN SELECT RAISE(ABORT,'immutable work item revision'); END;
+CREATE TRIGGER work_item_dependencies_immutable BEFORE UPDATE OF
+  consumer_id,consumer_revision,edge_key,producer_id,producer_revision,kind,output_key,binding_json
+  ON work_item_dependencies BEGIN SELECT RAISE(ABORT,'immutable dependency'); END;
+CREATE TRIGGER work_item_dependencies_no_delete BEFORE DELETE ON work_item_dependencies
+BEGIN SELECT RAISE(ABORT,'immutable dependency'); END;
+CREATE TRIGGER work_item_dependencies_pin BEFORE UPDATE OF pinned_result_id ON work_item_dependencies
+WHEN OLD.pinned_result_id IS NOT NULL AND NEW.pinned_result_id IS NOT OLD.pinned_result_id
+BEGIN SELECT RAISE(ABORT,'dependency result already pinned'); END;
+CREATE TRIGGER work_item_results_immutable BEFORE UPDATE OF
+  id,command_id,command_hash,producer_id,producer_revision,output_key,kind,payload_json,source_json,created_at
+  ON work_item_results BEGIN SELECT RAISE(ABORT,'immutable result payload'); END;
+CREATE TRIGGER work_item_results_no_delete BEFORE DELETE ON work_item_results
+BEGIN SELECT RAISE(ABORT,'immutable result payload'); END;
+CREATE TRIGGER work_item_results_no_revalidate BEFORE UPDATE OF invalidated_at,invalidation_reason,successor_id
+  ON work_item_results WHEN OLD.invalidated_at IS NOT NULL AND
+    (NEW.invalidated_at IS NOT OLD.invalidated_at OR NEW.invalidation_reason IS NOT OLD.invalidation_reason
+      OR NEW.successor_id IS NOT OLD.successor_id)
+BEGIN SELECT RAISE(ABORT,'result invalidation is final'); END;
+  `,
 ];

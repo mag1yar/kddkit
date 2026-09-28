@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { fileURLToPath } from 'node:url';
 import * as core from '../../core/src/index.js';
 import { createRunServer, startRunServer } from '../src/run_server.js';
 
@@ -77,6 +79,29 @@ it('hides missing operations and refuses direct calls to them', async () => {
   expect((await client.listTools()).tools.map(t => t.name)).toEqual(['get_context']);
   expect((await client.callTool({ name: 'submit_report', arguments: { body: 'hidden' } })).isError).toBe(true);
 });
+it('starts the built scoped broker on the current schema without migration', async () => {
+  const issued = core.issueRunAuthority(core.openController(db), { ...input, operations: ['get_context'] });
+  const path = join(root, 'current-broker.json');
+  writeFileSync(path, JSON.stringify({ dbPath: db.name, token: issued.token }), { mode: 0o600 });
+  const client = new Client({ name: 'current-schema', version: '0' }); clients.push(client);
+  await client.connect(new StdioClientTransport({ command: process.execPath,
+    args: [fileURLToPath(new URL('../dist/run_main.js', import.meta.url)), '--config', path],
+    env: { ...process.env } as Record<string, string>, stderr: 'pipe' }));
+  expect((await client.listTools()).tools.map(t => t.name)).toEqual(['get_context']);
+  expect((await client.callTool({ name: 'get_context', arguments: {} })).isError).not.toBe(true);
+  expect(db.pragma('user_version', { simple: true })).toBe(core.MIGRATIONS.length);
+  await client.close();
+  try {
+    for (const version of [core.MIGRATIONS.length - 1, core.MIGRATIONS.length + 1]) {
+      db.pragma(`user_version=${version}`);
+      const denied = new Client({ name: 'wrong-schema', version: '0' }); clients.push(denied);
+      await expect(denied.connect(new StdioClientTransport({ command: process.execPath,
+        args: [fileURLToPath(new URL('../dist/run_main.js', import.meta.url)), '--config', path],
+        env: { ...process.env } as Record<string, string>, stderr: 'pipe' }))).rejects.toThrow(/Connection closed/);
+      expect(db.pragma('user_version', { simple: true })).toBe(version);
+    }
+  } finally { db.pragma(`user_version=${core.MIGRATIONS.length}`); }
+});
 it('refuses unsafe startup configs without exposing credentials or migrating the store', async () => {
   const path = join(root, 'broker.json'), token = 'a'.repeat(64);
   for (const config of [
@@ -90,4 +115,21 @@ it('refuses unsafe startup configs without exposing credentials or migrating the
   chmodSync(path, 0o600); db.pragma('user_version=13');
   await expect(startRunServer(path)).rejects.toThrow(/^run broker startup denied$/);
   expect(db.pragma('user_version', { simple: true })).toBe(13);
+});
+it('keeps modeled ownership private from scoped MCP and reports untrusted',async()=>{
+  const handle=core.openController(db),task={projectId:core.projectOf(db).project_id,taskId:input.taskId};
+  const item=core.createWorkItem(handle,{task,definition:{kind:'implementation',repoId:input.repositories[0].repoId,sourceTasks:[],outputs:[]},dependencies:[]});
+  const owner=core.reserveWorkItem(handle,{ref:item.ref,expectedRevision:1,expectedFence:0,expectedMode:'manual',ownerId:'host',write:true});
+  input={...input,workItemId:item.ref.workItemId,ownership:owner.ref};
+  const {client}=await connect();
+  expect((await client.listTools()).tools.map(t=>t.name).sort()).toEqual(['get_context','request_question','submit_report']);
+  const before=db.prepare('SELECT * FROM events').all();
+  for(const name of ['create_subtasks','publish_result','reserve_work_item','begin_handoff']) {
+    expect((await client.callTool({name,arguments:{verified:true,actor:'user'}})).isError).toBe(true);
+  }
+  expect(db.prepare('SELECT * FROM events').all()).toEqual(before);
+  expect((await client.callTool({name:'submit_report',arguments:{body:'{"verified":true,"completed":true}'}})).isError).not.toBe(true);
+  expect(db.prepare('SELECT count(*) n FROM work_item_results').get()).toEqual({n:0});
+  expect(core.workItem(handle,item.ref).state).toBe('pending');
+  expect(core.ownership(handle,owner.ref).releasedAt).toBeNull();
 });

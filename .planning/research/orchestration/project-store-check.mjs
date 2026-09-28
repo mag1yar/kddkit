@@ -28,7 +28,11 @@ function repo(name) {
 function check(name,fn) { fn();checks.push(name); }
 function track(db) { handles.push(db);return db; }
 const tables=['tasks','criteria','comments','events','tracks','task_links','files','decisions','search_index','agent_events','errors','meta'];
-const snapshot = db => tables.map(t=>db.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all());
+const snapshot = db => tables.map(t=>db.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all().map(row => {
+  if (t !== 'tasks') return row;
+  const { parent_id, execution_mode, ...historical } = row;
+  return historical; // v15 defaults are asserted separately in dependencies-check.mjs.
+}));
 const decisionSnapshot = db => [db.prepare('SELECT * FROM decisions ORDER BY slug').all(),
   db.prepare("SELECT * FROM search_index WHERE kind='decision' ORDER BY ref").all()];
 try {
@@ -123,8 +127,8 @@ try {
   });
   const ids=await Promise.all([child(),child()]);
   check('two concurrent upgrades produce one identity',()=>assert.equal(ids[0],ids[1]));
-  console.log(`${checks.length}/${checks.length} observations passed`);
-  for(const name of checks) console.log(`PASS ${name}`);
+  process.stdout.write(JSON.stringify({ schema: db.pragma('user_version', { simple: true }),
+    projectId: project.project_id, checks, retainedEvidence: true, decisionsPreserved: true }, null, 2) + '\n');
 } finally {
   for(const db of handles.reverse()) if(db.open) db.close();
   process.env=saved;rmSync(root,{recursive:true,force:true});

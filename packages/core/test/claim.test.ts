@@ -507,3 +507,41 @@ describe('stopWorkers', () => {
     expect(JSON.parse(evs[1].detail).message).toMatch(/stopped by hand/);
   });
 });
+
+import * as core from '../src/index.js';
+it('excludes orchestrated work from explicit and queued legacy claims before unrelated reaping',async()=>{
+  const orchestrated=withCriteria('orch'),manual=withCriteria('manual'),handle=core.openController(db);
+  const intent=core.beginHandoff(handle,{commandId:'mode',task:{projectId:core.projectOf(db).project_id,taskId:orchestrated},
+    expectedMode:'manual',targetMode:'orchestrated',expectedOwners:[]});
+  await core.finishHandoff(handle,{handoffId:intent.id});
+  db.prepare("UPDATE tasks SET status='in_progress',claimed_by='ai:tick:unrelated',claim_expires=0 WHERE id=?").run(manual);
+  const events=db.prepare('SELECT * FROM events').all();let called=false;
+  expect(core.claimTask(db,orchestrated,user,60,{kill:()=>{called=true;return new Map()}})).toEqual({ok:false,error:'orchestrated task requires controller execution'});
+  expect(called).toBe(false);expect(db.prepare('SELECT * FROM events').all()).toEqual(events);
+  expect(core.mustGetTask(db,manual).claimed_by).toBe('ai:tick:unrelated');
+  db.prepare("UPDATE tasks SET status='new',claimed_by=NULL,claim_expires=NULL WHERE id=?").run(manual);
+  expect(core.claimNext(db,user)?.id).toBe(manual);
+  expect(core.mustGetTask(db,orchestrated).claimed_by).toBeNull();
+});
+it('never passes orchestrated or handoff rows to the legacy killer and leaves their leases unchanged',()=>{
+  const manual=withCriteria('manual'),orch=withCriteria('orch'),pending=withCriteria('handoff');
+  const handle=core.openController(db),ref={projectId:core.projectOf(db).project_id,taskId:pending};
+  core.beginHandoff(handle,{commandId:'intent',task:ref,expectedMode:'manual',targetMode:'orchestrated',expectedOwners:[]});
+  db.prepare("UPDATE tasks SET execution_mode='orchestrated' WHERE id=?").run(orch);
+  db.exec("UPDATE tasks SET status='in_progress',claimed_by='ai:tick:fixture',claim_expires=0");
+  const before=db.prepare('SELECT * FROM tasks WHERE id IN (?,?) ORDER BY id').all(orch,pending);
+  const killed:number[]=[];const kill:core.KillFn=ids=>{killed.push(...ids);return new Map(ids.map(id=>[id,'gone']))};
+  expect(core.expiredLeases(db).map(t=>t.id)).toEqual([manual]);
+  expect(core.reapExpired(db,kill).reclaimed.map(t=>t.id)).toEqual([manual]);
+  expect(killed).toEqual([manual]);expect(core.stopWorkers(db,kill).released).toBe(0);
+  expect(core.renewClaim(db,orch,user).ok).toBe(false);
+  expect(()=>core.releaseClaim(db,orch,user,'owner said stop')).toThrow(/orchestrated/);
+  expect(()=>core.recordFailedAttempt(db,orch,user,'failed')).toThrow(/orchestrated/);
+  expect(db.prepare('SELECT * FROM tasks WHERE id IN (?,?) ORDER BY id').all(orch,pending)).toEqual(before);
+});
+it('rechecks legacy eligibility after an outside-transaction killer changes the mode',()=>{
+  const id=withCriteria('legacy');claimTask(db,id,{type:'ai',id:'tick:fixture'});
+  const result=core.stopWorkers(db,ids=>{expect(ids).toEqual([id]);db.prepare("UPDATE tasks SET execution_mode='orchestrated' WHERE id=?").run(id);return new Map([[id,'gone']])});
+  expect(result).toEqual({killed:1,released:0,stuck:0});
+  expect(core.mustGetTask(db,id)).toMatchObject({status:'in_progress',claimed_by:'ai:tick:fixture',execution_mode:'orchestrated'});
+});

@@ -24,3 +24,15 @@ export type { NativeLaunchInput, CodexPermissionInput, NativeProbeResult, Verifi
 export { observeCodexNative } from './codex_native_probe.js';
 export type { NativeEvidence } from './codex_native_probe.js';
 export * from './authority.js';
+export { taskContractHash, createSubtasks, listSubtasks } from './execution.js';
+export type { ExecutionMode, TaskRef, AuthorityBinding, CreationSource, SubtaskDraft, CreateSubtasksInput } from './execution.js';
+export { createWorkItem, reviseWorkItem, workItem, taskWorkItems, createSubtaskPlan } from './execution.js';
+export type { WorkItemKind, WorkItemState, DependencyKind, WorkItemRef, OwnershipRef, OutputRequirement,
+  WorkItemDefinition, DependencyBinding, DependencyInput, WorkItemRecord, WorkItemInput, SubtaskPlanInput } from './execution.js';
+export { publishResult, invalidateResult, result, inspectDependencies, resolveDependencies, completeWorkItem,
+  setWorkItemWaiting, endWorkItem } from './execution_results.js';
+export type { ResultSource, ResultPayload, ResultBinding, EvidenceRequest, EvidenceObservation, ResultObservers,
+  ResultRecord, PublishResultInput, DependencyReason, DependencyProjection } from './execution_results.js';
+export { reserveWorkItem, ownership, recordLaunchIntent, beginHandoff, handoff, finishHandoff } from './execution_ownership.js';
+export type { LaunchIntent, OwnershipRecord, ReserveWorkItemInput, HandoffRecord, HandoffReceipt,
+  StopObservation, StopObserver, HandoffOutcome } from './execution_ownership.js';

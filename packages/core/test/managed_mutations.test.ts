@@ -85,3 +85,14 @@ it('rejects unknown SQL patch keys instead of letting a legacy target alter a pr
   expect(() => core.editTask(db, legacyId, { [key]: 'legacy' } as never, user)).toThrow();
   expect(snapshot()).toEqual(before);
 });
+it('protects an idle handoff through the common legacy guard without creating a managed marker',()=>{
+  const handle=core.openController(db),ref={projectId:core.projectOf(db).project_id,taskId:legacyId};
+  core.beginHandoff(handle,{commandId:'idle-mode',task:ref,expectedMode:'manual',targetMode:'orchestrated',expectedOwners:[]});
+  const before=snapshot();
+  for(const attempt of [()=>core.moveTask(db,legacyId,'done',user,'user approved'),()=>core.commentTask(db,legacyId,'ready',user),
+    ()=>core.editTask(db,legacyId,{body:'changed'},user),()=>core.claimTask(db,legacyId,user),
+    ()=>core.placeTask(db,legacyId,'new',[legacyId],user),()=>core.addCriterion(db,legacyId,'new',user)]) {
+    expect(attempt).toThrow(/handoff/);expect(snapshot()).toEqual(before);
+  }
+  expect(core.taskBrief(db,join(root,'decisions'),legacyId).next_action.kind).toBe('await_controller');
+});

@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import type Database from 'better-sqlite3';
 import { redact } from './agent_events.js';
 import { now } from './db.js';
+import { projectOf } from './project_store.js';
 import { KddError } from './errors.js';
 import { authorOf, checkMove, KINDS, normalizeSessionId, PRIORITIES, STATUSES, type Actor, type Kind, type Priority, type Status } from './state.js';
 import type { Comment, Task } from './types.js';
@@ -99,10 +100,10 @@ export function addTask(
   return db.transaction(() => {
     const ts = now();
     const r = db.prepare(
-      `INSERT INTO tasks (title, body, priority, kind, area, track_id, position, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (title, body, priority, kind, area, track_id, position, created_at, updated_at, execution_mode)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(input.title, input.body ?? null, priority, kind, input.area ?? null,
-      input.track_id ?? null, nextPosition(db, 'new'), ts, ts);
+      input.track_id ?? null, nextPosition(db, 'new'), ts, ts, projectOf(db).default_execution_mode);
     const id = Number(r.lastInsertRowid);
     // criteria при создании — без criterion_added-событий: их покрывает 'created'
     const ins = db.prepare(
@@ -110,7 +111,7 @@ export function addTask(
     (input.criteria ?? []).forEach((text, i) => ins.run(id, text, i, ts));
     appendTaskMutationEvent(db, id, actor, 'created');
     return mustGetTask(db, id);
-  })();
+  }).immediate();
 }
 
 export function editTask(

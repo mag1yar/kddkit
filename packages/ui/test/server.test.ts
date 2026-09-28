@@ -690,3 +690,10 @@ describe('GET /api/tracks', () => {
     expect(all.map((t) => t.name).sort()).toEqual(['closed', 'live']);
   });
 });
+it('returns parent and mode through the existing HTTP board route',async()=>{
+  const {db,app}=mk();addTask(db,{title:'manual'},user);
+  try {
+    const response=await app.request('/api/board'),board=await response.json() as Record<string,{parent_id:number|null;execution_mode:string}[]>;
+    expect(response.status).toBe(200);expect(board.new[0]).toMatchObject({parent_id:null,execution_mode:'manual'});
+  }finally{db.close()}
+});

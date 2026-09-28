@@ -308,6 +308,113 @@ var MIGRATIONS = [
   );
   CREATE UNIQUE INDEX idx_run_authorities_current ON run_authorities(task_id,work_item_id)
     WHERE revoked_at IS NULL;
+  `,
+  // v15: task membership, immutable execution contracts and fenced ownership.
+  `
+ALTER TABLE tasks ADD COLUMN parent_id INTEGER REFERENCES tasks(id);
+ALTER TABLE tasks ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'manual'
+  CHECK(execution_mode IN ('manual','orchestrated'));
+CREATE INDEX idx_tasks_parent ON tasks(parent_id);
+CREATE TRIGGER task_parent_insert BEFORE INSERT ON tasks WHEN NEW.parent_id IS NOT NULL BEGIN
+  SELECT CASE WHEN NEW.parent_id=NEW.id OR NOT EXISTS
+    (SELECT 1 FROM tasks WHERE id=NEW.parent_id AND parent_id IS NULL)
+    THEN RAISE(ABORT,'invalid root parent') END;
+END;
+CREATE TRIGGER task_parent_update BEFORE UPDATE OF parent_id ON tasks
+WHEN NEW.parent_id IS NOT OLD.parent_id BEGIN
+  SELECT CASE WHEN NEW.parent_id IS NOT NULL AND
+    (NEW.parent_id=NEW.id OR NOT EXISTS
+      (SELECT 1 FROM tasks WHERE id=NEW.parent_id AND parent_id IS NULL)
+      OR EXISTS (SELECT 1 FROM tasks WHERE parent_id=OLD.id))
+    THEN RAISE(ABORT,'invalid root parent') END;
+END;
+CREATE TABLE work_items (
+  id TEXT PRIMARY KEY, task_id INTEGER NOT NULL REFERENCES tasks(id),
+  current_revision INTEGER NOT NULL CHECK(typeof(current_revision)='integer' AND current_revision BETWEEN 1 AND 9007199254740991),
+  state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN
+    ('pending','ready','running','waiting_input','retry_wait','completed','failed','cancelled')),
+  fence INTEGER NOT NULL DEFAULT 0 CHECK(typeof(fence)='integer' AND fence BETWEEN 0 AND 9007199254740991),
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY(id,current_revision) REFERENCES work_item_revisions(work_item_id,revision) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX idx_work_items_task ON work_items(task_id);
+CREATE TABLE work_item_revisions (
+  work_item_id TEXT NOT NULL REFERENCES work_items(id),
+  revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision BETWEEN 1 AND 9007199254740991),
+  definition_json TEXT NOT NULL CHECK(json_valid(definition_json)),
+  inputs_json TEXT NOT NULL CHECK(json_valid(inputs_json)),
+  inputs_hash TEXT NOT NULL, created_at INTEGER NOT NULL,
+  PRIMARY KEY(work_item_id,revision)
+);
+CREATE TABLE work_item_dependencies (
+  consumer_id TEXT NOT NULL, consumer_revision INTEGER NOT NULL,
+  edge_key TEXT NOT NULL, producer_id TEXT NOT NULL, producer_revision INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('contract','code','merged','readiness')),
+  output_key TEXT NOT NULL, binding_json TEXT NOT NULL CHECK(json_valid(binding_json)),
+  pinned_result_id TEXT REFERENCES work_item_results(id),
+  PRIMARY KEY(consumer_id,consumer_revision,edge_key), CHECK(consumer_id<>producer_id),
+  FOREIGN KEY(consumer_id,consumer_revision) REFERENCES work_item_revisions(work_item_id,revision),
+  FOREIGN KEY(producer_id,producer_revision) REFERENCES work_item_revisions(work_item_id,revision)
+);
+CREATE INDEX idx_work_item_dependencies_producer ON work_item_dependencies(producer_id);
+CREATE TABLE work_item_results (
+  id TEXT PRIMARY KEY, command_id TEXT NOT NULL UNIQUE, command_hash TEXT NOT NULL,
+  producer_id TEXT NOT NULL, producer_revision INTEGER NOT NULL, output_key TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('contract','code','merged','readiness')),
+  payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+  source_json TEXT NOT NULL CHECK(json_valid(source_json)), created_at INTEGER NOT NULL,
+  invalidated_at INTEGER, invalidation_reason TEXT,
+  successor_id TEXT REFERENCES work_item_results(id) DEFERRABLE INITIALLY DEFERRED,
+  FOREIGN KEY(producer_id,producer_revision) REFERENCES work_item_revisions(work_item_id,revision)
+);
+CREATE UNIQUE INDEX idx_work_item_results_current
+  ON work_item_results(producer_id,producer_revision,output_key) WHERE invalidated_at IS NULL;
+CREATE TABLE work_item_owners (
+  work_item_id TEXT NOT NULL, fence INTEGER NOT NULL
+    CHECK(typeof(fence)='integer' AND fence BETWEEN 1 AND 9007199254740991),
+  revision INTEGER NOT NULL, owner_id TEXT NOT NULL,
+  mode TEXT NOT NULL CHECK(mode IN ('manual','orchestrated')),
+  write_access INTEGER NOT NULL CHECK(write_access IN (0,1)),
+  inputs_json TEXT NOT NULL CHECK(json_valid(inputs_json)),
+  launch_id TEXT, launch_json TEXT CHECK(launch_json IS NULL OR json_valid(launch_json)),
+  created_at INTEGER NOT NULL, released_at INTEGER, release_handoff_id TEXT REFERENCES execution_handoffs(id),
+  PRIMARY KEY(work_item_id,fence),
+  FOREIGN KEY(work_item_id,revision) REFERENCES work_item_revisions(work_item_id,revision),
+  CHECK((launch_id IS NULL)=(launch_json IS NULL)),
+  CHECK((released_at IS NULL)=(release_handoff_id IS NULL))
+);
+CREATE UNIQUE INDEX idx_work_item_owners_live ON work_item_owners(work_item_id) WHERE released_at IS NULL;
+CREATE TABLE execution_handoffs (
+  id TEXT PRIMARY KEY, command_id TEXT NOT NULL UNIQUE, task_id INTEGER NOT NULL REFERENCES tasks(id),
+  expected_mode TEXT NOT NULL CHECK(expected_mode IN ('manual','orchestrated')),
+  target_mode TEXT NOT NULL CHECK(target_mode IN ('manual','orchestrated')),
+  snapshot_json TEXT NOT NULL CHECK(json_valid(snapshot_json)), created_at INTEGER NOT NULL,
+  completed_at INTEGER, receipt_json TEXT CHECK(receipt_json IS NULL OR json_valid(receipt_json)),
+  CHECK((completed_at IS NULL)=(receipt_json IS NULL))
+);
+CREATE UNIQUE INDEX idx_execution_handoffs_live ON execution_handoffs(task_id) WHERE completed_at IS NULL;
+CREATE TRIGGER work_item_revisions_immutable_update BEFORE UPDATE ON work_item_revisions
+BEGIN SELECT RAISE(ABORT,'immutable work item revision'); END;
+CREATE TRIGGER work_item_revisions_immutable_delete BEFORE DELETE ON work_item_revisions
+BEGIN SELECT RAISE(ABORT,'immutable work item revision'); END;
+CREATE TRIGGER work_item_dependencies_immutable BEFORE UPDATE OF
+  consumer_id,consumer_revision,edge_key,producer_id,producer_revision,kind,output_key,binding_json
+  ON work_item_dependencies BEGIN SELECT RAISE(ABORT,'immutable dependency'); END;
+CREATE TRIGGER work_item_dependencies_no_delete BEFORE DELETE ON work_item_dependencies
+BEGIN SELECT RAISE(ABORT,'immutable dependency'); END;
+CREATE TRIGGER work_item_dependencies_pin BEFORE UPDATE OF pinned_result_id ON work_item_dependencies
+WHEN OLD.pinned_result_id IS NOT NULL AND NEW.pinned_result_id IS NOT OLD.pinned_result_id
+BEGIN SELECT RAISE(ABORT,'dependency result already pinned'); END;
+CREATE TRIGGER work_item_results_immutable BEFORE UPDATE OF
+  id,command_id,command_hash,producer_id,producer_revision,output_key,kind,payload_json,source_json,created_at
+  ON work_item_results BEGIN SELECT RAISE(ABORT,'immutable result payload'); END;
+CREATE TRIGGER work_item_results_no_delete BEFORE DELETE ON work_item_results
+BEGIN SELECT RAISE(ABORT,'immutable result payload'); END;
+CREATE TRIGGER work_item_results_no_revalidate BEFORE UPDATE OF invalidated_at,invalidation_reason,successor_id
+  ON work_item_results WHEN OLD.invalidated_at IS NOT NULL AND
+    (NEW.invalidated_at IS NOT OLD.invalidated_at OR NEW.invalidation_reason IS NOT OLD.invalidation_reason
+      OR NEW.successor_id IS NOT OLD.successor_id)
+BEGIN SELECT RAISE(ABORT,'result invalidation is final'); END;
   `
 ];
 
@@ -572,13 +679,13 @@ function bindRepository(db, dbPath, home, input, actor) {
     if (input.kind === "source" && bindingsOf(db).some((b) => b.repo_id === input.repoId && b.kind === "source" && b.common_dir !== binding.common_dir)) {
       throw new KddError("repository already has a source; use rebind to move it");
     }
-    const result = existing ?? db.transaction(() => {
+    const result2 = existing ?? db.transaction(() => {
       insertBinding(db, binding);
       audit(db, actor, "repository_bound", binding);
       return binding;
     }).immediate();
-    locateBinding(registry, db, dbPath, result);
-    return result;
+    locateBinding(registry, db, dbPath, result2);
+    return result2;
   }).immediate());
 }
 function addRepository(db, dbPath, home, input, actor) {
@@ -931,23 +1038,804 @@ function checkMove(from, to, actor, reason, openCriteria2 = 0, claimedBy = null,
   return { ok: true };
 }
 
+// src/controller.ts
+var controllers = /* @__PURE__ */ new WeakMap();
+function controllerDb(handle) {
+  const db = typeof handle === "object" && handle !== null ? controllers.get(handle) : void 0;
+  if (!db?.open || db.pragma("user_version", { simple: true }) !== MIGRATIONS.length) {
+    throw new KddError("controller authority denied");
+  }
+  return db;
+}
+function openController(db) {
+  if (!db.open || db.pragma("user_version", { simple: true }) !== MIGRATIONS.length) {
+    throw new KddError("controller authority denied");
+  }
+  projectOf(db);
+  const handle = Object.freeze({ kind: "controller" });
+  controllers.set(handle, db);
+  return handle;
+}
+
+// src/execution.ts
+import { createHash as createHash3, randomBytes as randomBytes2 } from "crypto";
+
+// src/execution_results.ts
+import { createHash as createHash2 } from "crypto";
+import { readFileSync as readFileSync2, statSync } from "fs";
+import { isAbsolute } from "path";
+var terminal = (item) => ["completed", "failed", "cancelled"].includes(item.state);
+function rowResult(db, id2) {
+  text(id2);
+  const row = db.prepare("SELECT * FROM work_item_results WHERE id=?").get(id2);
+  if (!row) throw new KddError("result not found");
+  const metadata = JSON.parse(row.source_json);
+  return {
+    id: row.id,
+    commandId: row.command_id,
+    binding: metadata.binding,
+    payload: JSON.parse(row.payload_json),
+    source: metadata.source,
+    inputResults: metadata.inputResults,
+    invalidatedAt: row.invalidated_at,
+    invalidationReason: row.invalidation_reason,
+    successorId: row.successor_id
+  };
+}
+function result(handle, resultId) {
+  return rowResult(controllerDb(handle), resultId);
+}
+function checkPayload(db, payload) {
+  dependencyKind(payload?.kind);
+  const fields = {
+    contract: ["head", "artifact"],
+    code: ["head", "proofRef"],
+    merged: ["head", "target", "baseHead", "acceptedResultId", "userRef", "receiptRef"],
+    readiness: ["resourceId", "configHash", "consumerScope", "capabilities", "userRef", "probeRef", "observedAt", "expiresAt"]
+  }[payload.kind];
+  shape(payload, ["kind", "repoId", "version", "checkRefs", ...fields]);
+  checkRepo(db, payload.repoId);
+  text(payload.version);
+  strings(payload.checkRefs);
+  if (payload.kind === "contract") {
+    if (payload.head !== null) text(payload.head);
+    shape(payload.artifact, ["path", "sha256"]);
+    text(payload.artifact.path);
+    if (!isAbsolute(payload.artifact.path) || !/^[a-f0-9]{64}$/.test(payload.artifact.sha256)) throw new KddError("invalid artifact");
+  } else if (payload.kind === "code" || payload.kind === "merged") {
+    if (payload.repoId === null) throw new KddError("result requires repository");
+    text(payload.head);
+    if (payload.kind === "code") text(payload.proofRef);
+    else {
+      text(payload.target);
+      text(payload.baseHead);
+      text(payload.acceptedResultId);
+      text(payload.userRef);
+      text(payload.receiptRef);
+    }
+  } else {
+    text(payload.resourceId);
+    text(payload.configHash);
+    text(payload.consumerScope);
+    strings(payload.capabilities);
+    text(payload.userRef);
+    text(payload.probeRef);
+    if (!Number.isFinite(payload.observedAt) || payload.observedAt < 0 || payload.observedAt > now() || payload.expiresAt !== null && (!Number.isFinite(payload.expiresAt) || payload.expiresAt <= payload.observedAt)) throw new KddError("invalid readiness time");
+  }
+}
+function checkResultSource(db, item, source) {
+  shape(source, source?.kind === "manual" ? ["kind", "sourceTask", "instructionRef"] : ["kind", "owner", "instructionRef"], source?.kind === "owned" ? ["authority"] : []);
+  text(source.instructionRef);
+  assertNoHandoff(db, item.task.taskId);
+  if (source.kind === "manual") {
+    scopedTask(db, source.sourceTask);
+    if (source.sourceTask.taskId !== item.task.taskId) throw new KddError("result source task mismatch");
+    if (db.prepare("SELECT 1 FROM work_item_owners WHERE work_item_id=? AND released_at IS NULL").get(item.ref.workItemId)) throw new KddError("owned work requires ownership fence");
+  } else if (source.kind === "owned") {
+    const owner = liveOwner(db, source.owner);
+    if (owner.work_item_id !== item.ref.workItemId || owner.revision !== item.revision) throw new KddError("source ownership mismatch");
+    if (source.authority !== void 0) {
+      checkAuthority(db, item.task, source.authority);
+      if (source.authority.workItemId !== item.ref.workItemId) throw new KddError("source authority mismatch");
+      const grant = JSON.parse(db.prepare("SELECT grant_json FROM run_authorities WHERE authority_id=?").get(source.authority.authorityId).grant_json);
+      if (canonical(grant.ownership) !== canonical(source.owner)) throw new KddError("source authority ownership mismatch");
+    }
+  } else throw new KddError("invalid result source");
+}
+function pass(observers, request, fresh = false) {
+  try {
+    const expected = canonical(request), time2 = now(), observed = observers.observe?.(request);
+    if (!observed) return false;
+    shape(observed, ["request", "verdict", "origin", "observedAt", "expiresAt"]);
+    const origin = request.kind === "merge_acceptance" || request.kind === "readiness_confirmation" ? "user" : "host";
+    return canonical(observed.request) === expected && observed.verdict === "pass" && observed.origin === origin && Number.isFinite(observed.observedAt) && observed.observedAt >= 0 && observed.observedAt <= now() && (!fresh || observed.observedAt >= time2) && (observed.expiresAt === null || Number.isFinite(observed.expiresAt) && observed.expiresAt > now() && observed.expiresAt > observed.observedAt);
+  } catch {
+    return false;
+  }
+}
+function validateResult(db, record, required, observers, path, candidate = false, currentOnly = false) {
+  const key = record.id;
+  if (path.has(key)) return "stale_revision";
+  path.add(key);
+  try {
+    const item = scopedWorkItem(db, record.binding.producer), payload = record.payload, binding = record.binding;
+    if (record.invalidatedAt !== null || item.revision !== binding.producerRevision || item.inputsHash !== binding.inputsHash || !inputsCurrent(db, item)) return "stale_revision";
+    if (item.state === "failed" || item.state === "cancelled") return item.state;
+    const output = item.definition.outputs.find((o) => o.key === binding.outputKey);
+    if (!output || output.kind !== binding.kind || output.version !== binding.version || item.definition.repoId !== binding.repoId || payload.kind !== binding.kind || payload.repoId !== binding.repoId || payload.version !== binding.version) return "scope_mismatch";
+    if (required && (required.kind !== payload.kind || required.repoId !== payload.repoId || required.version !== payload.version)) return "scope_mismatch";
+    checkPayload(db, payload);
+    if (!candidate) {
+      const row = db.prepare("SELECT source_json FROM work_item_results WHERE id=?").get(record.id);
+      if (!row) return "stale_revision";
+      const meta2 = JSON.parse(row.source_json);
+      if (meta2.fence !== item.fence) return "stale_revision";
+      if (record.source.kind === "owned") {
+        const owner = db.prepare("SELECT inputs_json FROM work_item_owners WHERE work_item_id=? AND fence=? AND revision=? AND owner_id=?").get(item.ref.workItemId, record.source.owner.fence, record.source.owner.revision, record.source.owner.ownerId);
+        if (!owner || record.source.owner.fence !== item.fence || JSON.parse(owner.inputs_json).inputsHash !== item.inputsHash) return "stale_revision";
+      }
+    }
+    for (const dep of item.dependencies) {
+      const pin2 = record.inputResults.find((p) => p.edgeKey === dep.key);
+      if (!pin2 || dep.resultId !== pin2.resultId) return "stale_revision";
+      const reason = validateEdge(db, dep, observers, path, pin2.resultId, currentOnly).reason;
+      if (reason) return reason;
+    }
+    if (record.inputResults.length !== item.dependencies.length) return "stale_revision";
+    if (output.checkRefs.some((ref) => !payload.checkRefs.includes(ref))) return "checks_not_passed";
+    const payloadHash = digest(payload);
+    if (!currentOnly) {
+      for (const ref of payload.checkRefs) if (!pass(observers, { kind: "check", ref, binding, payloadHash })) return "checks_not_passed";
+    }
+    switch (payload.kind) {
+      case "contract": {
+        if (!statSync(payload.artifact.path).isFile() || createHash2("sha256").update(readFileSync2(payload.artifact.path)).digest("hex") !== payload.artifact.sha256) return "stale_revision";
+        return null;
+      }
+      case "code":
+        if (currentOnly) return null;
+        if (!pass(observers, { kind: "code_result", ref: payload.proofRef, binding, head: payload.head })) return "checks_not_passed";
+        return required?.kind === "code" && !pass(observers, { kind: "code_in_base", ref: payload.proofRef, binding, head: payload.head, baseHead: required.baseHead }) ? "base_missing_code" : null;
+      case "merged": {
+        const accepted = rowResult(db, payload.acceptedResultId), producer = scopedWorkItem(db, accepted.binding.producer);
+        if (accepted.payload.kind !== "code" || accepted.payload.repoId !== payload.repoId || accepted.payload.head !== payload.head || producer.state !== "completed" || validateResult(db, accepted, null, observers, path, false, currentOnly)) return "merge_not_succeeded";
+        if (required?.kind === "merged" && (required.target !== payload.target || required.baseHead !== payload.baseHead)) return "scope_mismatch";
+        const common = { binding, acceptedResultId: payload.acceptedResultId };
+        return currentOnly || pass(observers, { kind: "merge_acceptance", ref: payload.userRef, ...common }) && pass(observers, { kind: "merge_receipt", ref: payload.receiptRef, ...common, target: payload.target, baseHead: payload.baseHead, head: payload.head }) ? null : "merge_not_succeeded";
+      }
+      case "readiness": {
+        if (payload.expiresAt !== null && payload.expiresAt <= now()) return "readiness_expired";
+        if (required?.kind === "readiness" && (required.resourceId !== payload.resourceId || required.configHash !== payload.configHash || required.consumerScope !== payload.consumerScope || canonical([...required.capabilities].sort()) !== canonical([...payload.capabilities].sort()))) return "scope_mismatch";
+        if (currentOnly) return null;
+        if (!pass(observers, { kind: "readiness_confirmation", ref: payload.userRef, binding, resourceId: payload.resourceId })) return "readiness_unconfirmed";
+        return pass(observers, {
+          kind: "readiness_probe",
+          ref: payload.probeRef,
+          binding,
+          resourceId: payload.resourceId,
+          configHash: payload.configHash,
+          consumerScope: payload.consumerScope,
+          capabilities: payload.capabilities
+        }, true) ? null : "readiness_unverified";
+      }
+    }
+  } catch {
+    return "stale_revision";
+  } finally {
+    path.delete(key);
+  }
+}
+function validateEdge(db, dep, observers, path, explicitId, currentOnly = false) {
+  const producer = scopedWorkItem(db, dep.producer);
+  const id2 = explicitId ?? dep.resultId ?? db.prepare("SELECT id FROM work_item_results WHERE producer_id=? AND producer_revision=? AND output_key=? AND invalidated_at IS NULL").get(dep.producer.workItemId, dep.producerRevision, dep.outputKey)?.id ?? null;
+  if (producer.state === "failed" || producer.state === "cancelled") return { resultId: id2, reason: producer.state };
+  if (producer.revision !== dep.producerRevision || !inputsCurrent(db, producer)) return { resultId: id2, reason: "stale_revision" };
+  if (producer.state !== "completed") return { resultId: id2, reason: "producer_not_completed" };
+  if (!id2) return { resultId: null, reason: "missing_output" };
+  const record = rowResult(db, id2);
+  if (record.binding.producer.workItemId !== dep.producer.workItemId || record.binding.producerRevision !== dep.producerRevision || record.binding.outputKey !== dep.outputKey) return { resultId: id2, reason: "scope_mismatch" };
+  return { resultId: id2, reason: validateResult(db, record, dep.binding, observers, path, false, currentOnly) };
+}
+function pinnedInputsCurrent(db, item, pins) {
+  try {
+    return Array.isArray(pins) && pins.length === item.dependencies.length && item.dependencies.every((dep) => {
+      const pin2 = pins.find((p) => p.edgeKey === dep.key);
+      return !!pin2 && typeof pin2.resultId === "string" && dep.resultId === pin2.resultId && !validateEdge(db, dep, {}, /* @__PURE__ */ new Set(), pin2.resultId, true).reason;
+    });
+  } catch {
+    return false;
+  }
+}
+function dependencyProjection(db, item, observers = {}) {
+  const current = inputsCurrent(db, item);
+  const edges = item.dependencies.map((dep) => {
+    const { resultId, reason } = validateEdge(db, dep, observers, /* @__PURE__ */ new Set());
+    const base = { key: dep.key, producer: dep.producer, binding: dep.binding };
+    return reason || resultId === null ? { ...base, satisfied: false, reason: reason ?? "missing_output", resultId } : { ...base, satisfied: true, resultId, pinned: dep.resultId !== void 0 };
+  });
+  return { ref: item.ref, revision: item.revision, inputsCurrent: current, ready: current && edges.every((e) => e.satisfied), edges };
+}
+function pin(db, item, projection) {
+  if (!projection.ready) return projection;
+  let changed = false;
+  for (const edge of projection.edges) if (edge.satisfied && !edge.pinned) {
+    db.prepare("UPDATE work_item_dependencies SET pinned_result_id=? WHERE consumer_id=? AND consumer_revision=? AND edge_key=? AND pinned_result_id IS NULL").run(edge.resultId, item.ref.workItemId, item.revision, edge.key);
+    changed = true;
+  }
+  if (changed) appendEvent(db, item.task.taskId, controllerActor, "dependencies_resolved", {
+    work_item_id: item.ref.workItemId,
+    revision: item.revision,
+    results: projection.edges.map((e) => ({ key: e.key, resultId: e.resultId }))
+  });
+  return { ...projection, edges: projection.edges.map((e) => e.satisfied ? { ...e, pinned: true } : e) };
+}
+function inspectDependencies(handle, ref, observers = {}) {
+  const db = controllerDb(handle);
+  return db.transaction(() => dependencyProjection(db, scopedWorkItem(db, ref), observers))();
+}
+function resolveDependencies(handle, input, observers = {}) {
+  const db = controllerDb(handle);
+  return db.transaction(() => {
+    shape(input, ["ref", "expectedRevision"]);
+    integer(input.expectedRevision);
+    const item = scopedWorkItem(db, input.ref);
+    assertNoHandoff(db, item.task.taskId);
+    if (item.revision !== input.expectedRevision) throw new KddError("revision conflict");
+    return pin(db, item, dependencyProjection(db, item, observers));
+  }).immediate();
+}
+function publishResult(handle, input, observers = {}) {
+  const db = controllerDb(handle);
+  return db.transaction(() => {
+    shape(input, ["commandId", "producer", "expectedRevision", "outputKey", "expectedResultId", "payload", "source"]);
+    text(input.commandId);
+    integer(input.expectedRevision);
+    text(input.outputKey);
+    if (input.expectedResultId !== null) text(input.expectedResultId);
+    checkPayload(db, input.payload);
+    const hash = digest(input), existing = db.prepare("SELECT id,command_hash FROM work_item_results WHERE command_id=?").get(input.commandId);
+    if (existing && existing.command_hash !== hash) throw new KddError("publication command conflict");
+    const item = scopedWorkItem(db, input.producer);
+    checkResultSource(db, item, input.source);
+    if (existing) return rowResult(db, existing.id);
+    if (item.revision !== input.expectedRevision || !inputsCurrent(db, item)) throw new KddError("stale revision or inputs");
+    if (terminal(item)) throw new KddError("terminal work requires new work item");
+    const output = item.definition.outputs.find((o) => o.key === input.outputKey);
+    if (!output) throw new KddError("undeclared output");
+    const deps = pin(db, item, dependencyProjection(db, item, observers));
+    if (!deps.ready) throw new KddError("input dependencies not verified");
+    const inputResults = deps.edges.map((e) => ({ edgeKey: e.key, resultId: e.resultId }));
+    const binding = {
+      producer: item.ref,
+      producerRevision: item.revision,
+      inputsHash: item.inputsHash,
+      outputKey: input.outputKey,
+      kind: output.kind,
+      version: output.version,
+      repoId: item.definition.repoId
+    };
+    const candidate = {
+      id: newId(),
+      commandId: "candidate",
+      binding,
+      payload: input.payload,
+      source: input.source,
+      inputResults,
+      invalidatedAt: null,
+      invalidationReason: null,
+      successorId: null
+    };
+    const reason = validateResult(db, candidate, null, observers, /* @__PURE__ */ new Set(), true);
+    if (reason) throw new KddError(`result verification failed: ${reason}`);
+    const current = db.prepare("SELECT id FROM work_item_results WHERE producer_id=? AND producer_revision=? AND output_key=? AND invalidated_at IS NULL").get(item.ref.workItemId, item.revision, input.outputKey);
+    if ((current?.id ?? null) !== input.expectedResultId) throw new KddError("output result conflict");
+    if (current) db.prepare("UPDATE work_item_results SET invalidated_at=?,invalidation_reason=?,successor_id=? WHERE id=?").run(now(), "superseded", candidate.id, current.id);
+    db.prepare("INSERT INTO work_item_results(id,command_id,command_hash,producer_id,producer_revision,output_key,kind,payload_json,source_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)").run(
+      candidate.id,
+      input.commandId,
+      hash,
+      item.ref.workItemId,
+      item.revision,
+      input.outputKey,
+      input.payload.kind,
+      canonical(input.payload),
+      canonical({ source: input.source, binding, inputResults, fence: item.fence }),
+      now()
+    );
+    appendEvent(db, item.task.taskId, controllerActor, "result_published", { result_id: candidate.id, commandId: input.commandId, binding, supersedes: current?.id ?? null });
+    return rowResult(db, candidate.id);
+  }).immediate();
+}
+function invalidateResult(handle, input) {
+  const db = controllerDb(handle);
+  return db.transaction(() => {
+    shape(input, ["commandId", "resultId", "reason"], ["successorId"]);
+    text(input.commandId);
+    text(input.resultId);
+    text(input.reason);
+    const old = rowResult(db, input.resultId);
+    const replay = db.prepare("SELECT detail FROM events WHERE action='result_invalidated' AND json_valid(detail) AND json_extract(detail,'$.commandId')=?").get(input.commandId);
+    if (replay) {
+      if (canonical(JSON.parse(replay.detail)) !== canonical(input)) throw new KddError("invalidation command conflict");
+      return old;
+    }
+    assertNoHandoff(db, scopedWorkItem(db, old.binding.producer).task.taskId);
+    if (old.invalidatedAt !== null) throw new KddError("result already invalidated");
+    if (input.successorId !== void 0) {
+      text(input.successorId);
+      const successor = rowResult(db, input.successorId);
+      if (successor.id === old.id || successor.binding.kind !== old.binding.kind || successor.binding.repoId !== old.binding.repoId || successor.invalidatedAt !== null) throw new KddError("incompatible successor");
+    }
+    db.prepare("UPDATE work_item_results SET invalidated_at=?,invalidation_reason=?,successor_id=? WHERE id=?").run(now(), input.reason, input.successorId ?? null, old.id);
+    appendEvent(db, scopedWorkItem(db, old.binding.producer).task.taskId, controllerActor, "result_invalidated", input);
+    return rowResult(db, old.id);
+  }).immediate();
+}
+function completeWorkItem(handle, input, observers = {}) {
+  const db = controllerDb(handle);
+  return db.transaction(() => {
+    shape(input, ["ref", "expectedRevision", "source"]);
+    integer(input.expectedRevision);
+    const item = scopedWorkItem(db, input.ref);
+    checkResultSource(db, item, input.source);
+    if (item.revision !== input.expectedRevision || !inputsCurrent(db, item)) throw new KddError("stale revision or inputs");
+    if (item.state === "failed" || item.state === "cancelled") throw new KddError("terminal work requires new work item");
+    if (!pin(db, item, dependencyProjection(db, item, observers)).ready) throw new KddError("dependencies not verified");
+    for (const output of item.definition.outputs.filter((o) => o.required)) {
+      const row = db.prepare("SELECT id FROM work_item_results WHERE producer_id=? AND producer_revision=? AND output_key=? AND invalidated_at IS NULL").get(item.ref.workItemId, item.revision, output.key);
+      const reason = row ? validateResult(db, rowResult(db, row.id), null, observers, /* @__PURE__ */ new Set()) : "missing_output";
+      if (reason) throw new KddError(`mandatory output not verified: ${reason}`);
+    }
+    if (item.state !== "completed") {
+      db.prepare("UPDATE work_items SET state='completed' WHERE id=?").run(item.ref.workItemId);
+      appendEvent(db, item.task.taskId, controllerActor, "work_item_completed", { work_item_id: item.ref.workItemId, revision: item.revision });
+    }
+    return scopedWorkItem(db, item.ref);
+  }).immediate();
+}
+function setWorkItemWaiting(handle, input) {
+  return setState(handle, input, "waiting_input");
+}
+function endWorkItem(handle, input) {
+  const db = controllerDb(handle);
+  shape(input, ["ref", "expectedRevision", "source", "state"]);
+  if (input.state !== "failed" && input.state !== "cancelled") throw new KddError("invalid end state");
+  return setStateWithDb(db, { ref: input.ref, expectedRevision: input.expectedRevision, source: input.source }, input.state);
+}
+function setState(handle, input, state) {
+  return setStateWithDb(controllerDb(handle), input, state);
+}
+function setStateWithDb(db, input, state) {
+  return db.transaction(() => {
+    shape(input, ["ref", "expectedRevision", "source"]);
+    integer(input.expectedRevision);
+    const item = scopedWorkItem(db, input.ref);
+    checkResultSource(db, item, input.source);
+    if (item.revision !== input.expectedRevision || !inputsCurrent(db, item)) throw new KddError("stale revision or inputs");
+    if (terminal(item) || state === "waiting_input" && !["pending", "ready"].includes(item.state)) throw new KddError("invalid state transition");
+    if (db.prepare("SELECT 1 FROM work_item_owners WHERE work_item_id=? AND released_at IS NULL AND launch_id IS NOT NULL").get(item.ref.workItemId)) throw new KddError("launched owner must stop");
+    db.prepare("UPDATE work_items SET state=? WHERE id=?").run(state, item.ref.workItemId);
+    appendEvent(db, item.task.taskId, controllerActor, "work_item_state", { work_item_id: item.ref.workItemId, revision: item.revision, state });
+    return scopedWorkItem(db, item.ref);
+  }).immediate();
+}
+
+// src/execution.ts
+var controllerActor = { type: "ai", id: "controller" };
+function shape(value, required, optional = []) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((k) => !required.includes(k) && !optional.includes(k)) || required.some((k) => !Object.hasOwn(value, k))) throw new KddError("invalid input shape");
+}
+function text(value) {
+  if (typeof value !== "string" || !value.trim()) throw new KddError("invalid nonempty string");
+}
+function integer(value, min = 1) {
+  if (!Number.isSafeInteger(value) || value < min) throw new KddError("invalid safe integer");
+}
+function mode(value) {
+  if (value !== "manual" && value !== "orchestrated") throw new KddError("invalid execution mode");
+}
+function scopedTask(db, ref) {
+  shape(ref, ["projectId", "taskId"]);
+  text(ref.projectId);
+  integer(ref.taskId);
+  if (ref.projectId !== projectOf(db).project_id) throw new KddError("foreign project reference");
+  return mustGetTask(db, ref.taskId);
+}
+function contractHash(db, ref) {
+  const task = scopedTask(db, ref);
+  const criteria = db.prepare("SELECT id,text FROM criteria WHERE task_id=? ORDER BY id").all(task.id);
+  return createHash3("sha256").update(JSON.stringify({
+    projectId: ref.projectId,
+    taskId: task.id,
+    title: task.title,
+    body: task.body,
+    criteria
+  })).digest("hex");
+}
+function taskContractHash(handle, ref) {
+  const db = controllerDb(handle);
+  return db.transaction(() => contractHash(db, ref))();
+}
+function checkAuthority(db, task, binding) {
+  scopedTask(db, task);
+  shape(binding, ["authorityId", "workItemId", "runId", "generation"]);
+  text(binding.authorityId);
+  text(binding.workItemId);
+  text(binding.runId);
+  integer(binding.generation);
+  assertRunAuthorityBinding(db, task.taskId, binding);
+}
+function validateCreationSource(db, source) {
+  shape(source, source.kind === "manual" ? ["kind", "sourceTask", "instructionRef"] : ["kind", "sourceTask", "authority", "proposalEventId"]);
+  scopedTask(db, source.sourceTask);
+  if (source.kind === "manual") {
+    text(source.instructionRef);
+    return { source_task_id: source.sourceTask.taskId, instruction_ref: source.instructionRef };
+  }
+  if (source.kind !== "run") throw new KddError("invalid source kind");
+  checkAuthority(db, source.sourceTask, source.authority);
+  integer(source.proposalEventId);
+  const event = db.prepare("SELECT detail FROM events WHERE id=? AND task_id=? AND action='run_report'").get(source.proposalEventId, source.sourceTask.taskId);
+  const detail = event?.detail ? JSON.parse(event.detail) : null;
+  if (!detail || detail.work_item_id !== source.authority.workItemId || detail.run_id !== source.authority.runId || detail.generation !== source.authority.generation || detail.untrusted !== true) throw new KddError("invalid proposal event");
+  return {
+    source_task_id: source.sourceTask.taskId,
+    source_work_item_id: source.authority.workItemId,
+    source_run_id: source.authority.runId,
+    generation: source.authority.generation,
+    proposal_event_id: source.proposalEventId
+  };
+}
+function createSubtasks(handle, input) {
+  const db = controllerDb(handle);
+  return db.transaction(() => {
+    shape(input, ["parent", "expectedParentHash", "source", "children"]);
+    const parent = scopedTask(db, input.parent);
+    if (parent.parent_id !== null) throw new KddError("parent must be a root task");
+    text(input.expectedParentHash);
+    if (contractHash(db, input.parent) !== input.expectedParentHash) throw new KddError("stale parent contract");
+    const provenance = validateCreationSource(db, input.source);
+    if (!Array.isArray(input.children) || !input.children.length) throw new KddError("empty children");
+    const keys = /* @__PURE__ */ new Set();
+    for (const child of input.children) {
+      shape(child, ["key", "title", "criteria"], ["body", "kind", "priority", "area", "trackId", "executionMode"]);
+      text(child.key);
+      text(child.title);
+      if (keys.has(child.key)) throw new KddError("duplicate child key");
+      keys.add(child.key);
+      if (!Array.isArray(child.criteria) || !child.criteria.length) throw new KddError("empty criteria");
+      child.criteria.forEach(text);
+      if (child.body !== void 0 && typeof child.body !== "string") throw new KddError("invalid body");
+      if (child.area !== void 0) text(child.area);
+      if (child.trackId !== void 0) integer(child.trackId);
+      if (child.kind !== void 0 && !KINDS.includes(child.kind)) throw new KddError("invalid kind");
+      if (child.priority !== void 0 && !PRIORITIES.includes(child.priority)) throw new KddError("invalid priority");
+      if (child.executionMode !== void 0) mode(child.executionMode);
+    }
+    const children = /* @__PURE__ */ Object.create(null);
+    for (const child of input.children) {
+      const row = addTask(db, {
+        title: child.title,
+        body: child.body,
+        criteria: [...child.criteria],
+        kind: child.kind,
+        priority: child.priority,
+        area: child.area,
+        track_id: child.trackId
+      }, controllerActor);
+      db.prepare("UPDATE tasks SET parent_id=?,execution_mode=? WHERE id=?").run(parent.id, child.executionMode ?? parent.execution_mode, row.id);
+      appendEvent(db, row.id, controllerActor, "subtask_created", { parent_task_id: parent.id, ...provenance });
+      children[child.key] = mustGetTask(db, row.id);
+    }
+    return children;
+  }).immediate();
+}
+function listSubtasks(handle, parent) {
+  const db = controllerDb(handle);
+  scopedTask(db, parent);
+  return db.prepare("SELECT * FROM tasks WHERE parent_id=? ORDER BY id").all(parent.taskId);
+}
+var newId = () => randomBytes2(16).toString("hex");
+function canonical(value) {
+  const sort = (v) => Array.isArray(v) ? v.map(sort) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sort(v[k])])) : v;
+  return JSON.stringify(sort(value));
+}
+var digest = (value) => createHash3("sha256").update(canonical(value)).digest("hex");
+function strings(value) {
+  if (!Array.isArray(value)) throw new KddError("invalid strings");
+  value.forEach(text);
+  if (new Set(value).size !== value.length) throw new KddError("duplicate strings");
+}
+function dependencyKind(value) {
+  if (!["contract", "code", "merged", "readiness"].includes(value)) throw new KddError("invalid dependency kind");
+}
+function checkRepo(db, repoId) {
+  if (repoId === null) return;
+  text(repoId);
+  if (!db.prepare("SELECT 1 FROM repositories WHERE repo_id=?").get(repoId)) throw new KddError("unknown repository");
+}
+function assertNoHandoff(db, taskId) {
+  if (db.prepare("SELECT 1 FROM execution_handoffs WHERE task_id=? AND completed_at IS NULL").get(taskId)) {
+    throw new KddError("task handoff pending");
+  }
+}
+function scopedWorkItem(db, ref, revision) {
+  shape(ref, ["projectId", "workItemId"]);
+  text(ref.projectId);
+  text(ref.workItemId);
+  if (ref.projectId !== projectOf(db).project_id) throw new KddError("foreign project reference");
+  const row = db.prepare("SELECT * FROM work_items WHERE id=?").get(ref.workItemId);
+  if (!row) throw new KddError("work item not found");
+  if (revision !== void 0) integer(revision);
+  const rev = revision ?? row.current_revision;
+  const contract = db.prepare("SELECT * FROM work_item_revisions WHERE work_item_id=? AND revision=?").get(row.id, rev);
+  if (!contract) throw new KddError("work item revision not found");
+  const dependencies = db.prepare(`SELECT * FROM work_item_dependencies WHERE consumer_id=? AND consumer_revision=? ORDER BY edge_key`).all(row.id, rev).map((d) => ({
+    key: d.edge_key,
+    producer: { projectId: ref.projectId, workItemId: d.producer_id },
+    producerRevision: d.producer_revision,
+    outputKey: d.output_key,
+    binding: JSON.parse(d.binding_json),
+    ...d.pinned_result_id === null ? {} : { resultId: d.pinned_result_id }
+  }));
+  return {
+    ref: { ...ref },
+    task: { projectId: ref.projectId, taskId: row.task_id },
+    revision: rev,
+    state: row.state,
+    fence: row.fence,
+    definition: JSON.parse(contract.definition_json),
+    inputs: JSON.parse(contract.inputs_json),
+    inputsHash: contract.inputs_hash,
+    dependencies
+  };
+}
+function inputsCurrent(db, item) {
+  return item.inputs.every((input) => contractHash(db, input.task) === input.hash);
+}
+function checkDefinition(db, definition) {
+  shape(definition, ["kind", "repoId", "sourceTasks", "outputs"]);
+  if (!["analysis", "architecture", "implementation", "check", "integration", "human_action", "curation"].includes(definition.kind)) {
+    throw new KddError("invalid work item kind");
+  }
+  checkRepo(db, definition.repoId);
+  if (!Array.isArray(definition.sourceTasks) || !Array.isArray(definition.outputs)) throw new KddError("invalid definition arrays");
+  const sources = /* @__PURE__ */ new Set(), outputs = /* @__PURE__ */ new Set();
+  for (const ref of definition.sourceTasks) {
+    scopedTask(db, ref);
+    if (sources.has(ref.taskId)) throw new KddError("duplicate source task");
+    sources.add(ref.taskId);
+  }
+  for (const output of definition.outputs) {
+    shape(output, ["key", "kind", "required", "version", "checkRefs"]);
+    text(output.key);
+    text(output.version);
+    dependencyKind(output.kind);
+    strings(output.checkRefs);
+    if (typeof output.required !== "boolean") throw new KddError("invalid output requirement");
+    if (outputs.has(output.key)) throw new KddError("duplicate output key");
+    outputs.add(output.key);
+    if ((output.kind === "code" || output.kind === "merged") && definition.repoId === null) throw new KddError("output requires repository");
+  }
+}
+function checkBinding(db, binding) {
+  dependencyKind(binding?.kind);
+  const extra = {
+    contract: [],
+    code: ["baseHead"],
+    merged: ["target", "baseHead"],
+    readiness: ["resourceId", "configHash", "consumerScope", "capabilities"]
+  }[binding.kind];
+  shape(binding, ["kind", "repoId", "version", ...extra]);
+  checkRepo(db, binding.repoId);
+  text(binding.version);
+  if (binding.kind === "code" || binding.kind === "merged") {
+    if (binding.repoId === null) throw new KddError("dependency requires repository");
+    text(binding.baseHead);
+    if (binding.kind === "merged") text(binding.target);
+  }
+  if (binding.kind === "readiness") {
+    text(binding.resourceId);
+    text(binding.configHash);
+    text(binding.consumerScope);
+    strings(binding.capabilities);
+  }
+}
+function insertRevision(db, id2, task, revision, definition) {
+  checkDefinition(db, definition);
+  const card = scopedTask(db, task), ids = /* @__PURE__ */ new Set([card.id, ...definition.sourceTasks.map((t) => t.taskId)]);
+  if (card.parent_id !== null) ids.add(card.parent_id);
+  const inputs = [...ids].sort((a, b) => a - b).map((taskId) => {
+    const ref = { projectId: task.projectId, taskId };
+    return { task: ref, hash: contractHash(db, ref) };
+  });
+  db.prepare("INSERT INTO work_item_revisions VALUES(?,?,?,?,?,?)").run(id2, revision, canonical(definition), canonical(inputs), digest(inputs), now());
+}
+function insertEdges(db, item, dependencies) {
+  if (!Array.isArray(dependencies)) throw new KddError("invalid dependencies");
+  const keys = /* @__PURE__ */ new Set();
+  for (const dep of dependencies) {
+    shape(dep, ["key", "producer", "producerRevision", "outputKey", "binding"], ["resultId"]);
+    text(dep.key);
+    text(dep.outputKey);
+    integer(dep.producerRevision);
+    checkBinding(db, dep.binding);
+    if (keys.has(dep.key)) throw new KddError("duplicate edge key");
+    keys.add(dep.key);
+    const producer = scopedWorkItem(db, dep.producer, dep.producerRevision);
+    if (item.ref.workItemId === producer.ref.workItemId) throw new KddError("self dependency cycle");
+    const output = producer.definition.outputs.find((o) => o.key === dep.outputKey);
+    if (!output || output.kind !== dep.binding.kind || output.version !== dep.binding.version || producer.definition.repoId !== dep.binding.repoId) throw new KddError("incompatible dependency output or scope");
+    if (dep.binding.kind === "code" && (item.definition.repoId === null || item.definition.repoId !== producer.definition.repoId)) {
+      throw new KddError("cross repository code dependency denied");
+    }
+    if (dep.resultId !== void 0) {
+      text(dep.resultId);
+      const result2 = db.prepare("SELECT payload_json FROM work_item_results WHERE id=? AND producer_id=? AND producer_revision=? AND output_key=? AND kind=?").get(dep.resultId, producer.ref.workItemId, producer.revision, dep.outputKey, dep.binding.kind);
+      const payload = result2 ? JSON.parse(result2.payload_json) : null;
+      if (!payload || payload.version !== dep.binding.version || payload.repoId !== dep.binding.repoId) throw new KddError("result binding mismatch");
+    }
+    db.prepare("INSERT INTO work_item_dependencies VALUES(?,?,?,?,?,?,?,?,?)").run(
+      item.ref.workItemId,
+      item.revision,
+      dep.key,
+      producer.ref.workItemId,
+      producer.revision,
+      dep.binding.kind,
+      dep.outputKey,
+      canonical(dep.binding),
+      dep.resultId ?? null
+    );
+  }
+}
+function assertDag(db, refs) {
+  const cycle = db.prepare(`WITH RECURSIVE active(consumer,producer) AS (
+    SELECT d.consumer_id,d.producer_id FROM work_item_dependencies d
+    JOIN work_items w ON w.id=d.consumer_id AND w.current_revision=d.consumer_revision
+  ), reachable(id) AS (SELECT producer FROM active WHERE consumer=?
+    UNION SELECT a.producer FROM active a JOIN reachable r ON a.consumer=r.id)
+    SELECT 1 FROM reachable WHERE id=? LIMIT 1`);
+  for (const ref of refs) if (cycle.get(ref.workItemId, ref.workItemId)) throw new KddError("dependency cycle");
+}
+function createWorkItem(handle, input) {
+  const db = controllerDb(handle);
+  return db.transaction(() => {
+    shape(input, ["task", "definition", "dependencies"]);
+    const task = scopedTask(db, input.task);
+    assertNoHandoff(db, task.id);
+    const ref = { projectId: input.task.projectId, workItemId: newId() };
+    db.prepare("INSERT INTO work_items(id,task_id,current_revision,created_at) VALUES(?,?,1,?)").run(ref.workItemId, task.id, now());
+    insertRevision(db, ref.workItemId, input.task, 1, input.definition);
+    insertEdges(db, scopedWorkItem(db, ref), input.dependencies);
+    assertDag(db, [ref]);
+    appendEvent(db, task.id, controllerActor, "work_item_created", { work_item_id: ref.workItemId, revision: 1 });
+    return scopedWorkItem(db, ref);
+  }).immediate();
+}
+function reviseWorkItem(handle, input) {
+  const db = controllerDb(handle);
+  return db.transaction(() => {
+    shape(input, ["ref", "expectedRevision", "definition", "dependencies"]);
+    integer(input.expectedRevision);
+    const item = scopedWorkItem(db, input.ref);
+    assertNoHandoff(db, item.task.taskId);
+    if (item.revision !== input.expectedRevision || item.revision === Number.MAX_SAFE_INTEGER) throw new KddError("revision conflict or overflow");
+    if (["completed", "failed", "cancelled"].includes(item.state)) throw new KddError("terminal work item requires new work");
+    if (db.prepare("SELECT 1 FROM work_item_owners WHERE work_item_id=? AND released_at IS NULL").get(item.ref.workItemId)) {
+      throw new KddError("owned work item cannot change revision");
+    }
+    const revision = item.revision + 1;
+    insertRevision(db, item.ref.workItemId, item.task, revision, input.definition);
+    db.prepare("UPDATE work_items SET current_revision=?,state='pending' WHERE id=? AND current_revision=?").run(revision, item.ref.workItemId, input.expectedRevision);
+    insertEdges(db, scopedWorkItem(db, item.ref), input.dependencies);
+    assertDag(db, [item.ref]);
+    appendEvent(db, item.task.taskId, controllerActor, "work_item_revised", { work_item_id: item.ref.workItemId, revision });
+    return scopedWorkItem(db, item.ref);
+  }).immediate();
+}
+function workItem(handle, ref) {
+  const db = controllerDb(handle);
+  return db.transaction(() => scopedWorkItem(db, ref))();
+}
+function taskWorkItems(handle, task) {
+  const db = controllerDb(handle);
+  return db.transaction(() => {
+    scopedTask(db, task);
+    return db.prepare("SELECT id FROM work_items WHERE task_id=? ORDER BY id").all(task.taskId).map((row) => scopedWorkItem(db, { projectId: task.projectId, workItemId: row.id }));
+  })();
+}
+function createSubtaskPlan(handle, input) {
+  const db = controllerDb(handle);
+  return db.transaction(() => {
+    shape(input, ["parent", "expectedParentHash", "source", "children", "workItems", "dependencies"]);
+    if (!Array.isArray(input.workItems) || !Array.isArray(input.dependencies)) throw new KddError("invalid plan arrays");
+    const tasks = createSubtasks(handle, {
+      parent: input.parent,
+      expectedParentHash: input.expectedParentHash,
+      source: input.source,
+      children: input.children
+    });
+    const refs = /* @__PURE__ */ Object.create(null);
+    for (const draft of input.workItems) {
+      shape(draft, ["key", "childKey", "definition"]);
+      text(draft.key);
+      text(draft.childKey);
+      if (Object.hasOwn(refs, draft.key) || !Object.hasOwn(tasks, draft.childKey)) throw new KddError("invalid plan work item key");
+      const ref = { projectId: input.parent.projectId, workItemId: newId() };
+      refs[draft.key] = ref;
+      db.prepare("INSERT INTO work_items(id,task_id,current_revision,created_at) VALUES(?,?,1,?)").run(ref.workItemId, tasks[draft.childKey].id, now());
+      insertRevision(db, ref.workItemId, { projectId: ref.projectId, taskId: tasks[draft.childKey].id }, 1, draft.definition);
+    }
+    const dependencies = Object.fromEntries(Object.keys(refs).map((k) => [k, []]));
+    for (const dep of input.dependencies) {
+      shape(dep, ["consumerKey", "key", "producer", "outputKey", "binding"], ["resultId"]);
+      text(dep.consumerKey);
+      if (!Object.hasOwn(refs, dep.consumerKey)) throw new KddError("missing consumer key");
+      shape(dep.producer, Object.hasOwn(dep.producer, "localKey") ? ["localKey"] : ["ref", "revision"]);
+      let producer, producerRevision;
+      if ("localKey" in dep.producer) {
+        text(dep.producer.localKey);
+        if (!Object.hasOwn(refs, dep.producer.localKey)) throw new KddError("missing producer key");
+        producer = refs[dep.producer.localKey];
+        producerRevision = 1;
+      } else {
+        producer = dep.producer.ref;
+        producerRevision = dep.producer.revision;
+      }
+      dependencies[dep.consumerKey].push({
+        key: dep.key,
+        producer,
+        producerRevision,
+        outputKey: dep.outputKey,
+        binding: dep.binding,
+        ...dep.resultId === void 0 ? {} : { resultId: dep.resultId }
+      });
+    }
+    for (const key of Object.keys(refs)) insertEdges(db, scopedWorkItem(db, refs[key]), dependencies[key]);
+    assertDag(db, Object.values(refs));
+    const workItems = Object.fromEntries(Object.keys(refs).map((key) => [key, scopedWorkItem(db, refs[key])]));
+    appendEvent(db, input.parent.taskId, controllerActor, "subtask_plan_created", {
+      tasks: Object.fromEntries(Object.entries(tasks).map(([k, t]) => [k, t.id])),
+      work_items: refs
+    });
+    return { tasks, workItems };
+  }).immediate();
+}
+function checkOwnershipRef(db, ref) {
+  shape(ref, ["projectId", "workItemId", "revision", "ownerId", "fence"]);
+  text(ref.ownerId);
+  integer(ref.revision);
+  integer(ref.fence);
+  scopedWorkItem(db, { projectId: ref.projectId, workItemId: ref.workItemId }, ref.revision);
+}
+function liveOwner(db, ref) {
+  checkOwnershipRef(db, ref);
+  const item = scopedWorkItem(db, { projectId: ref.projectId, workItemId: ref.workItemId });
+  const row = db.prepare("SELECT * FROM work_item_owners WHERE work_item_id=? AND fence=? AND owner_id=? AND revision=? AND released_at IS NULL").get(ref.workItemId, ref.fence, ref.ownerId, ref.revision);
+  if (!row || item.revision !== ref.revision || item.fence !== ref.fence || !inputsCurrent(db, item) || JSON.parse(row.inputs_json).inputsHash !== item.inputsHash || !pinnedInputsCurrent(db, item, JSON.parse(row.inputs_json).inputResults)) throw new KddError("ownership fence or inputs stale");
+  return row;
+}
+var LEGACY_EXECUTION_SQL = `execution_mode='manual'
+  AND NOT EXISTS (SELECT 1 FROM managed_task_policy p WHERE p.task_id=tasks.id)
+  AND NOT EXISTS (SELECT 1 FROM execution_handoffs h WHERE h.task_id=tasks.id AND h.completed_at IS NULL)`;
+
 // src/authority.ts
-import { createHash as createHash4, randomBytes as randomBytes2 } from "crypto";
+import { createHash as createHash6, randomBytes as randomBytes3 } from "crypto";
 import { lstatSync as lstatSync3, realpathSync as realpathSync5 } from "fs";
-import { isAbsolute as isAbsolute2 } from "path";
+import { isAbsolute as isAbsolute3 } from "path";
 
 // src/codex_permissions.ts
 import { spawn as spawn2, execFileSync as execFileSync4 } from "child_process";
-import { createHash as createHash3 } from "crypto";
-import { lstatSync as lstatSync2, mkdirSync as mkdirSync4, readdirSync as readdirSync4, realpathSync as realpathSync4, rmdirSync, readFileSync as readFileSync3, writeFileSync as writeFileSync3, existsSync as existsSync4 } from "fs";
-import { dirname as dirname3, isAbsolute, join as join5, relative, resolve as resolve3, sep } from "path";
+import { createHash as createHash5 } from "crypto";
+import { lstatSync as lstatSync2, mkdirSync as mkdirSync4, readdirSync as readdirSync4, realpathSync as realpathSync4, rmdirSync, readFileSync as readFileSync4, writeFileSync as writeFileSync3, existsSync as existsSync4 } from "fs";
+import { dirname as dirname3, isAbsolute as isAbsolute2, join as join5, relative, resolve as resolve3, sep } from "path";
 import { fileURLToPath as fileURLToPath2 } from "url";
 
 // src/codex_native_probe.ts
 import assert from "assert/strict";
 import { spawn, execFile, execFileSync as execFileSync3 } from "child_process";
-import { createHash as createHash2 } from "crypto";
-import { mkdtempSync, mkdirSync as mkdirSync3, writeFileSync as writeFileSync2, readFileSync as readFileSync2, existsSync as existsSync3, rmSync as rmSync3, realpathSync as realpathSync3, linkSync, symlinkSync, lstatSync, readdirSync as readdirSync3, readlinkSync } from "fs";
+import { createHash as createHash4 } from "crypto";
+import { mkdtempSync, mkdirSync as mkdirSync3, writeFileSync as writeFileSync2, readFileSync as readFileSync3, existsSync as existsSync3, rmSync as rmSync3, realpathSync as realpathSync3, linkSync, symlinkSync, lstatSync, readdirSync as readdirSync3, readlinkSync } from "fs";
 import { createServer } from "http";
 import { tmpdir, networkInterfaces } from "os";
 import { createServer as createSocketServer } from "net";
@@ -960,8 +1848,8 @@ async function observeCodexNative(executablePath, rawDiagnostic = false, model =
   const version = execFileSync3(executable, ["--version"], { encoding: "utf8" }).trim();
   assert.equal(version, "codex-cli 0.157.0");
   assert.equal(process.platform, "darwin");
-  const executableHash = createHash2("sha256").update(readFileSync2(executable)).digest("hex");
-  const scriptHash = createHash2("sha256").update(readFileSync2(new URL(import.meta.url))).digest("hex");
+  const executableHash = createHash4("sha256").update(readFileSync3(executable)).digest("hex");
+  const scriptHash = createHash4("sha256").update(readFileSync3(new URL(import.meta.url))).digest("hex");
   const guardHash = scriptHash;
   const root = realpathSync3(mkdtempSync(join4(tmpdir(), "kdd-native-")));
   const observations = [];
@@ -984,14 +1872,14 @@ async function observeCodexNative(executablePath, rawDiagnostic = false, model =
     }, fingerprint2 = function(path) {
       if (!existsSync3(path)) return "missing";
       const stat = lstatSync(path);
-      if (stat.isSymbolicLink()) return digest2(readlinkSync(path));
-      if (!stat.isDirectory()) return digest2(readFileSync2(path));
-      return digest2(JSON.stringify(readdirSync3(path).sort().map((name) => [name, fingerprint2(join4(path, name))])));
+      if (stat.isSymbolicLink()) return digest3(readlinkSync(path));
+      if (!stat.isDirectory()) return digest3(readFileSync3(path));
+      return digest3(JSON.stringify(readdirSync3(path).sort().map((name) => [name, fingerprint2(join4(path, name))])));
     };
     var findTool = findTool2, flattenTools = flattenTools2, fingerprint = fingerprint2;
     if (broker) {
       brokerDb = new Database4(broker.dbPath, { fileMustExist: true });
-      operations2 = runOperations(openRunContext(brokerDb, JSON.parse(readFileSync2(broker.configPath, "utf8")).token));
+      operations2 = runOperations(openRunContext(brokerDb, JSON.parse(readFileSync3(broker.configPath, "utf8")).token));
     }
     const workspace = join4(root, "workspace");
     const scratch = join4(root, "scratch");
@@ -1057,7 +1945,7 @@ async function observeCodexNative(executablePath, rawDiagnostic = false, model =
           (error, stdout) => error ? reject(error) : resolve4(stdout)
         ));
         assert.equal(String(output).trim(), "ack");
-        networkControls.push({ caseId: testCase.id, role: "host-control", exitCode: 0, commandHash: digest2(testCase.command), output });
+        networkControls.push({ caseId: testCase.id, role: "host-control", exitCode: 0, commandHash: digest3(testCase.command), output });
       }
       assert.equal(tcpRequests, lanAddress ? 2 : 1);
       assert.equal(unixRequests, 1);
@@ -1102,8 +1990,8 @@ data: ${JSON.stringify({ type, ...fields })}
             if (!tool) throw new Error(`native tool missing: ${testCase.tool}`);
             if (mcp && tool.namespace !== "mcp__kdd_run") throw new Error("unexpected MCP namespace");
             if (testCase.revoke) {
-              const token = JSON.parse(readFileSync2(broker.configPath, "utf8")).token;
-              const authority = brokerDb.prepare("SELECT authority_id FROM run_authorities WHERE token_hash=?").get(digest2(token));
+              const token = JSON.parse(readFileSync3(broker.configPath, "utf8")).token;
+              const authority = brokerDb.prepare("SELECT authority_id FROM run_authorities WHERE token_hash=?").get(digest3(token));
               revokeRunAuthority(openController(brokerDb), authority.authority_id);
             }
             const item = tool.type === "custom" ? { type: "custom_tool_call", id: "probe_item", call_id: callId, name: tool.name, input: testCase.patch } : {
@@ -1222,18 +2110,18 @@ data: ${JSON.stringify({ type, ...fields })}
           providerError,
           output,
           requests,
-          permissionHash: createHash2("sha256").update(JSON.stringify({ executableHash, version, model, filesystem, config })).digest("hex"),
-          configHash: createHash2("sha256").update(JSON.stringify({ executableHash, version, filesystem, config })).digest("hex")
+          permissionHash: createHash4("sha256").update(JSON.stringify({ executableHash, version, model, filesystem, config })).digest("hex"),
+          configHash: createHash4("sha256").update(JSON.stringify({ executableHash, version, filesystem, config })).digest("hex")
         };
         if (output === void 0) observation.diagnostic = (stderr + stdout).slice(-3e3);
         if (broker) {
-          const token = JSON.parse(readFileSync2(broker.configPath, "utf8")).token;
-          const safe = (text) => text.replaceAll(token, "[redacted]").replaceAll(digest2(token), "[redacted]");
+          const token = JSON.parse(readFileSync3(broker.configPath, "utf8")).token;
+          const safe = (text2) => text2.replaceAll(token, "[redacted]").replaceAll(digest3(token), "[redacted]");
           if (observation.output !== void 0) observation.output = JSON.parse(safe(JSON.stringify(observation.output)));
           if (observation.diagnostic) observation.diagnostic = safe(observation.diagnostic);
         }
         if (registry) observation.tools = flattenTools2(registry);
-        observation.unchangedProtectedBytes = readFileSync2(foreign, "utf8") === "backend-original\n";
+        observation.unchangedProtectedBytes = readFileSync3(foreign, "utf8") === "backend-original\n";
         observations.push(observation);
         return observation;
       } finally {
@@ -1256,7 +2144,7 @@ data: ${JSON.stringify({ type, ...fields })}
     const patchDelete = (path) => `*** Begin Patch
 *** Delete File: ${path}
 *** End Patch`;
-    const digest2 = (value) => createHash2("sha256").update(value).digest("hex");
+    const digest3 = (value) => createHash4("sha256").update(value).digest("hex");
     const protectedPaths = [
       backend,
       source,
@@ -1268,32 +2156,32 @@ data: ${JSON.stringify({ type, ...fields })}
       ...broker ? [broker.configPath, broker.entryPath] : []
     ];
     const storeTables = ["tasks", "criteria", "comments", "task_links", "files", "tracks", "project", "repositories", "repository_bindings", "decisions", "search_index", "managed_task_policy", "run_authorities"];
-    const storeSnapshot = (revoking = false) => brokerDb ? digest2(JSON.stringify(storeTables.filter((table) => !revoking || table !== "run_authorities").map((table) => brokerDb.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()))) : "none";
+    const storeSnapshot = (revoking = false) => brokerDb ? digest3(JSON.stringify(storeTables.filter((table) => !revoking || table !== "run_authorities").map((table) => brokerDb.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()))) : "none";
     async function check(testCase, writable, expected, effect) {
       const unchangedPaths = protectedPaths.filter((path) => path !== testCase.controlRoot);
       const before = unchangedPaths.map(fingerprint2);
       const storeBefore = storeSnapshot(testCase.revoke);
       const eventsBefore = brokerDb?.prepare("SELECT * FROM events ORDER BY id").all();
       const observation = await runCase(testCase, writable);
-      const text = typeof observation.output === "string" ? observation.output : JSON.stringify(observation.output) ?? "";
-      observation.challengeHash = digest2(JSON.stringify([testCase.tool, testCase.patch ?? testCase.command]));
+      const text2 = typeof observation.output === "string" ? observation.output : JSON.stringify(observation.output) ?? "";
+      observation.challengeHash = digest3(JSON.stringify([testCase.tool, testCase.patch ?? testCase.command]));
       observation.protectedHashes = unchangedPaths.map((path, i) => ({ path, before: before[i], after: fingerprint2(path) }));
       observation.outcome = "inconclusive";
-      const allowed = observation.executed && /(?:Process exited with code|Exit code:) 0/.test(text);
-      const denied2 = observation.executed && /Operation not permitted|Permission denied|patch rejected/.test(text);
+      const allowed = observation.executed && /(?:Process exited with code|Exit code:) 0/.test(text2);
+      const denied2 = observation.executed && /Operation not permitted|Permission denied|patch rejected/.test(text2);
       if (allowed) observation.outcome = "allowed";
       else if (denied2) observation.outcome = "denied";
-      else if (testCase.unavailable && observation.executed && text.includes(testCase.tool) && /unsupported|unknown|unrecognized|not found/i.test(text)) observation.outcome = "denied";
+      else if (testCase.unavailable && observation.executed && text2.includes(testCase.tool) && /unsupported|unknown|unrecognized|not found/i.test(text2)) observation.outcome = "denied";
       else if (["get_context", "submit_report", "request_question"].includes(testCase.tool)) {
-        if (text.includes("run operation denied") || /["\\]isError["\\]*\s*:\s*true/.test(text)) observation.outcome = "denied";
-        else if (text.includes("taskId") || text.includes("eventId")) observation.outcome = "allowed";
+        if (text2.includes("run operation denied") || /["\\]isError["\\]*\s*:\s*true/.test(text2)) observation.outcome = "denied";
+        else if (text2.includes("taskId") || text2.includes("eventId")) observation.outcome = "allowed";
       } else if (/mcp_resource/.test(testCase.tool) && observation.executed) {
-        if (/resources\/(?:read|list|templates\/list) failed:/.test(text) && /unknown|not found|not support|Method not found|capability/i.test(text)) observation.outcome = "denied";
-        else if (testCase.tool.startsWith("list_") && /"(?:resources|resourceTemplates)"\s*:\s*\[\s*\]/.test(text)) observation.outcome = "allowed";
-      } else if (testCase.failureCode && observation.executed && new RegExp(`Process exited with code ${testCase.failureCode}\\b`).test(text) && networkControls.some((control) => control.caseId === testCase.id && control.exitCode === 0 && control.commandHash === digest2(testCase.command))) {
+        if (/resources\/(?:read|list|templates\/list) failed:/.test(text2) && /unknown|not found|not support|Method not found|capability/i.test(text2)) observation.outcome = "denied";
+        else if (testCase.tool.startsWith("list_") && /"(?:resources|resourceTemplates)"\s*:\s*\[\s*\]/.test(text2)) observation.outcome = "allowed";
+      } else if (testCase.failureCode && observation.executed && new RegExp(`Process exited with code ${testCase.failureCode}\\b`).test(text2) && networkControls.some((control) => control.caseId === testCase.id && control.exitCode === 0 && control.commandHash === digest3(testCase.command))) {
         observation.outcome = "denied";
         observation.matchedControl = `host:${testCase.id}`;
-      } else if (testCase.matchedControl && observation.executed && /Exit code: 1/.test(text) && /Failed to write file/.test(text) && testCase.matchedControl.outcome === "allowed" && !testCase.matchedControl.failure && testCase.matchedControl.challengeHash === observation.challengeHash && observation.protectedHashes.every((path) => path.before === path.after)) {
+      } else if (testCase.matchedControl && observation.executed && /Exit code: 1/.test(text2) && /Failed to write file/.test(text2) && testCase.matchedControl.outcome === "allowed" && !testCase.matchedControl.failure && testCase.matchedControl.challengeHash === observation.challengeHash && observation.protectedHashes.every((path) => path.before === path.after)) {
         observation.outcome = "denied";
         observation.matchedControl = testCase.matchedControl.caseId;
       }
@@ -1413,7 +2301,7 @@ data: ${JSON.stringify({ type, ...fields })}
               const patch = { create: patchCreate("created.txt"), update: patchUpdate("existing.txt"), delete: patchDelete("existing.txt") }[operation];
               await check({ id: `${operation}-${iteration}`, tool, command, patch }, writable, expected, () => {
                 if (operation === "create") assert.equal(existsSync3(join4(workspace, "created.txt")), writable);
-                if (operation === "update") assert.equal(readFileSync2(join4(workspace, "existing.txt"), "utf8"), writable ? "changed\n" : "original\n");
+                if (operation === "update") assert.equal(readFileSync3(join4(workspace, "existing.txt"), "utf8"), writable ? "changed\n" : "original\n");
                 if (operation === "delete") assert.equal(existsSync3(join4(workspace, "existing.txt")), !writable);
               });
             }
@@ -1422,7 +2310,7 @@ data: ${JSON.stringify({ type, ...fields })}
         const symlinkPatch = "*** Begin Patch\n*** Update File: symlink.txt\n@@\n-backend-original\n+changed\n*** End Patch";
         for (let iteration = 1; iteration <= 3; iteration++) {
           const control = writable ? await check({ id: `symlink-positive-control-${iteration}`, tool: "apply_patch", patch: symlinkPatch, controlRoot: backend }, writable, "allowed", () => {
-            assert.equal(readFileSync2(foreign, "utf8"), "changed\n");
+            assert.equal(readFileSync3(foreign, "utf8"), "changed\n");
           }) : void 0;
           await check({ id: `symlink-patch-${iteration}`, tool: "apply_patch", patch: symlinkPatch, matchedControl: control }, writable, "denied");
           await check({ id: `symlink-shell-${iteration}`, tool: "exec_command", command: '/bin/sh -c "echo changed > symlink.txt"' }, writable, "denied");
@@ -1437,7 +2325,7 @@ data: ${JSON.stringify({ type, ...fields })}
         await check({ id: "backend-write", tool: "exec_command", command: `/bin/sh -c "echo changed > '${foreign}'"` }, writable, "denied", () => {
         });
         const backendPatch = "*** Begin Patch\n*** Update File: " + foreign + "\n@@\n-backend-original\n+changed\n*** End Patch";
-        const backendControl = await check({ id: "backend-positive-control", tool: "apply_patch", patch: backendPatch, controlRoot: backend }, writable, "allowed", () => assert.equal(readFileSync2(foreign, "utf8"), "changed\n"));
+        const backendControl = await check({ id: "backend-positive-control", tool: "apply_patch", patch: backendPatch, controlRoot: backend }, writable, "allowed", () => assert.equal(readFileSync3(foreign, "utf8"), "changed\n"));
         await check({ id: "backend-patch", tool: "apply_patch", patch: backendPatch, matchedControl: backendControl }, writable, "denied");
         for (const path of [join4(source, "existing.txt"), join4(sibling, "marker.txt"), ...["store.db", "registry.db", "config.toml", "credential.json"].map((name) => join4(protectedDir, name))]) {
           await check({ id: `protected-read-${path.split("/").slice(-2).join("-")}`, tool: "exec_command", command: `/bin/cat '${path}'` }, writable, "denied");
@@ -1460,8 +2348,8 @@ data: ${JSON.stringify({ type, ...fields })}
           await check({ id: id2, tool: "exec_command", command: `/bin/sh -c "echo changed > '${path}'"` }, writable, "denied");
           await check({ id: `${id2}-patch`, tool: "apply_patch", patch: patchDelete(path) }, writable, "denied");
         }
-        await check({ id: "scratch-write", tool: "exec_command", command: `/bin/sh -c "echo scratch > '${join4(scratch, "allowed.txt")}'"` }, writable, "allowed", () => assert.equal(readFileSync2(join4(scratch, "allowed.txt"), "utf8"), "scratch\n"));
-        await check({ id: "scratch-patch", tool: "apply_patch", patch: patchCreate(join4(scratch, "patch-allowed.txt")) }, writable, "allowed", () => assert.equal(readFileSync2(join4(scratch, "patch-allowed.txt"), "utf8"), "created\n"));
+        await check({ id: "scratch-write", tool: "exec_command", command: `/bin/sh -c "echo scratch > '${join4(scratch, "allowed.txt")}'"` }, writable, "allowed", () => assert.equal(readFileSync3(join4(scratch, "allowed.txt"), "utf8"), "scratch\n"));
+        await check({ id: "scratch-patch", tool: "apply_patch", patch: patchCreate(join4(scratch, "patch-allowed.txt")) }, writable, "allowed", () => assert.equal(readFileSync3(join4(scratch, "patch-allowed.txt"), "utf8"), "created\n"));
         rmSync3(join4(scratch, "patch-allowed.txt"));
         await check({ id: "fresh-resume-read", tool: "exec_command", command: "/bin/cat existing.txt", phase: "resume" }, writable, "allowed");
         for (const testCase of networkCases) {
@@ -1546,7 +2434,7 @@ data: ${JSON.stringify({ type, ...fields })}
 // src/codex_permissions.ts
 function directory(path) {
   try {
-    if (!isAbsolute(path) || !lstatSync2(path).isDirectory()) throw new Error("not a real directory");
+    if (!isAbsolute2(path) || !lstatSync2(path).isDirectory()) throw new Error("not a real directory");
     return realpathSync4(path);
   } catch (error) {
     throw new KddError(`native root unavailable: ${path}: ${error.message}`);
@@ -1554,7 +2442,7 @@ function directory(path) {
 }
 function assertWritableRoots(roots) {
   if (!roots.length) throw new KddError("native writable roots are unknown");
-  const canonical = [...new Set(roots.map(directory))];
+  const canonical2 = [...new Set(roots.map(directory))];
   function scan(path) {
     const before = lstatSync2(path);
     if (!before.isDirectory()) {
@@ -1568,12 +2456,12 @@ function assertWritableRoots(roots) {
     }
   }
   try {
-    for (const root of canonical) scan(root);
+    for (const root of canonical2) scan(root);
   } catch (error) {
     if (error instanceof KddError) throw error;
     throw new KddError(`native root scan incomplete: ${error.message}`);
   }
-  return canonical;
+  return canonical2;
 }
 async function withNativeControllerLock(controlDir, action) {
   const lock = join5(directory(controlDir), "native-launch.lock");
@@ -1596,7 +2484,7 @@ async function withNativeControllerLock(controlDir, action) {
 }
 function inside(parent, path) {
   const suffix = relative(parent, path);
-  return suffix === "" || suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix);
+  return suffix === "" || suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute2(suffix);
 }
 async function spawnCheckedNative(input) {
   const { executable, cwd, phase, verified } = input;
@@ -1605,17 +2493,17 @@ async function spawnCheckedNative(input) {
   const roots = [...input.writableRoots];
   if (phase !== "start" && phase !== "resume") throw new KddError("unknown native launch phase");
   const controlDir = directory(input.controlDir);
-  const canonical = roots.map(directory);
-  if (canonical.some((root) => inside(root, controlDir))) throw new KddError("native control directory is writable");
+  const canonical2 = roots.map(directory);
+  if (canonical2.some((root) => inside(root, controlDir))) throw new KddError("native control directory is writable");
   return withNativeControllerLock(controlDir, () => {
     if (verified !== void 0) {
       assertVerifiedCodexPackage(verified);
-      if (executable !== verified.executable || cwd !== verified.cwd || controlDir !== verified.controlDir || JSON.stringify(env) !== JSON.stringify(verified.env) || JSON.stringify(canonical) !== JSON.stringify([verified.scratchDir, ...verified.writableRoot ? [verified.writableRoot] : []]) || args.length !== verified.argv.length + 1 || verified.argv.some((arg, i) => args[i] !== arg)) {
+      if (executable !== verified.executable || cwd !== verified.cwd || controlDir !== verified.controlDir || JSON.stringify(env) !== JSON.stringify(verified.env) || JSON.stringify(canonical2) !== JSON.stringify([verified.scratchDir, ...verified.writableRoot ? [verified.writableRoot] : []]) || args.length !== verified.argv.length + 1 || verified.argv.some((arg, i) => args[i] !== arg)) {
         throw new KddError("native launch differs from verified package");
       }
     }
-    if (roots.some((root, index) => directory(root) !== canonical[index])) throw new KddError("native root binding changed");
-    assertWritableRoots(canonical);
+    if (roots.some((root, index) => directory(root) !== canonical2[index])) throw new KddError("native root binding changed");
+    assertWritableRoots(canonical2);
     const child = spawn2(executable, args, { cwd: resolve3(cwd), env, stdio: ["ignore", "pipe", "pipe"] });
     return new Promise((resolveChild, reject) => {
       child.once("error", reject);
@@ -1629,10 +2517,10 @@ async function spawnCheckedNative(input) {
 function codexBrokerBinding(configPath, entryPath) {
   try {
     for (const path of [configPath, entryPath]) {
-      if (!isAbsolute(path) || !lstatSync2(path).isFile() || lstatSync2(path).nlink !== 1) throw new KddError("native broker binding unavailable");
+      if (!isAbsolute2(path) || !lstatSync2(path).isFile() || lstatSync2(path).nlink !== 1) throw new KddError("native broker binding unavailable");
     }
-    const config = JSON.parse(readFileSync3(configPath, "utf8"));
-    if ((lstatSync2(configPath).mode & 511) !== 384 || !config || Array.isArray(config) || Object.keys(config).sort().join(",") !== "dbPath,token" || typeof config.dbPath !== "string" || !isAbsolute(config.dbPath) || realpathSync4(config.dbPath) !== config.dbPath || typeof config.token !== "string" || !/^[0-9a-f]{64}$/.test(config.token)) throw new KddError("native broker config denied");
+    const config = JSON.parse(readFileSync4(configPath, "utf8"));
+    if ((lstatSync2(configPath).mode & 511) !== 384 || !config || Array.isArray(config) || Object.keys(config).sort().join(",") !== "dbPath,token" || typeof config.dbPath !== "string" || !isAbsolute2(config.dbPath) || realpathSync4(config.dbPath) !== config.dbPath || typeof config.token !== "string" || !/^[0-9a-f]{64}$/.test(config.token)) throw new KddError("native broker config denied");
     for (const path of [config.dbPath, `${config.dbPath}-wal`, `${config.dbPath}-shm`]) {
       try {
         if (!lstatSync2(path).isFile() || lstatSync2(path).nlink !== 1) throw new KddError("native store alias denied");
@@ -1646,7 +2534,7 @@ function codexBrokerBinding(configPath, entryPath) {
     throw new KddError("native broker binding unavailable");
   }
 }
-var digest = (value) => createHash3("sha256").update(value).digest("hex");
+var digest2 = (value) => createHash5("sha256").update(value).digest("hex");
 var verifiedPackages = /* @__PURE__ */ new WeakMap();
 function closedCodexCatalog(model) {
   return JSON.stringify({ models: [{
@@ -1733,7 +2621,7 @@ async function preflightCodex(input) {
     controlDir,
     ...broker ? [broker.configPath, broker.entryPath, dirname3(broker.dbPath)] : []
   ].map((path) => {
-    if (!isAbsolute(path)) throw new KddError("native protected path must be absolute");
+    if (!isAbsolute2(path)) throw new KddError("native protected path must be absolute");
     return realpathSync4(path);
   }))];
   const model = input.model;
@@ -1754,7 +2642,7 @@ async function preflightCodex(input) {
   for (const path of protectedPaths) filesystem[path] = "deny";
   for (const path of [...gitMetadata, join5(cwd, ".codex")]) filesystem[path] = "read";
   const catalog = closedCodexCatalog(model);
-  const catalogPath = join5(controlDir, `codex-catalog-${digest(catalog)}.json`);
+  const catalogPath = join5(controlDir, `codex-catalog-${digest2(catalog)}.json`);
   filesystem[catalogPath] = "deny";
   const argv = Object.freeze(fixedCodexArguments(cwd, model, fixedCodexConfig(filesystem, catalogPath, broker)));
   if (!process.env.HOME) throw new KddError("Codex home unavailable");
@@ -1762,9 +2650,9 @@ async function preflightCodex(input) {
   return withNativeControllerLock(controlDir, async () => {
     assertWritableRoots(writableRoots);
     if (existsSync4(catalogPath)) {
-      if (lstatSync2(catalogPath).isSymbolicLink() || readFileSync3(catalogPath, "utf8") !== catalog) throw new KddError("native catalog binding changed");
+      if (lstatSync2(catalogPath).isSymbolicLink() || readFileSync4(catalogPath, "utf8") !== catalog) throw new KddError("native catalog binding changed");
     } else writeFileSync3(catalogPath, catalog, { mode: 384, flag: "wx" });
-    const snapshot = () => {
+    const snapshot2 = () => {
       assertNoProjectConfig([cwd]);
       assertWritableRoots(writableRoots);
       if (JSON.stringify(resolveGitMetadata()) !== JSON.stringify(gitMetadata)) throw new KddError("native Git binding changed");
@@ -1784,31 +2672,45 @@ async function preflightCodex(input) {
         if (stat.isSymbolicLink()) throw new KddError("native binding alias");
         return [path, stat.dev, stat.ino];
       });
-      return digest(JSON.stringify({
+      return digest2(JSON.stringify({
         identities,
         argv,
         env,
         executable,
         version,
-        gitPointers: gitMetadata.filter((path) => lstatSync2(path).isFile()).map((path) => [path, digest(readFileSync3(path))]),
-        executableHash: digest(readFileSync3(executable)),
-        catalogHash: digest(readFileSync3(catalogPath)),
+        gitPointers: gitMetadata.filter((path) => lstatSync2(path).isFile()).map((path) => [path, digest2(readFileSync4(path))]),
+        executableHash: digest2(readFileSync4(executable)),
+        catalogHash: digest2(readFileSync4(catalogPath)),
         broker: currentBroker,
-        brokerEntryHash: broker ? digest(readFileSync3(broker.entryPath)) : void 0,
-        nodeHash: broker ? digest(readFileSync3(broker.nodePath)) : void 0,
-        runtimeHash: digest(readFileSync3(fileURLToPath2(import.meta.url)))
+        brokerEntryHash: broker ? digest2(readFileSync4(broker.entryPath)) : void 0,
+        nodeHash: broker ? digest2(readFileSync4(broker.nodePath)) : void 0,
+        runtimeHash: digest2(readFileSync4(fileURLToPath2(import.meta.url)))
       }));
     };
-    const stamp = snapshot();
+    const stamp = snapshot2();
     const evidence = await observeCodexNative(executable, false, model, broker);
-    if (!evidence.applicable || evidence.rawDiagnostic || evidence.observations.length !== (broker ? 158 : 129) || evidence.executed !== evidence.observations.length) throw new KddError("Codex native enforcement unverified");
-    if (snapshot() !== stamp) throw new KddError("native package binding changed during preflight");
-    const results = Object.freeze(evidence.observations.filter((result) => !result.control).map((result) => Object.freeze({
-      caseId: `${result.mode}:${result.caseId}`,
-      tool: result.tool,
-      outcome: result.outcome,
-      executed: result.executed,
-      unchangedProtectedBytes: result.unchangedProtectedBytes
+    if (!evidence.applicable || evidence.rawDiagnostic || evidence.observations.length !== (broker ? 158 : 129) || evidence.executed !== evidence.observations.length) throw new KddError("Codex native enforcement unverified", { cause: {
+      expected: broker ? 158 : 129,
+      attempted: evidence.attempted,
+      executed: evidence.executed,
+      applicable: evidence.applicable,
+      observations: evidence.observations.filter((o) => o.failure).map((o) => ({
+        caseId: o.caseId,
+        mode: o.mode,
+        outcome: o.outcome,
+        executed: o.executed,
+        timedOut: o.timedOut,
+        providerError: !!o.providerError
+      })),
+      failedGuards: evidence.failures.filter((f) => f.caseId).map((f) => f.caseId)
+    } });
+    if (snapshot2() !== stamp) throw new KddError("native package binding changed during preflight");
+    const results = Object.freeze(evidence.observations.filter((result2) => !result2.control).map((result2) => Object.freeze({
+      caseId: `${result2.mode}:${result2.caseId}`,
+      tool: result2.tool,
+      outcome: result2.outcome,
+      executed: result2.executed,
+      unchangedProtectedBytes: result2.unchangedProtectedBytes
     })));
     const packet = Object.freeze({
       executable,
@@ -1824,7 +2726,7 @@ async function preflightCodex(input) {
       configHash: stamp,
       results
     });
-    verifiedPackages.set(packet, { stamp, snapshot });
+    verifiedPackages.set(packet, { stamp, snapshot: snapshot2 });
     return packet;
   });
 }
@@ -2001,8 +2903,8 @@ function mustGetCriterion(db, taskId, id2) {
 var touchTask = (db, taskId) => {
   db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
 };
-function addCriterion(db, taskId, text, actor) {
-  if (!text.trim()) throw new KddError("criterion text must not be empty");
+function addCriterion(db, taskId, text2, actor) {
+  if (!text2.trim()) throw new KddError("criterion text must not be empty");
   return db.transaction(() => {
     assertLegacyTaskMutation(db, [taskId]);
     mustGetTask(db, taskId);
@@ -2011,9 +2913,9 @@ function addCriterion(db, taskId, text, actor) {
     ).get(taskId).p;
     const r = db.prepare(
       `INSERT INTO criteria (task_id, text, position, created_at) VALUES (?, ?, ?, ?)`
-    ).run(taskId, text, pos, now());
+    ).run(taskId, text2, pos, now());
     const id2 = Number(r.lastInsertRowid);
-    appendTaskMutationEvent(db, taskId, actor, "criterion_added", { id: id2, text });
+    appendTaskMutationEvent(db, taskId, actor, "criterion_added", { id: id2, text: text2 });
     touchTask(db, taskId);
     return mustGetCriterion(db, taskId, id2);
   }).immediate();
@@ -2054,28 +2956,18 @@ function removeCriterion(db, taskId, id2, actor) {
 
 // src/authority.ts
 var operations = ["get_context", "submit_report", "request_question"];
-var controllers = /* @__PURE__ */ new WeakMap();
 var contexts = /* @__PURE__ */ new WeakMap();
 var denied = () => new KddError("run authority denied");
-var tokenHash = (token) => createHash4("sha256").update(token).digest("hex");
-var controllerActor = { type: "ai", id: "controller" };
-function controllerDb(handle) {
-  const db = typeof handle === "object" && handle !== null ? controllers.get(handle) : void 0;
-  if (!db?.open) throw denied();
-  return db;
-}
-function openController(db) {
-  if (!db.open || db.pragma("user_version", { simple: true }) !== 14) throw denied();
-  projectOf(db);
-  const handle = Object.freeze({ kind: "controller" });
-  controllers.set(handle, db);
-  return handle;
-}
+var tokenHash = (token) => createHash6("sha256").update(token).digest("hex");
+var controllerActor2 = { type: "ai", id: "controller" };
 function assertLegacyTaskMutation(db, taskIds) {
   const ids = [...new Set(taskIds)];
   if (ids.some((id2) => !Number.isSafeInteger(id2) || id2 < 1)) throw new KddError("invalid task ids");
   if (ids.length && db.prepare(`SELECT task_id FROM managed_task_policy WHERE task_id IN (${ids.map(() => "?").join(",")}) LIMIT 1`).get(...ids)) {
     throw new KddError("managed task requires controller authority");
+  }
+  if (ids.length && db.prepare(`SELECT task_id FROM execution_handoffs WHERE completed_at IS NULL AND task_id IN (${ids.map(() => "?").join(",")}) LIMIT 1`).get(...ids)) {
+    throw new KddError("task handoff requires controller authority");
   }
 }
 function mark(db, taskId) {
@@ -2083,15 +2975,29 @@ function mark(db, taskId) {
   const task = mustGetTask(db, taskId);
   if (task.claimed_by !== null) throw new KddError("claimed legacy writer must stop before controller protection");
   if (db.prepare("INSERT OR IGNORE INTO managed_task_policy(task_id,created_at,source) VALUES(?,?,'controller')").run(taskId, now()).changes) {
-    appendEvent(db, taskId, controllerActor, "task_protected");
+    appendEvent(db, taskId, controllerActor2, "task_protected");
   }
 }
 function protectTask(handle, taskId) {
   const db = controllerDb(handle);
   db.transaction(() => mark(db, taskId)).immediate();
 }
+function modeledOwnership(db, input, scope) {
+  const modeled = db.prepare("SELECT 1 FROM work_items WHERE id=?").get(input.workItemId);
+  if (!modeled) {
+    if (input.ownership !== void 0) throw denied();
+    return;
+  }
+  if (!input.ownership) throw new KddError("modeled work requires ownership");
+  const owner = liveOwner(db, input.ownership);
+  const item = scopedWorkItem(db, { projectId: input.ownership.projectId, workItemId: input.workItemId });
+  if (owner.work_item_id !== input.workItemId || item.task.taskId !== input.taskId) throw denied();
+  if (scope.some((repo) => repo.write && (!owner.write_access || item.definition.repoId === null || item.definition.repoId !== repo.repoId))) {
+    throw new KddError("ownership writable repository mismatch");
+  }
+}
 function canonicalCheckout(path) {
-  if (typeof path !== "string" || !isAbsolute2(path) || !lstatSync3(path).isDirectory()) throw new KddError("invalid repository scope");
+  if (typeof path !== "string" || !isAbsolute3(path) || !lstatSync3(path).isDirectory()) throw new KddError("invalid repository scope");
   return realpathSync5(path);
 }
 function repositoryScope(db, input, native) {
@@ -2127,10 +3033,12 @@ function issueRunAuthority(handle, input) {
   const db = controllerDb(handle);
   return db.transaction(() => {
     if (!Number.isSafeInteger(input.taskId) || input.taskId < 1 || typeof input.workItemId !== "string" || !input.workItemId.trim() || typeof input.runId !== "string" || !input.runId.trim() || !Number.isSafeInteger(input.expectedGeneration) || input.expectedGeneration < 0 || input.expectedGeneration === Number.MAX_SAFE_INTEGER || !Number.isFinite(input.expiresAt) || input.expiresAt <= now() || !Array.isArray(input.operations) || !input.operations.length || new Set(input.operations).size !== input.operations.length || input.operations.some((operation) => !operations.includes(operation))) throw denied();
+    assertNoHandoff(db, input.taskId);
     const generation = db.prepare("SELECT COALESCE(MAX(generation),0) generation FROM run_authorities WHERE task_id=? AND work_item_id=?").get(input.taskId, input.workItemId).generation;
     if (generation !== input.expectedGeneration) throw new KddError("run authority generation fence changed");
     assertVerifiedCodexPackage(input.native);
     const repositories = repositoryScope(db, input.repositories, input.native);
+    modeledOwnership(db, input, repositories);
     privateStore(db, repositories, input.native);
     mark(db, input.taskId);
     const grant = {
@@ -2141,12 +3049,13 @@ function issueRunAuthority(handle, input) {
       generation: generation + 1,
       operations: [...input.operations],
       repositories,
+      ...input.ownership ? { ownership: { ...input.ownership } } : {},
       native: { readableRoots: [...input.native.readableRoots], writableRoot: input.native.writableRoot, scratchDir: input.native.scratchDir, configHash: input.native.configHash }
     };
-    const token = randomBytes2(32).toString("hex"), authorityId = randomBytes2(16).toString("hex");
+    const token = randomBytes3(32).toString("hex"), authorityId = randomBytes3(16).toString("hex");
     db.prepare("UPDATE run_authorities SET revoked_at=? WHERE task_id=? AND work_item_id=? AND revoked_at IS NULL").run(now(), input.taskId, input.workItemId);
     db.prepare("INSERT INTO run_authorities(authority_id,task_id,work_item_id,run_id,generation,expires_at,token_hash,grant_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)").run(authorityId, input.taskId, input.workItemId, input.runId, grant.generation, input.expiresAt, tokenHash(token), JSON.stringify(grant), now());
-    appendEvent(db, input.taskId, controllerActor, "authority_issued", { authorityId, workItemId: grant.workItemId, runId: grant.runId, generation: grant.generation });
+    appendEvent(db, input.taskId, controllerActor2, "authority_issued", { authorityId, workItemId: grant.workItemId, runId: grant.runId, generation: grant.generation });
     return { authorityId, generation: grant.generation, token };
   }).immediate();
 }
@@ -2156,13 +3065,11 @@ function revokeRunAuthority(handle, authorityId) {
     const row = db.prepare("SELECT task_id,generation FROM run_authorities WHERE authority_id=?").get(authorityId);
     if (!row) throw denied();
     if (db.prepare("UPDATE run_authorities SET revoked_at=? WHERE authority_id=? AND revoked_at IS NULL").run(now(), authorityId).changes) {
-      appendEvent(db, row.task_id, controllerActor, "authority_revoked", { authorityId, generation: row.generation });
+      appendEvent(db, row.task_id, controllerActor2, "authority_revoked", { authorityId, generation: row.generation });
     }
   }).immediate();
 }
-function lookup(db, token) {
-  if (typeof token !== "string" || !/^[0-9a-f]{64}$/.test(token)) throw denied();
-  const row = db.prepare("SELECT * FROM run_authorities WHERE token_hash=?").get(tokenHash(token));
+function currentAuthority(db, row) {
   if (!row || row.revoked_at !== null || !Number.isFinite(row.expires_at) || row.expires_at <= now()) throw denied();
   let grant;
   try {
@@ -2176,11 +3083,22 @@ function lookup(db, token) {
   try {
     const repositories = repositoryScope(db, grant.repositories, grant.native);
     if (JSON.stringify(repositories) !== JSON.stringify(grant.repositories)) throw denied();
+    modeledOwnership(db, grant, repositories);
     privateStore(db, repositories, grant.native);
   } catch {
     throw denied();
   }
   return { row, grant };
+}
+function assertRunAuthorityBinding(db, taskId, binding) {
+  const row = db.prepare(`SELECT * FROM run_authorities WHERE authority_id=? AND task_id=?
+    AND work_item_id=? AND run_id=? AND generation=?`).get(binding.authorityId, taskId, binding.workItemId, binding.runId, binding.generation);
+  currentAuthority(db, row);
+}
+function lookup(db, token) {
+  if (typeof token !== "string" || !/^[0-9a-f]{64}$/.test(token)) throw denied();
+  const row = db.prepare("SELECT * FROM run_authorities WHERE token_hash=?").get(tokenHash(token));
+  return currentAuthority(db, row);
 }
 function openRunContext(db, token) {
   return db.transaction(() => {
@@ -2369,8 +3287,8 @@ function addTask(db, input, actor) {
   return db.transaction(() => {
     const ts = now();
     const r = db.prepare(
-      `INSERT INTO tasks (title, body, priority, kind, area, track_id, position, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO tasks (title, body, priority, kind, area, track_id, position, created_at, updated_at, execution_mode)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       input.title,
       input.body ?? null,
@@ -2380,16 +3298,17 @@ function addTask(db, input, actor) {
       input.track_id ?? null,
       nextPosition(db, "new"),
       ts,
-      ts
+      ts,
+      projectOf(db).default_execution_mode
     );
     const id2 = Number(r.lastInsertRowid);
     const ins = db.prepare(
       `INSERT INTO criteria (task_id, text, position, created_at) VALUES (?, ?, ?, ?)`
     );
-    (input.criteria ?? []).forEach((text, i) => ins.run(id2, text, i, ts));
+    (input.criteria ?? []).forEach((text2, i) => ins.run(id2, text2, i, ts));
     appendTaskMutationEvent(db, id2, actor, "created");
     return mustGetTask(db, id2);
-  })();
+  }).immediate();
 }
 function editTask(db, id2, patch, actor) {
   if (patch.priority !== void 0) checkPriority(patch.priority);
@@ -2409,13 +3328,13 @@ function editTask(db, id2, patch, actor) {
 }
 function commentTask(db, id2, body, actor) {
   if (!body.trim()) throw new KddError("comment must not be empty");
-  const text = actor.type === "ai" ? redact(body) : body;
+  const text2 = actor.type === "ai" ? redact(body) : body;
   return db.transaction(() => {
     assertLegacyTaskMutation(db, [id2]);
     mustGetTask(db, id2);
     const r = db.prepare(
       `INSERT INTO comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)`
-    ).run(id2, authorOf(actor), text, now());
+    ).run(id2, authorOf(actor), text2, now());
     appendTaskMutationEvent(db, id2, actor, "commented");
     return db.prepare(`SELECT * FROM comments WHERE id = ?`).get(Number(r.lastInsertRowid));
   }).immediate();
@@ -2552,14 +3471,14 @@ function unarchiveTask(db, id2, actor) {
 }
 
 // src/files.ts
-import { createHash as createHash5 } from "crypto";
+import { createHash as createHash7 } from "crypto";
 import {
   existsSync as existsSync5,
   mkdirSync as mkdirSync5,
-  readFileSync as readFileSync4,
+  readFileSync as readFileSync5,
   renameSync as renameSync3,
   rmSync as rmSync4,
-  statSync,
+  statSync as statSync2,
   writeFileSync as writeFileSync4
 } from "fs";
 import { basename as basename2, dirname as dirname4, extname, join as join6 } from "path";
@@ -2608,18 +3527,18 @@ function attachFile(db, dbPath, taskId, srcPath, opts, actor) {
     assertLegacyTaskMutation(db, [taskId]);
     let data;
     try {
-      const stat = statSync(srcPath);
+      const stat = statSync2(srcPath);
       if (stat.isDirectory()) throw new KddError(`${srcPath} is a directory`);
       if (stat.size > CAPS.fileBytes) {
         throw new KddError(`file is ${stat.size} bytes, the limit is ${CAPS.fileBytes}`);
       }
-      data = readFileSync4(srcPath);
+      data = readFileSync5(srcPath);
     } catch (e) {
       if (e instanceof KddError) throw e;
       throw new KddError(`cannot read ${srcPath}: ${e.message}`);
     }
     mustGetTask(db, taskId);
-    const sha256 = createHash5("sha256").update(data).digest("hex");
+    const sha256 = createHash7("sha256").update(data).digest("hex");
     const ext = (extname(srcPath).slice(1) || "bin").toLowerCase();
     const target = join6(filesDir(dbPath), `${sha256}.${ext}`);
     if (!existsSync5(target)) {
@@ -2673,8 +3592,8 @@ function detachFile(db, dbPath, fileId, actor) {
 }
 
 // src/decisions.ts
-import { createHash as createHash6 } from "crypto";
-import { existsSync as existsSync6, mkdirSync as mkdirSync6, readFileSync as readFileSync5, readdirSync as readdirSync5, realpathSync as realpathSync6, writeFileSync as writeFileSync5 } from "fs";
+import { createHash as createHash8 } from "crypto";
+import { existsSync as existsSync6, mkdirSync as mkdirSync6, readFileSync as readFileSync6, readdirSync as readdirSync5, realpathSync as realpathSync6, writeFileSync as writeFileSync5 } from "fs";
 import { dirname as dirname5, join as join7 } from "path";
 function slugify(title) {
   const s = title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 60).replace(/-+$/, "");
@@ -2682,7 +3601,7 @@ function slugify(title) {
 }
 var normalize = (s) => s.replace(/\r\n/g, "\n").trim();
 function contentHash(title, body) {
-  return createHash6("sha256").update(`${normalize(title)}
+  return createHash8("sha256").update(`${normalize(title)}
 ${normalize(body)}`).digest("hex");
 }
 function normalizeSourceTasks(ids = []) {
@@ -2732,17 +3651,17 @@ ${renderDecisionBody(input)}
 `;
 }
 function parseDecisionMd(raw) {
-  const text = raw.replace(/\r\n/g, "\n");
+  const text2 = raw.replace(/\r\n/g, "\n");
   const fm = {};
-  let rest = text;
-  if (text.startsWith("---\n")) {
-    const end = text.indexOf("\n---\n", 4);
+  let rest = text2;
+  if (text2.startsWith("---\n")) {
+    const end = text2.indexOf("\n---\n", 4);
     if (end !== -1) {
-      for (const line of text.slice(4, end).split("\n")) {
+      for (const line of text2.slice(4, end).split("\n")) {
         const m = line.match(/^(\w+):\s*(.*)$/);
         if (m) fm[m[1]] = m[2].trim();
       }
-      rest = text.slice(end + 5);
+      rest = text2.slice(end + 5);
     }
   }
   const tm = rest.match(/^# (.+)$/m);
@@ -2762,7 +3681,7 @@ function supersede(db, dir, oldSlug, newSlug) {
   const p = join7(dir, `${oldSlug}.md`);
   if (!existsSync6(p)) throw new KddError(`decision '${oldSlug}' not found`);
   assertLegacyDecisionSource(db, dirname5(realpathSync6(p)));
-  let raw = readFileSync5(p, "utf8").replace(/\r\n/g, "\n");
+  let raw = readFileSync6(p, "utf8").replace(/\r\n/g, "\n");
   if (raw.startsWith("---\n") && /^status:/m.test(raw)) {
     raw = raw.replace(/^status:.*$/m, "status: superseded").replace(/^superseded_by:.*$/m, `superseded_by: ${newSlug}`);
   } else {
@@ -2797,7 +3716,7 @@ function addDecision(db, decisionsDir, input) {
     for (const file of readdirSync5(decisionsDir).filter((name) => name.endsWith(".md")).sort()) {
       const path2 = join7(decisionsDir, file);
       assertLegacyDecisionSource(db, dirname5(realpathSync6(path2)));
-      const doc = parseDecisionMd(readFileSync5(path2, "utf8"));
+      const doc = parseDecisionMd(readFileSync6(path2, "utf8"));
       if (doc.hash !== hash) continue;
       const slug2 = file.slice(0, -3);
       if (JSON.stringify(doc.sourceTasks) !== provenance) {
@@ -2810,7 +3729,7 @@ function addDecision(db, decisionsDir, input) {
   const dup = db.prepare(`SELECT slug, path FROM decisions WHERE content_hash = ?`).get(hash);
   if (dup) {
     assertLegacyDecisionSource(db, dirname5(realpathSync6(dup.path)));
-    const existing = parseDecisionMd(readFileSync5(dup.path, "utf8")).sourceTasks;
+    const existing = parseDecisionMd(readFileSync6(dup.path, "utf8")).sourceTasks;
     if (JSON.stringify(existing) !== provenance) {
       throw new KddError(`decision '${dup.slug}' provenance mismatch`);
     }
@@ -2838,7 +3757,7 @@ function addDecision(db, decisionsDir, input) {
 }
 
 // src/recall.ts
-import { existsSync as existsSync7, readFileSync as readFileSync6, readdirSync as readdirSync6, realpathSync as realpathSync7 } from "fs";
+import { existsSync as existsSync7, readFileSync as readFileSync7, readdirSync as readdirSync6, realpathSync as realpathSync7 } from "fs";
 import { dirname as dirname6, join as join8 } from "path";
 function syncIndex(db, decisionsDir) {
   db.transaction(() => {
@@ -2855,7 +3774,7 @@ function syncIndex(db, decisionsDir) {
         seen.add(slug);
         const path = join8(decisionsDir, f);
         if (!canSyncLegacyDecisions(db, dirname6(realpathSync7(path)))) continue;
-        const doc = parseDecisionMd(readFileSync6(path, "utf8"));
+        const doc = parseDecisionMd(readFileSync7(path, "utf8"));
         const title = doc.title || slug;
         const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
         const sourceTasks = JSON.stringify(doc.sourceTasks);
@@ -2959,7 +3878,7 @@ function rebuild(db, decisionsDir) {
 }
 
 // src/queries.ts
-import { existsSync as existsSync8, readFileSync as readFileSync7, realpathSync as realpathSync8 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync8, realpathSync as realpathSync8 } from "fs";
 import { dirname as dirname7 } from "path";
 var PRIORITY_ORDER = `CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
 function manualEvent(event) {
@@ -3005,7 +3924,7 @@ function manualHistory(events) {
   }
   return { ...latest ? { manual_provenance: latest } : {}, handoffs };
 }
-var READY_SQL = `(status = 'new' AND blocked = 0 AND archived_at IS NULL AND kind <> 'research')`;
+var READY_SQL = `(status = 'new' AND blocked = 0 AND archived_at IS NULL AND kind <> 'research' AND ${LEGACY_EXECUTION_SQL})`;
 function boardData(db, f = {}) {
   const where = [f.archived ? "archived_at IS NOT NULL" : "archived_at IS NULL"];
   const params = [];
@@ -3116,7 +4035,7 @@ function decisionDetail(db, decisionsDir, slug) {
   const trusted = canSyncLegacyDecisions(db, decisionsDir) && existsSync8(row.path) && canSyncLegacyDecisions(db, dirname7(realpathSync8(row.path)));
   const cached = trusted ? void 0 : db.prepare("SELECT body FROM search_index WHERE kind='decision' AND ref=?").get(slug);
   if (!trusted && !cached) throw new KddError(`decision '${slug}' has no indexed body`);
-  const doc = trusted ? parseDecisionMd(readFileSync7(row.path, "utf8")) : {
+  const doc = trusted ? parseDecisionMd(readFileSync8(row.path, "utf8")) : {
     status: row.superseded_by ? "superseded" : "active",
     indexBody: cached.body,
     sourceTasks: JSON.parse(row.source_tasks)
@@ -3239,10 +4158,10 @@ function exportEventDetail(detail, includeSensitive) {
       }
     }
     if (includeSensitive) return changed ? restoreNumbers(JSON.stringify(value)) : detail;
-    const redacted = JSON.stringify(value, (_key, text) => {
-      if (typeof text !== "string") return text;
-      const safe = redact(text);
-      if (safe !== text) changed = true;
+    const redacted = JSON.stringify(value, (_key, text2) => {
+      if (typeof text2 !== "string") return text2;
+      const safe = redact(text2);
+      if (safe !== text2) changed = true;
       return safe;
     });
     return changed ? restoreNumbers(redacted) : detail;
@@ -3271,7 +4190,7 @@ function exportBoard(db, decisionsDir, opts = {}) {
       created_at,parent_id,type,level FROM events ORDER BY id`).all().map((row) => ({ ...row, detail: exportEventDetail(row.detail, !!opts.includeSensitive) }));
     const files = db.prepare(`SELECT id,task_id,sha256,ext,original_name,mime_type,
       size_bytes,description,created_at FROM files ORDER BY id`).all();
-    const snapshot = {
+    const snapshot2 = {
       schema_version: 1,
       tasks,
       tracks,
@@ -3282,8 +4201,8 @@ function exportBoard(db, decisionsDir, opts = {}) {
       events,
       files
     };
-    return opts.includeSensitive ? snapshot : JSON.parse(JSON.stringify(
-      snapshot,
+    return opts.includeSensitive ? snapshot2 : JSON.parse(JSON.stringify(
+      snapshot2,
       (_key, value) => typeof value === "string" ? redact(value) : value
     ));
   })();
@@ -3313,6 +4232,7 @@ var SYSTEM = { type: "ai", id: "system" };
 function recordFailedAttempt(db, id2, actor, reason) {
   db.transaction(() => {
     assertLegacyTaskMutation(db, [id2]);
+    assertManualExecution(db, id2);
     db.prepare(`UPDATE tasks SET failed_attempts = failed_attempts + 1, updated_at = ? WHERE id = ?`).run(now(), id2);
     const fa = db.prepare(`SELECT failed_attempts FROM tasks WHERE id = ?`).get(id2).failed_attempts;
     if (fa >= MAX_FAILED_ATTEMPTS) {
@@ -3331,6 +4251,7 @@ function recordFailedAttempt(db, id2, actor, reason) {
 function releaseClaim(db, id2, actor, reason) {
   db.transaction(() => {
     assertLegacyTaskMutation(db, [id2]);
+    assertManualExecution(db, id2);
     db.prepare(
       `UPDATE tasks SET status='new', claimed_by=NULL, claim_expires=NULL, updated_at=? WHERE id=?`
     ).run(now(), id2);
@@ -3338,11 +4259,14 @@ function releaseClaim(db, id2, actor, reason) {
     recordFailedAttempt(db, id2, actor, reason);
   }).immediate();
 }
+function assertManualExecution(db, id2) {
+  if (mustGetTask(db, id2).execution_mode !== "manual") throw new KddError("orchestrated task requires controller execution");
+}
 function assertTtl(ttl) {
   if (!Number.isFinite(ttl) || ttl <= 0) throw new KddError(`invalid ttl '${ttl}' (seconds > 0)`);
 }
 var CLAIMABLE_SQL = `status = 'new' AND blocked = 0 AND archived_at IS NULL AND claimed_by IS NULL
-   AND NOT EXISTS (SELECT 1 FROM managed_task_policy p WHERE p.task_id=tasks.id)
+   AND ${LEGACY_EXECUTION_SQL}
    AND kind <> 'research'
    AND (SELECT COUNT(*) FROM criteria WHERE criteria.task_id = tasks.id) > 0`;
 var criteriaCount = (db, id2) => db.prepare(`SELECT COUNT(*) c FROM criteria WHERE task_id = ?`).get(id2).c;
@@ -3360,7 +4284,7 @@ function expiredLeases(db) {
   return db.prepare(
     `SELECT id, claimed_by FROM tasks
      WHERE status = 'in_progress' AND claim_expires IS NOT NULL AND claim_expires < ?
-       AND NOT EXISTS (SELECT 1 FROM managed_task_policy p WHERE p.task_id=tasks.id)`
+       AND ${LEGACY_EXECUTION_SQL}`
   ).all(now());
 }
 function reclaimExpired(db, opts = {}) {
@@ -3369,7 +4293,7 @@ function reclaimExpired(db, opts = {}) {
     const expired = expiredLeases(db).filter((e) => !opts.except?.has(e.id));
     assertLegacyTaskMutation(db, expired.map((row) => row.id));
     const clear = db.prepare(
-      `UPDATE tasks SET status='new', claimed_by=NULL, claim_expires=NULL, updated_at=? WHERE id=?`
+      `UPDATE tasks SET status='new', claimed_by=NULL, claim_expires=NULL, updated_at=? WHERE id=? AND ${LEGACY_EXECUTION_SQL}`
     );
     for (const e of expired) {
       clear.run(t, e.id);
@@ -3434,7 +4358,7 @@ function reapExpired(db, kill) {
 function stopWorkers(db, kill) {
   const live2 = db.prepare(
     `SELECT id, claimed_by FROM tasks WHERE status='in_progress' AND claimed_by IS NOT NULL
-     AND NOT EXISTS (SELECT 1 FROM managed_task_policy p WHERE p.task_id=tasks.id)`
+     AND ${LEGACY_EXECUTION_SQL}`
   ).all();
   const dead = [];
   let killed = 0;
@@ -3452,13 +4376,14 @@ function stopWorkers(db, kill) {
     dead.push({ id: l.id, claimedBy });
   }
   const released = db.transaction(() => {
-    assertLegacyTaskMutation(db, dead.map((row) => row.id));
+    const eligible = dead.filter((row) => db.prepare(`SELECT 1 FROM tasks WHERE id=? AND ${LEGACY_EXECUTION_SQL}`).get(row.id));
+    assertLegacyTaskMutation(db, eligible.map((row) => row.id));
     const clear = db.prepare(
       `UPDATE tasks SET status='new', claimed_by=NULL, claim_expires=NULL, updated_at=?
-       WHERE id=? AND status='in_progress' AND claimed_by=?`
+       WHERE id=? AND status='in_progress' AND claimed_by=? AND ${LEGACY_EXECUTION_SQL}`
     );
     let n = 0;
-    for (const d of dead) {
+    for (const d of eligible) {
       if (clear.run(now(), d.id, d.claimedBy).changes !== 1) continue;
       n++;
       appendEvent(
@@ -3481,10 +4406,12 @@ function stopWorkers(db, kill) {
 function claimTask(db, id2, actor, ttl = DEFAULT_TTL, opts = {}) {
   assertTtl(ttl);
   assertLegacyTaskMutation(db, [id2]);
+  if (mustGetTask(db, id2).execution_mode !== "manual") return { ok: false, error: "orchestrated task requires controller execution" };
   reapExpired(db, opts.kill);
   return db.transaction(() => {
     assertLegacyTaskMutation(db, [id2]);
     const t = mustGetTask(db, id2);
+    if (t.execution_mode !== "manual") return { ok: false, error: "orchestrated task requires controller execution" };
     if (t.kind === "research" && actor.type === "ai") {
       appendEvent(
         db,
@@ -3513,7 +4440,7 @@ function claimTask(db, id2, actor, ttl = DEFAULT_TTL, opts = {}) {
     const expires = now() + ttl;
     const r = db.prepare(
       `UPDATE tasks SET status='in_progress', claimed_by=?, claim_expires=?, updated_at=?
-       WHERE id=? AND status='new' AND blocked=0 AND archived_at IS NULL AND claimed_by IS NULL`
+       WHERE id=? AND status='new' AND blocked=0 AND archived_at IS NULL AND claimed_by IS NULL AND ${LEGACY_EXECUTION_SQL}`
     ).run(authorOf(actor), expires, now(), id2);
     if (r.changes !== 1) {
       return {
@@ -3536,7 +4463,7 @@ function claimNext(db, actor, ttl = DEFAULT_TTL, opts = {}) {
       const expires = now() + ttl;
       const r = db.prepare(
         `UPDATE tasks SET status='in_progress', claimed_by=?, claim_expires=?, updated_at=?
-         WHERE id=? AND status='new' AND blocked=0 AND archived_at IS NULL AND claimed_by IS NULL`
+         WHERE id=? AND status='new' AND blocked=0 AND archived_at IS NULL AND claimed_by IS NULL AND ${LEGACY_EXECUTION_SQL}`
       ).run(authorOf(actor), expires, now(), id2);
       if (r.changes === 1) {
         appendTaskMutationEvent(db, id2, actor, "claimed", { ttl, expires }, { type: "claim" });
@@ -3550,10 +4477,10 @@ function renewClaim(db, id2, actor, ttl = DEFAULT_TTL, opts = {}) {
   assertTtl(ttl);
   return db.transaction(() => {
     assertLegacyTaskMutation(db, [id2]);
-    mustGetTask(db, id2);
+    if (mustGetTask(db, id2).execution_mode !== "manual") return { ok: false, error: "orchestrated task requires controller execution" };
     const expires = now() + ttl;
     const r = db.prepare(
-      `UPDATE tasks SET claim_expires=?, updated_at=? WHERE id=? AND claimed_by=?`
+      `UPDATE tasks SET claim_expires=?, updated_at=? WHERE id=? AND claimed_by=? AND ${LEGACY_EXECUTION_SQL}`
     ).run(expires, now(), id2, authorOf(actor));
     if (r.changes !== 1) {
       return {
@@ -3696,14 +4623,14 @@ function sweepWorktrees(db, repoRoot, isBusy) {
 }
 
 // src/release.ts
-import { readFileSync as readFileSync8 } from "fs";
+import { readFileSync as readFileSync9 } from "fs";
 import { join as join10 } from "path";
 var pkgCache = null;
 function pkg() {
   if (pkgCache) return pkgCache;
   try {
     pkgCache = JSON.parse(
-      readFileSync8(join10(import.meta.dirname, "../package.json"), "utf8")
+      readFileSync9(join10(import.meta.dirname, "../package.json"), "utf8")
     );
   } catch {
     pkgCache = {};
@@ -3950,7 +4877,7 @@ function readReminded(db) {
 }
 
 // src/brief.ts
-import { existsSync as existsSync10, readFileSync as readFileSync9, readdirSync as readdirSync7, realpathSync as realpathSync10 } from "fs";
+import { existsSync as existsSync10, readFileSync as readFileSync10, readdirSync as readdirSync7, realpathSync as realpathSync10 } from "fs";
 import { dirname as dirname9, join as join11 } from "path";
 var lexical = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 function detailObject(detail) {
@@ -4017,7 +4944,7 @@ function readTaskDecisions(db, decisionsDir, taskId) {
   return readdirSync7(decisionsDir).filter((file) => file.endsWith(".md")).flatMap((file) => {
     const slug = file.slice(0, -3);
     if (!canSyncLegacyDecisions(db, dirname9(realpathSync10(join11(decisionsDir, file))))) return [];
-    const decision = parseDecisionMd(readFileSync9(join11(decisionsDir, file), "utf8"));
+    const decision = parseDecisionMd(readFileSync10(join11(decisionsDir, file), "utf8"));
     if (!decision.sourceTasks.includes(taskId)) return [];
     return [{
       slug,
@@ -4027,7 +4954,7 @@ function readTaskDecisions(db, decisionsDir, taskId) {
     }];
   });
 }
-function nextAction(task, criteria) {
+function nextAction(task, criteria, controlled) {
   if (task.status === "done") return { kind: "done", text: "Task is done; no action remains." };
   if (task.archived_at !== null) {
     return { kind: "archived", text: "Task is archived; no action remains." };
@@ -4038,6 +4965,7 @@ function nextAction(task, criteria) {
       text: task.block_reason ? `Resolve blocker: ${task.block_reason}` : "Resolve the task blocker."
     };
   }
+  if (controlled) return { kind: "await_controller", text: "Await controller execution or handoff." };
   if (task.status === "backlog") {
     return { kind: "start_work", text: "Move the task to new and start work." };
   }
@@ -4145,7 +5073,9 @@ function taskBrief(db, decisionsDir, id2) {
     priority: detail.task.priority,
     kind: detail.task.kind,
     area: detail.task.area === null ? null : capText(detail.task.area, 128),
-    archived_at: detail.task.archived_at
+    archived_at: detail.task.archived_at,
+    parent_id: detail.task.parent_id,
+    execution_mode: detail.task.execution_mode
   };
   const projectedCriteria = {
     items: criteria.map((criterion) => ({
@@ -4157,7 +5087,8 @@ function taskBrief(db, decisionsDir, id2) {
     })),
     omitted: 0
   };
-  const action = nextAction(task, projectedCriteria.items);
+  const controlled = task.execution_mode === "orchestrated" || !!db.prepare("SELECT 1 FROM managed_task_policy WHERE task_id=?").get(id2) || !!db.prepare("SELECT 1 FROM execution_handoffs WHERE task_id=? AND completed_at IS NULL").get(id2);
+  const action = nextAction(task, projectedCriteria.items, controlled);
   const actionSource = action.text;
   action.text = capText(action.text, 128);
   const brief = {
@@ -4219,6 +5150,242 @@ function taskBrief(db, decisionsDir, id2) {
     title: detail.task.title
   }, errorSource);
 }
+
+// src/execution_ownership.ts
+function ownerRecord(db, row) {
+  const item = scopedWorkItem(db, { projectId: JSON.parse(row.inputs_json).projectId, workItemId: row.work_item_id }, row.revision);
+  const inputs = JSON.parse(row.inputs_json);
+  return {
+    ref: { ...item.ref, revision: row.revision, ownerId: row.owner_id, fence: row.fence },
+    mode: row.mode,
+    write: row.write_access === 1,
+    inputsHash: inputs.inputsHash,
+    inputResults: inputs.inputResults,
+    launchIntent: row.launch_json === null ? null : JSON.parse(row.launch_json),
+    releasedAt: row.released_at
+  };
+}
+function ownership(handle, ref) {
+  const db = controllerDb(handle);
+  checkOwnershipRef(db, ref);
+  const row = db.prepare("SELECT * FROM work_item_owners WHERE work_item_id=? AND fence=? AND revision=? AND owner_id=?").get(ref.workItemId, ref.fence, ref.revision, ref.ownerId);
+  if (!row) throw new KddError("ownership not found");
+  return ownerRecord(db, row);
+}
+function reserveWorkItem(handle, input, observers = {}) {
+  const db = controllerDb(handle);
+  return db.transaction(() => {
+    shape(input, ["ref", "expectedRevision", "expectedFence", "expectedMode", "ownerId", "write"]);
+    integer(input.expectedRevision);
+    integer(input.expectedFence, 0);
+    mode(input.expectedMode);
+    text(input.ownerId);
+    if (typeof input.write !== "boolean") throw new KddError("invalid write access");
+    const item = scopedWorkItem(db, input.ref), task = mustGetTask(db, item.task.taskId);
+    assertNoHandoff(db, task.id);
+    if (item.revision !== input.expectedRevision || !inputsCurrent(db, item)) throw new KddError("stale revision or inputs");
+    if (item.fence !== input.expectedFence || item.fence === Number.MAX_SAFE_INTEGER) throw new KddError("ownership fence conflict or overflow");
+    if (task.execution_mode !== input.expectedMode) throw new KddError("execution mode changed");
+    if (task.blocked || task.archived_at !== null || !["new", "in_progress"].includes(task.status) || !["pending", "ready"].includes(item.state)) throw new KddError("work item not reservable");
+    if (!input.write && ["implementation", "integration"].includes(item.definition.kind)) throw new KddError("write ownership required");
+    if (db.prepare("SELECT 1 FROM work_item_owners WHERE work_item_id=? AND released_at IS NULL").get(item.ref.workItemId)) throw new KddError("work item already owned");
+    if (input.write) protectTask(handle, task.id);
+    const deps = resolveDependencies(handle, { ref: item.ref, expectedRevision: item.revision }, observers);
+    if (!deps.ready) throw new KddError("dependencies not verified");
+    const fence = item.fence + 1;
+    if (!db.prepare("UPDATE work_items SET fence=? WHERE id=? AND fence=? AND current_revision=?").run(fence, item.ref.workItemId, input.expectedFence, input.expectedRevision).changes) throw new KddError("ownership fence changed");
+    db.prepare("INSERT INTO work_item_owners(work_item_id,fence,revision,owner_id,mode,write_access,inputs_json,created_at) VALUES(?,?,?,?,?,?,?,?)").run(item.ref.workItemId, fence, item.revision, input.ownerId, input.expectedMode, Number(input.write), canonical({
+      projectId: item.ref.projectId,
+      inputsHash: item.inputsHash,
+      inputResults: deps.edges.map((e) => ({ edgeKey: e.key, resultId: e.resultId }))
+    }), now());
+    appendEvent(db, task.id, controllerActor, "work_item_reserved", { work_item_id: item.ref.workItemId, revision: item.revision, fence, owner_id: input.ownerId });
+    return ownership(handle, { ...item.ref, revision: item.revision, fence, ownerId: input.ownerId });
+  }).immediate();
+}
+function recordLaunchIntent(handle, input) {
+  const db = controllerDb(handle);
+  return db.transaction(() => {
+    shape(input, ["owner", "intent"]);
+    const owner = liveOwner(db, input.owner), item = scopedWorkItem(db, { projectId: input.owner.projectId, workItemId: input.owner.workItemId });
+    assertNoHandoff(db, item.task.taskId);
+    shape(input.intent, ["launchId", "writerScopeId"], ["authority"]);
+    text(input.intent.launchId);
+    text(input.intent.writerScopeId);
+    if (input.intent.authority !== void 0) {
+      checkAuthority(db, item.task, input.intent.authority);
+      const grant = JSON.parse(db.prepare("SELECT grant_json FROM run_authorities WHERE authority_id=?").get(input.intent.authority.authorityId).grant_json);
+      if (input.intent.authority.workItemId !== item.ref.workItemId || canonical(grant.ownership) !== canonical(input.owner)) throw new KddError("launch authority ownership mismatch");
+    }
+    if (owner.launch_json !== null) {
+      if (canonical(JSON.parse(owner.launch_json)) !== canonical(input.intent)) throw new KddError("launch intent already recorded");
+      return ownership(handle, input.owner);
+    }
+    db.prepare("UPDATE work_item_owners SET launch_id=?,launch_json=? WHERE work_item_id=? AND fence=? AND released_at IS NULL AND launch_id IS NULL").run(input.intent.launchId, canonical(input.intent), owner.work_item_id, owner.fence);
+    appendEvent(db, item.task.taskId, controllerActor, "work_item_launch_intent", { owner: input.owner, intent: input.intent });
+    return ownership(handle, input.owner);
+  }).immediate();
+}
+function snapshot(db, task) {
+  const rows = db.prepare("SELECT o.* FROM work_item_owners o JOIN work_items w ON w.id=o.work_item_id WHERE w.task_id=? AND o.released_at IS NULL ORDER BY o.work_item_id,o.fence").all(task.taskId);
+  const authorities = db.prepare(`SELECT a.authority_id,a.work_item_id,a.run_id,a.generation FROM run_authorities a
+    LEFT JOIN work_items w ON w.id=a.work_item_id WHERE a.task_id=? OR w.task_id=? ORDER BY a.authority_id`).all(task.taskId, task.taskId).map((a) => ({
+    authorityId: a.authority_id,
+    workItemId: a.work_item_id,
+    runId: a.run_id,
+    generation: a.generation
+  }));
+  return { owners: rows.map((row) => ownerRecord(db, row)), authorities };
+}
+function authorityTracked(db, record, authority) {
+  try {
+    const row = db.prepare("SELECT task_id,grant_json FROM run_authorities WHERE authority_id=? AND work_item_id=? AND run_id=? AND generation=?").get(authority.authorityId, authority.workItemId, authority.runId, authority.generation);
+    if (!row || row.task_id !== record.task.taskId) return false;
+    const grant = JSON.parse(row.grant_json);
+    if (grant.projectId !== record.task.projectId || grant.taskId !== row.task_id || grant.workItemId !== authority.workItemId || grant.runId !== authority.runId || grant.generation !== authority.generation || !grant.ownership) return false;
+    checkOwnershipRef(db, grant.ownership);
+    const ref = grant.ownership;
+    if (ref.workItemId !== authority.workItemId) return false;
+    if (record.owners.some((owner) => canonical(owner.ref) === canonical(ref))) return true;
+    return !!db.prepare(`SELECT 1 FROM work_item_owners o JOIN work_items w ON w.id=o.work_item_id
+      JOIN execution_handoffs h ON h.id=o.release_handoff_id AND h.task_id=w.task_id
+      WHERE w.task_id=? AND o.work_item_id=? AND o.fence=? AND o.revision=? AND o.owner_id=?
+        AND o.released_at IS NOT NULL AND h.completed_at IS NOT NULL`).get(record.task.taskId, ref.workItemId, ref.fence, ref.revision, ref.ownerId);
+  } catch {
+    return false;
+  }
+}
+function readHandoff(db, id2) {
+  text(id2);
+  const row = db.prepare("SELECT * FROM execution_handoffs WHERE id=?").get(id2);
+  if (!row) throw new KddError("handoff not found");
+  return row;
+}
+function handoffRecord(db, row) {
+  const snap = JSON.parse(row.snapshot_json);
+  const projectId = projectOf(db).project_id;
+  return {
+    id: row.id,
+    commandId: row.command_id,
+    task: { projectId, taskId: row.task_id },
+    expectedMode: row.expected_mode,
+    targetMode: row.target_mode,
+    owners: snap.owners,
+    authorities: snap.authorities,
+    receipt: row.receipt_json === null ? null : JSON.parse(row.receipt_json)
+  };
+}
+function handoff(handle, handoffId) {
+  const db = controllerDb(handle);
+  return handoffRecord(db, readHandoff(db, handoffId));
+}
+function beginHandoff(handle, input) {
+  const db = controllerDb(handle);
+  return db.transaction(() => {
+    shape(input, ["commandId", "task", "expectedMode", "targetMode", "expectedOwners"]);
+    text(input.commandId);
+    mode(input.expectedMode);
+    mode(input.targetMode);
+    const task = scopedTask(db, input.task);
+    if (!Array.isArray(input.expectedOwners)) throw new KddError("invalid owner set");
+    input.expectedOwners.forEach((ref) => checkOwnershipRef(db, ref));
+    const expected = [...input.expectedOwners].sort((a, b) => a.workItemId.localeCompare(b.workItemId) || a.fence - b.fence);
+    const replay = db.prepare("SELECT id FROM execution_handoffs WHERE command_id=?").get(input.commandId);
+    if (replay) {
+      const prior = handoffRecord(db, readHandoff(db, replay.id));
+      if (canonical(prior.task) !== canonical(input.task) || prior.expectedMode !== input.expectedMode || prior.targetMode !== input.targetMode || canonical(prior.owners.map((o) => o.ref)) !== canonical(expected)) throw new KddError("handoff command conflict");
+      return prior;
+    }
+    assertNoHandoff(db, task.id);
+    if (task.execution_mode !== input.expectedMode) throw new KddError("execution mode changed");
+    if (task.claimed_by !== null) throw new KddError("legacy writer must stop before handoff");
+    const snap = snapshot(db, input.task);
+    if (canonical(snap.owners.map((o) => o.ref)) !== canonical(expected)) throw new KddError("handoff owner snapshot mismatch");
+    const id2 = newId();
+    db.prepare("INSERT INTO execution_handoffs(id,command_id,task_id,expected_mode,target_mode,snapshot_json,created_at) VALUES(?,?,?,?,?,?,?)").run(id2, input.commandId, task.id, input.expectedMode, input.targetMode, canonical({ ...snap, projectId: input.task.projectId }), now());
+    appendEvent(db, task.id, controllerActor, "execution_handoff_intent", { handoff_id: id2, expected_mode: input.expectedMode, target_mode: input.targetMode, owners: expected });
+    return handoffRecord(db, readHandoff(db, id2));
+  }).immediate();
+}
+function stopReason(owner, observation, startedAt) {
+  try {
+    if (!observation) return "unknown";
+    shape(observation, ["observationId", "owner", "launchId", "writerScopeId", "observedAt", "verdict", "complete", "writers"]);
+    text(observation.observationId);
+    if (canonical(observation.owner) !== canonical(owner.ref) || observation.launchId !== owner.launchIntent.launchId || observation.writerScopeId !== owner.launchIntent.writerScopeId || !Number.isFinite(observation.observedAt) || observation.observedAt < startedAt || observation.observedAt > now()) return "stale_observation";
+    if (typeof observation.complete !== "boolean" || !Array.isArray(observation.writers) || !observation.writers.length) return "unknown";
+    const ids = /* @__PURE__ */ new Set();
+    for (const writer of observation.writers) {
+      shape(writer, ["id", "state"]);
+      text(writer.id);
+      if (ids.has(writer.id)) return "unknown";
+      ids.add(writer.id);
+      if (!["gone", "alive", "unknown"].includes(writer.state)) return "unknown";
+    }
+    if (observation.verdict === "live" || observation.writers.some((w) => w.state === "alive")) return "live";
+    if (observation.verdict !== "stopped" || !observation.complete || observation.writers.some((w) => w.state !== "gone")) return "unknown";
+    return null;
+  } catch {
+    return "stale_observation";
+  }
+}
+async function finishHandoff(handle, input, observer) {
+  const db = controllerDb(handle);
+  shape(input, ["handoffId"]);
+  const record = handoffRecord(db, readHandoff(db, input.handoffId));
+  if (record.receipt) return { status: "complete", receipt: record.receipt };
+  const held = (reason) => {
+    return db.transaction(() => {
+      const current = handoffRecord(db, readHandoff(db, record.id));
+      if (current.receipt) return { status: "complete", receipt: current.receipt };
+      appendEvent(db, record.task.taskId, controllerActor, "execution_handoff_held", { handoff_id: record.id, reason });
+      return { status: "held", handoffId: record.id, reason };
+    }).immediate();
+  };
+  if (record.authorities.some((authority) => !authorityTracked(db, record, authority))) return held("unknown");
+  const stops = [];
+  for (const owner of record.owners) {
+    if (owner.launchIntent === null) {
+      stops.push({ owner: owner.ref, outcome: "never_started" });
+      continue;
+    }
+    if (typeof observer !== "function") return held("missing_observer");
+    let observation;
+    const startedAt = now();
+    try {
+      observation = await observer(structuredClone(owner));
+    } catch {
+      return held("observer_error");
+    }
+    const reason = stopReason(owner, observation, startedAt);
+    if (reason) return held(reason);
+    stops.push({ owner: owner.ref, outcome: "stopped", observationId: observation.observationId, launchId: owner.launchIntent.launchId, writerScopeId: owner.launchIntent.writerScopeId });
+  }
+  controllerDb(handle);
+  return db.transaction(() => {
+    const current = handoffRecord(db, readHandoff(db, record.id));
+    if (current.receipt) return { status: "complete", receipt: current.receipt };
+    const task = scopedTask(db, record.task), snap = snapshot(db, record.task);
+    if (task.execution_mode !== record.expectedMode || task.claimed_by !== null || canonical(snap.owners) !== canonical(record.owners) || canonical(snap.authorities) !== canonical(record.authorities) || record.owners.some((owner) => {
+      const item = scopedWorkItem(db, { projectId: owner.ref.projectId, workItemId: owner.ref.workItemId });
+      return item.revision !== owner.ref.revision || item.fence !== owner.ref.fence;
+    })) return held("snapshot_changed");
+    if (record.authorities.some((authority) => !authorityTracked(db, record, authority))) return held("unknown");
+    for (const owner of record.owners) db.prepare("UPDATE work_item_owners SET released_at=?,release_handoff_id=? WHERE work_item_id=? AND fence=? AND released_at IS NULL").run(now(), record.id, owner.ref.workItemId, owner.ref.fence);
+    const revokedAuthorityIds = [];
+    for (const authority of record.authorities) {
+      if (db.prepare("SELECT 1 FROM run_authorities WHERE authority_id=? AND revoked_at IS NULL").get(authority.authorityId)) {
+        revokeRunAuthority(handle, authority.authorityId);
+        revokedAuthorityIds.push(authority.authorityId);
+      }
+    }
+    db.prepare("UPDATE tasks SET execution_mode=?,updated_at=? WHERE id=?").run(record.targetMode, now(), task.id);
+    const receipt = { handoffId: record.id, task: record.task, mode: record.targetMode, released: record.owners.map((o) => o.ref), revokedAuthorityIds, stops };
+    db.prepare("UPDATE execution_handoffs SET completed_at=?,receipt_json=? WHERE id=? AND completed_at IS NULL").run(now(), canonical(receipt), record.id);
+    appendEvent(db, task.id, controllerActor, "execution_handoff_completed", receipt);
+    return { status: "complete", receipt };
+  }).immediate();
+}
 export {
   BUG_BODY_TEMPLATE,
   CAPS,
@@ -4246,11 +5413,13 @@ export {
   archiveTask,
   assertLegacyDecisionSource,
   assertLegacyTaskMutation,
+  assertRunAuthorityBinding,
   assertVerifiedCodexPackage,
   assertWritableRoots,
   attachFile,
   attentionData,
   authorOf,
+  beginHandoff,
   bindRepository,
   bindingsOf,
   blockTask,
@@ -4267,24 +5436,33 @@ export {
   closeDb,
   commentTask,
   compareVersions,
+  completeWorkItem,
   contentHash,
+  createSubtaskPlan,
+  createSubtasks,
   createTrack,
+  createWorkItem,
   decisionDetail,
   deleteTrack,
   detachFile,
   editTask,
   editTrack,
+  endWorkItem,
   ensureWorktree,
   expiredLeases,
   exportBoard,
   filePath,
   filesDir,
+  finishHandoff,
   getAutoTick,
   getFile,
   getLastRun,
   getReminded,
+  handoff,
   headCommit,
   initializeProjectStore,
+  inspectDependencies,
+  invalidateResult,
   isInlineMime,
   issueRunAuthority,
   kddHome,
@@ -4296,6 +5474,7 @@ export {
   listFiles,
   listProjectCheckouts,
   listProjects,
+  listSubtasks,
   listTracks,
   logError,
   lookupProjectStore,
@@ -4312,6 +5491,7 @@ export {
   openController,
   openDb,
   openRunContext,
+  ownership,
   parseClaudeStreamLine,
   parseDecisionMd,
   parseRepoUrl,
@@ -4322,6 +5502,7 @@ export {
   projectToplevelOf,
   protectTask,
   pruneAgentEvents,
+  publishResult,
   readRunContext,
   reapExpired,
   rebindRepository,
@@ -4329,6 +5510,7 @@ export {
   recall,
   reclaimExpired,
   recordFailedAttempt,
+  recordLaunchIntent,
   redact,
   releaseClaim,
   releaseInfo,
@@ -4339,9 +5521,13 @@ export {
   repoSlug,
   repositoriesOf,
   requestRunQuestion,
+  reserveWorkItem,
   resolveDbPath,
   resolveDecisionsDir,
+  resolveDependencies,
   resolveToplevel,
+  result,
+  reviseWorkItem,
   revokeRunAuthority,
   runOperations,
   runProduced,
@@ -4351,6 +5537,7 @@ export {
   setLastRun,
   setProjectToplevel,
   setReminded,
+  setWorkItemWaiting,
   slugify,
   spawnCheckedNative,
   statusDigest,
@@ -4362,8 +5549,10 @@ export {
   syncedTaskDetail,
   taskBranchHead,
   taskBrief,
+  taskContractHash,
   taskDetail,
   taskDetailCapped,
+  taskWorkItems,
   tick,
   unarchiveTask,
   unblockTask,
@@ -4371,5 +5560,6 @@ export {
   updateDisposition,
   versionChannel,
   withNativeControllerLock,
+  workItem,
   worktreePath
 };

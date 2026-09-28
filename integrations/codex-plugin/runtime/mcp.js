@@ -21117,21 +21117,21 @@ import Database3 from "better-sqlite3";
 import { realpathSync as realpathSync2 } from "fs";
 import Database4 from "better-sqlite3";
 import { execFileSync as execFileSync5 } from "child_process";
-import { createHash as createHash5 } from "crypto";
+import { createHash as createHash7 } from "crypto";
 import {
   existsSync as existsSync5,
   mkdirSync as mkdirSync5,
-  readFileSync as readFileSync4,
+  readFileSync as readFileSync5,
   renameSync as renameSync3,
   rmSync as rmSync4,
-  statSync,
+  statSync as statSync2,
   writeFileSync as writeFileSync4
 } from "fs";
 import { basename as basename2, dirname as dirname4, extname, join as join6 } from "path";
-import { createHash as createHash6 } from "crypto";
-import { existsSync as existsSync7, readFileSync as readFileSync6, readdirSync as readdirSync6, realpathSync as realpathSync7 } from "fs";
+import { createHash as createHash8 } from "crypto";
+import { existsSync as existsSync7, readFileSync as readFileSync7, readdirSync as readdirSync6, realpathSync as realpathSync7 } from "fs";
 import { dirname as dirname6, join as join8 } from "path";
-import { existsSync as existsSync10, readFileSync as readFileSync9, readdirSync as readdirSync7, realpathSync as realpathSync10 } from "fs";
+import { existsSync as existsSync10, readFileSync as readFileSync10, readdirSync as readdirSync7, realpathSync as realpathSync10 } from "fs";
 import { dirname as dirname9, join as join11 } from "path";
 var CAPS = {
   briefBytes: 4096,
@@ -21426,6 +21426,113 @@ var MIGRATIONS = [
   );
   CREATE UNIQUE INDEX idx_run_authorities_current ON run_authorities(task_id,work_item_id)
     WHERE revoked_at IS NULL;
+  `,
+  // v15: task membership, immutable execution contracts and fenced ownership.
+  `
+ALTER TABLE tasks ADD COLUMN parent_id INTEGER REFERENCES tasks(id);
+ALTER TABLE tasks ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'manual'
+  CHECK(execution_mode IN ('manual','orchestrated'));
+CREATE INDEX idx_tasks_parent ON tasks(parent_id);
+CREATE TRIGGER task_parent_insert BEFORE INSERT ON tasks WHEN NEW.parent_id IS NOT NULL BEGIN
+  SELECT CASE WHEN NEW.parent_id=NEW.id OR NOT EXISTS
+    (SELECT 1 FROM tasks WHERE id=NEW.parent_id AND parent_id IS NULL)
+    THEN RAISE(ABORT,'invalid root parent') END;
+END;
+CREATE TRIGGER task_parent_update BEFORE UPDATE OF parent_id ON tasks
+WHEN NEW.parent_id IS NOT OLD.parent_id BEGIN
+  SELECT CASE WHEN NEW.parent_id IS NOT NULL AND
+    (NEW.parent_id=NEW.id OR NOT EXISTS
+      (SELECT 1 FROM tasks WHERE id=NEW.parent_id AND parent_id IS NULL)
+      OR EXISTS (SELECT 1 FROM tasks WHERE parent_id=OLD.id))
+    THEN RAISE(ABORT,'invalid root parent') END;
+END;
+CREATE TABLE work_items (
+  id TEXT PRIMARY KEY, task_id INTEGER NOT NULL REFERENCES tasks(id),
+  current_revision INTEGER NOT NULL CHECK(typeof(current_revision)='integer' AND current_revision BETWEEN 1 AND 9007199254740991),
+  state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN
+    ('pending','ready','running','waiting_input','retry_wait','completed','failed','cancelled')),
+  fence INTEGER NOT NULL DEFAULT 0 CHECK(typeof(fence)='integer' AND fence BETWEEN 0 AND 9007199254740991),
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY(id,current_revision) REFERENCES work_item_revisions(work_item_id,revision) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX idx_work_items_task ON work_items(task_id);
+CREATE TABLE work_item_revisions (
+  work_item_id TEXT NOT NULL REFERENCES work_items(id),
+  revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision BETWEEN 1 AND 9007199254740991),
+  definition_json TEXT NOT NULL CHECK(json_valid(definition_json)),
+  inputs_json TEXT NOT NULL CHECK(json_valid(inputs_json)),
+  inputs_hash TEXT NOT NULL, created_at INTEGER NOT NULL,
+  PRIMARY KEY(work_item_id,revision)
+);
+CREATE TABLE work_item_dependencies (
+  consumer_id TEXT NOT NULL, consumer_revision INTEGER NOT NULL,
+  edge_key TEXT NOT NULL, producer_id TEXT NOT NULL, producer_revision INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('contract','code','merged','readiness')),
+  output_key TEXT NOT NULL, binding_json TEXT NOT NULL CHECK(json_valid(binding_json)),
+  pinned_result_id TEXT REFERENCES work_item_results(id),
+  PRIMARY KEY(consumer_id,consumer_revision,edge_key), CHECK(consumer_id<>producer_id),
+  FOREIGN KEY(consumer_id,consumer_revision) REFERENCES work_item_revisions(work_item_id,revision),
+  FOREIGN KEY(producer_id,producer_revision) REFERENCES work_item_revisions(work_item_id,revision)
+);
+CREATE INDEX idx_work_item_dependencies_producer ON work_item_dependencies(producer_id);
+CREATE TABLE work_item_results (
+  id TEXT PRIMARY KEY, command_id TEXT NOT NULL UNIQUE, command_hash TEXT NOT NULL,
+  producer_id TEXT NOT NULL, producer_revision INTEGER NOT NULL, output_key TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('contract','code','merged','readiness')),
+  payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+  source_json TEXT NOT NULL CHECK(json_valid(source_json)), created_at INTEGER NOT NULL,
+  invalidated_at INTEGER, invalidation_reason TEXT,
+  successor_id TEXT REFERENCES work_item_results(id) DEFERRABLE INITIALLY DEFERRED,
+  FOREIGN KEY(producer_id,producer_revision) REFERENCES work_item_revisions(work_item_id,revision)
+);
+CREATE UNIQUE INDEX idx_work_item_results_current
+  ON work_item_results(producer_id,producer_revision,output_key) WHERE invalidated_at IS NULL;
+CREATE TABLE work_item_owners (
+  work_item_id TEXT NOT NULL, fence INTEGER NOT NULL
+    CHECK(typeof(fence)='integer' AND fence BETWEEN 1 AND 9007199254740991),
+  revision INTEGER NOT NULL, owner_id TEXT NOT NULL,
+  mode TEXT NOT NULL CHECK(mode IN ('manual','orchestrated')),
+  write_access INTEGER NOT NULL CHECK(write_access IN (0,1)),
+  inputs_json TEXT NOT NULL CHECK(json_valid(inputs_json)),
+  launch_id TEXT, launch_json TEXT CHECK(launch_json IS NULL OR json_valid(launch_json)),
+  created_at INTEGER NOT NULL, released_at INTEGER, release_handoff_id TEXT REFERENCES execution_handoffs(id),
+  PRIMARY KEY(work_item_id,fence),
+  FOREIGN KEY(work_item_id,revision) REFERENCES work_item_revisions(work_item_id,revision),
+  CHECK((launch_id IS NULL)=(launch_json IS NULL)),
+  CHECK((released_at IS NULL)=(release_handoff_id IS NULL))
+);
+CREATE UNIQUE INDEX idx_work_item_owners_live ON work_item_owners(work_item_id) WHERE released_at IS NULL;
+CREATE TABLE execution_handoffs (
+  id TEXT PRIMARY KEY, command_id TEXT NOT NULL UNIQUE, task_id INTEGER NOT NULL REFERENCES tasks(id),
+  expected_mode TEXT NOT NULL CHECK(expected_mode IN ('manual','orchestrated')),
+  target_mode TEXT NOT NULL CHECK(target_mode IN ('manual','orchestrated')),
+  snapshot_json TEXT NOT NULL CHECK(json_valid(snapshot_json)), created_at INTEGER NOT NULL,
+  completed_at INTEGER, receipt_json TEXT CHECK(receipt_json IS NULL OR json_valid(receipt_json)),
+  CHECK((completed_at IS NULL)=(receipt_json IS NULL))
+);
+CREATE UNIQUE INDEX idx_execution_handoffs_live ON execution_handoffs(task_id) WHERE completed_at IS NULL;
+CREATE TRIGGER work_item_revisions_immutable_update BEFORE UPDATE ON work_item_revisions
+BEGIN SELECT RAISE(ABORT,'immutable work item revision'); END;
+CREATE TRIGGER work_item_revisions_immutable_delete BEFORE DELETE ON work_item_revisions
+BEGIN SELECT RAISE(ABORT,'immutable work item revision'); END;
+CREATE TRIGGER work_item_dependencies_immutable BEFORE UPDATE OF
+  consumer_id,consumer_revision,edge_key,producer_id,producer_revision,kind,output_key,binding_json
+  ON work_item_dependencies BEGIN SELECT RAISE(ABORT,'immutable dependency'); END;
+CREATE TRIGGER work_item_dependencies_no_delete BEFORE DELETE ON work_item_dependencies
+BEGIN SELECT RAISE(ABORT,'immutable dependency'); END;
+CREATE TRIGGER work_item_dependencies_pin BEFORE UPDATE OF pinned_result_id ON work_item_dependencies
+WHEN OLD.pinned_result_id IS NOT NULL AND NEW.pinned_result_id IS NOT OLD.pinned_result_id
+BEGIN SELECT RAISE(ABORT,'dependency result already pinned'); END;
+CREATE TRIGGER work_item_results_immutable BEFORE UPDATE OF
+  id,command_id,command_hash,producer_id,producer_revision,output_key,kind,payload_json,source_json,created_at
+  ON work_item_results BEGIN SELECT RAISE(ABORT,'immutable result payload'); END;
+CREATE TRIGGER work_item_results_no_delete BEFORE DELETE ON work_item_results
+BEGIN SELECT RAISE(ABORT,'immutable result payload'); END;
+CREATE TRIGGER work_item_results_no_revalidate BEFORE UPDATE OF invalidated_at,invalidation_reason,successor_id
+  ON work_item_results WHEN OLD.invalidated_at IS NOT NULL AND
+    (NEW.invalidated_at IS NOT OLD.invalidated_at OR NEW.invalidation_reason IS NOT OLD.invalidation_reason
+      OR NEW.successor_id IS NOT OLD.successor_id)
+BEGIN SELECT RAISE(ABORT,'result invalidation is final'); END;
   `
 ];
 function projectOf(db) {
@@ -21829,6 +21936,9 @@ function checkMove(from, to, actor, reason, openCriteria2 = 0, claimedBy = null,
   }
   return { ok: true };
 }
+var LEGACY_EXECUTION_SQL = `execution_mode='manual'
+  AND NOT EXISTS (SELECT 1 FROM managed_task_policy p WHERE p.task_id=tasks.id)
+  AND NOT EXISTS (SELECT 1 FROM execution_handoffs h WHERE h.task_id=tasks.id AND h.completed_at IS NULL)`;
 var SECRETS = [
   [/-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----/g, "[redacted key]"],
   [/\bsk-[A-Za-z0-9_-]{16,}/g, "[redacted]"],
@@ -21868,6 +21978,9 @@ function assertLegacyTaskMutation(db, taskIds) {
   if (ids.some((id2) => !Number.isSafeInteger(id2) || id2 < 1)) throw new KddError("invalid task ids");
   if (ids.length && db.prepare(`SELECT task_id FROM managed_task_policy WHERE task_id IN (${ids.map(() => "?").join(",")}) LIMIT 1`).get(...ids)) {
     throw new KddError("managed task requires controller authority");
+  }
+  if (ids.length && db.prepare(`SELECT task_id FROM execution_handoffs WHERE completed_at IS NULL AND task_id IN (${ids.map(() => "?").join(",")}) LIMIT 1`).get(...ids)) {
+    throw new KddError("task handoff requires controller authority");
   }
 }
 function mustGetTrack(db, id2) {
@@ -21964,13 +22077,13 @@ function editTask(db, id2, patch, actor) {
 }
 function commentTask(db, id2, body, actor) {
   if (!body.trim()) throw new KddError("comment must not be empty");
-  const text = actor.type === "ai" ? redact(body) : body;
+  const text2 = actor.type === "ai" ? redact(body) : body;
   return db.transaction(() => {
     assertLegacyTaskMutation(db, [id2]);
     mustGetTask(db, id2);
     const r = db.prepare(
       `INSERT INTO comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)`
-    ).run(id2, authorOf(actor), text, now());
+    ).run(id2, authorOf(actor), text2, now());
     appendTaskMutationEvent(db, id2, actor, "commented");
     return db.prepare(`SELECT * FROM comments WHERE id = ?`).get(Number(r.lastInsertRowid));
   }).immediate();
@@ -22063,18 +22176,18 @@ function attachFile(db, dbPath, taskId, srcPath, opts, actor) {
     assertLegacyTaskMutation(db, [taskId]);
     let data;
     try {
-      const stat = statSync(srcPath);
+      const stat = statSync2(srcPath);
       if (stat.isDirectory()) throw new KddError(`${srcPath} is a directory`);
       if (stat.size > CAPS.fileBytes) {
         throw new KddError(`file is ${stat.size} bytes, the limit is ${CAPS.fileBytes}`);
       }
-      data = readFileSync4(srcPath);
+      data = readFileSync5(srcPath);
     } catch (e) {
       if (e instanceof KddError) throw e;
       throw new KddError(`cannot read ${srcPath}: ${e.message}`);
     }
     mustGetTask(db, taskId);
-    const sha256 = createHash5("sha256").update(data).digest("hex");
+    const sha256 = createHash7("sha256").update(data).digest("hex");
     const ext = (extname(srcPath).slice(1) || "bin").toLowerCase();
     const target = join6(filesDir(dbPath), `${sha256}.${ext}`);
     if (!existsSync5(target)) {
@@ -22128,7 +22241,7 @@ function detachFile(db, dbPath, fileId, actor) {
 }
 var normalize = (s) => s.replace(/\r\n/g, "\n").trim();
 function contentHash(title, body) {
-  return createHash6("sha256").update(`${normalize(title)}
+  return createHash8("sha256").update(`${normalize(title)}
 ${normalize(body)}`).digest("hex");
 }
 function normalizeSourceTasks(ids = []) {
@@ -22153,17 +22266,17 @@ function parseSourceTasks(value) {
   }
 }
 function parseDecisionMd(raw) {
-  const text = raw.replace(/\r\n/g, "\n");
+  const text2 = raw.replace(/\r\n/g, "\n");
   const fm = {};
-  let rest = text;
-  if (text.startsWith("---\n")) {
-    const end = text.indexOf("\n---\n", 4);
+  let rest = text2;
+  if (text2.startsWith("---\n")) {
+    const end = text2.indexOf("\n---\n", 4);
     if (end !== -1) {
-      for (const line of text.slice(4, end).split("\n")) {
+      for (const line of text2.slice(4, end).split("\n")) {
         const m = line.match(/^(\w+):\s*(.*)$/);
         if (m) fm[m[1]] = m[2].trim();
       }
-      rest = text.slice(end + 5);
+      rest = text2.slice(end + 5);
     }
   }
   const tm = rest.match(/^# (.+)$/m);
@@ -22194,7 +22307,7 @@ function syncIndex(db, decisionsDir) {
         seen.add(slug);
         const path = join8(decisionsDir, f);
         if (!canSyncLegacyDecisions(db, dirname6(realpathSync7(path)))) continue;
-        const doc = parseDecisionMd(readFileSync6(path, "utf8"));
+        const doc = parseDecisionMd(readFileSync7(path, "utf8"));
         const title = doc.title || slug;
         const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
         const sourceTasks = JSON.stringify(doc.sourceTasks);
@@ -22325,7 +22438,7 @@ function manualHistory(events) {
   }
   return { ...latest ? { manual_provenance: latest } : {}, handoffs };
 }
-var READY_SQL = `(status = 'new' AND blocked = 0 AND archived_at IS NULL AND kind <> 'research')`;
+var READY_SQL = `(status = 'new' AND blocked = 0 AND archived_at IS NULL AND kind <> 'research' AND ${LEGACY_EXECUTION_SQL})`;
 function boardData(db, f = {}) {
   const where = [f.archived ? "archived_at IS NOT NULL" : "archived_at IS NULL"];
   const params = [];
@@ -22428,6 +22541,10 @@ function syncedTaskDetail(db, decisionsDir, id2, full = false) {
   return full ? taskDetail(db, id2) : taskDetailCapped(db, id2);
 }
 var DEFAULT_TTL = 15 * 60;
+var CLAIMABLE_SQL = `status = 'new' AND blocked = 0 AND archived_at IS NULL AND claimed_by IS NULL
+   AND ${LEGACY_EXECUTION_SQL}
+   AND kind <> 'research'
+   AND (SELECT COUNT(*) FROM criteria WHERE criteria.task_id = tasks.id) > 0`;
 var OK_TTL = 60 * 60 * 1e3;
 var ERR_TTL = 5 * 60 * 1e3;
 var lexical = (a, b) => a < b ? -1 : a > b ? 1 : 0;
@@ -22495,7 +22612,7 @@ function readTaskDecisions(db, decisionsDir, taskId) {
   return readdirSync7(decisionsDir).filter((file) => file.endsWith(".md")).flatMap((file) => {
     const slug = file.slice(0, -3);
     if (!canSyncLegacyDecisions(db, dirname9(realpathSync10(join11(decisionsDir, file))))) return [];
-    const decision = parseDecisionMd(readFileSync9(join11(decisionsDir, file), "utf8"));
+    const decision = parseDecisionMd(readFileSync10(join11(decisionsDir, file), "utf8"));
     if (!decision.sourceTasks.includes(taskId)) return [];
     return [{
       slug,
@@ -22505,7 +22622,7 @@ function readTaskDecisions(db, decisionsDir, taskId) {
     }];
   });
 }
-function nextAction(task, criteria) {
+function nextAction(task, criteria, controlled) {
   if (task.status === "done") return { kind: "done", text: "Task is done; no action remains." };
   if (task.archived_at !== null) {
     return { kind: "archived", text: "Task is archived; no action remains." };
@@ -22516,6 +22633,7 @@ function nextAction(task, criteria) {
       text: task.block_reason ? `Resolve blocker: ${task.block_reason}` : "Resolve the task blocker."
     };
   }
+  if (controlled) return { kind: "await_controller", text: "Await controller execution or handoff." };
   if (task.status === "backlog") {
     return { kind: "start_work", text: "Move the task to new and start work." };
   }
@@ -22623,7 +22741,9 @@ function taskBrief(db, decisionsDir, id2) {
     priority: detail.task.priority,
     kind: detail.task.kind,
     area: detail.task.area === null ? null : capText(detail.task.area, 128),
-    archived_at: detail.task.archived_at
+    archived_at: detail.task.archived_at,
+    parent_id: detail.task.parent_id,
+    execution_mode: detail.task.execution_mode
   };
   const projectedCriteria = {
     items: criteria.map((criterion) => ({
@@ -22635,7 +22755,8 @@ function taskBrief(db, decisionsDir, id2) {
     })),
     omitted: 0
   };
-  const action = nextAction(task, projectedCriteria.items);
+  const controlled = task.execution_mode === "orchestrated" || !!db.prepare("SELECT 1 FROM managed_task_policy WHERE task_id=?").get(id2) || !!db.prepare("SELECT 1 FROM execution_handoffs WHERE task_id=? AND completed_at IS NULL").get(id2);
+  const action = nextAction(task, projectedCriteria.items, controlled);
   const actionSource = action.text;
   action.text = capText(action.text, 128);
   const brief = {
@@ -22699,7 +22820,7 @@ function taskBrief(db, decisionsDir, id2) {
 }
 
 // src/handlers.ts
-import { statSync as statSync2 } from "fs";
+import { statSync } from "fs";
 function listTracksTool(db) {
   return listTracks(db, {}).map((t) => ({
     id: t.id,
@@ -22743,7 +22864,7 @@ function updateTask(db, input, actor) {
   mustGetTask(db, input.id);
   if (input.attach) {
     try {
-      statSync2(input.attach.path);
+      statSync(input.attach.path);
     } catch (e) {
       throw new KddError(`cannot read ${input.attach.path}: ${e.message}`);
     }

@@ -7,6 +7,7 @@ import { parseDecisionMd } from './decisions.js';
 import { taskDetail } from './queries.js';
 import type { Criterion, ManualProvenance, SessionHandoff } from './types.js';
 import type { Kind, Priority, Status } from './state.js';
+import type { ExecutionMode } from './execution.js';
 
 export interface BriefSection<T> {
   items: T[];
@@ -15,7 +16,7 @@ export interface BriefSection<T> {
 
 export type NextAction = {
   kind: 'resolve_blocker' | 'start_work' | 'complete_criterion' | 'submit_review' |
-    'await_acceptance' | 'archived' | 'done';
+    'await_acceptance' | 'await_controller' | 'archived' | 'done';
   text: string;
   criterion_id?: number;
 };
@@ -32,6 +33,7 @@ export interface TaskBrief {
     kind: Kind;
     area: string | null;
     archived_at: number | null;
+    parent_id: number | null; execution_mode: ExecutionMode;
   };
   criteria: BriefSection<{
     id: number;
@@ -184,7 +186,7 @@ function readTaskDecisions(
 }
 
 function nextAction(
-  task: TaskBrief['task'], criteria: TaskBrief['criteria']['items'],
+  task: TaskBrief['task'], criteria: TaskBrief['criteria']['items'], controlled: boolean,
 ): NextAction {
   if (task.status === 'done') return { kind: 'done', text: 'Task is done; no action remains.' };
   if (task.archived_at !== null) {
@@ -196,6 +198,7 @@ function nextAction(
       text: task.block_reason ? `Resolve blocker: ${task.block_reason}` : 'Resolve the task blocker.',
     };
   }
+  if (controlled) return { kind: 'await_controller', text: 'Await controller execution or handoff.' };
   if (task.status === 'backlog') {
     return { kind: 'start_work', text: 'Move the task to new and start work.' };
   }
@@ -326,6 +329,7 @@ export function taskBrief(
       kind: detail.task.kind,
       area: detail.task.area === null ? null : capText(detail.task.area, 128),
       archived_at: detail.task.archived_at,
+      parent_id: detail.task.parent_id, execution_mode: detail.task.execution_mode,
   };
   const projectedCriteria: TaskBrief['criteria'] = {
       items: criteria.map((criterion) => ({
@@ -337,7 +341,10 @@ export function taskBrief(
       })),
       omitted: 0,
   };
-  const action = nextAction(task, projectedCriteria.items);
+  const controlled = task.execution_mode === 'orchestrated'
+    || !!db.prepare('SELECT 1 FROM managed_task_policy WHERE task_id=?').get(id)
+    || !!db.prepare('SELECT 1 FROM execution_handoffs WHERE task_id=? AND completed_at IS NULL').get(id);
+  const action = nextAction(task, projectedCriteria.items, controlled);
   const actionSource = action.text;
   action.text = capText(action.text, 128);
   const brief: TaskBrief = {

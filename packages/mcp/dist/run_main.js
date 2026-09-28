@@ -4310,7 +4310,7 @@ var require_core = __commonJS({
       errorsText(errors = this.errors, { separator = ", ", dataVar = "data" } = {}) {
         if (!errors || errors.length === 0)
           return "No errors";
-        return errors.map((e) => `${dataVar}${e.instancePath} ${e.message}`).reduce((text, msg) => text + separator + msg);
+        return errors.map((e) => `${dataVar}${e.instancePath} ${e.message}`).reduce((text2, msg) => text2 + separator + msg);
       }
       $dataMetaSchema(metaSchema, keywordsJsonPointers) {
         const rules = this.RULES.all;
@@ -6885,12 +6885,12 @@ var require_dist = __commonJS({
 });
 
 // src/run_main.ts
-import { isAbsolute as isAbsolute4 } from "path";
+import { isAbsolute as isAbsolute5 } from "path";
 
 // src/run_server.ts
 import Database5 from "better-sqlite3";
-import { lstatSync, readFileSync as readFileSync2 } from "fs";
-import { isAbsolute as isAbsolute3 } from "path";
+import { lstatSync, readFileSync as readFileSync3 } from "fs";
+import { isAbsolute as isAbsolute4 } from "path";
 
 // ../../node_modules/.pnpm/zod@3.25.76/node_modules/zod/v3/external.js
 var external_exports = {};
@@ -9270,9 +9270,9 @@ var ZodObject = class _ZodObject extends ZodType {
   _getCached() {
     if (this._cached !== null)
       return this._cached;
-    const shape = this._def.shape();
-    const keys = util.objectKeys(shape);
-    this._cached = { shape, keys };
+    const shape2 = this._def.shape();
+    const keys = util.objectKeys(shape2);
+    this._cached = { shape: shape2, keys };
     return this._cached;
   }
   _parse(input) {
@@ -9287,7 +9287,7 @@ var ZodObject = class _ZodObject extends ZodType {
       return INVALID;
     }
     const { status, ctx } = this._processInputParams(input);
-    const { shape, keys: shapeKeys } = this._getCached();
+    const { shape: shape2, keys: shapeKeys } = this._getCached();
     const extraKeys = [];
     if (!(this._def.catchall instanceof ZodNever && this._def.unknownKeys === "strip")) {
       for (const key in ctx.data) {
@@ -9298,7 +9298,7 @@ var ZodObject = class _ZodObject extends ZodType {
     }
     const pairs = [];
     for (const key of shapeKeys) {
-      const keyValidator = shape[key];
+      const keyValidator = shape2[key];
       const value = ctx.data[key];
       pairs.push({
         key: { status: "valid", value: key },
@@ -9504,27 +9504,27 @@ var ZodObject = class _ZodObject extends ZodType {
     });
   }
   pick(mask) {
-    const shape = {};
+    const shape2 = {};
     for (const key of util.objectKeys(mask)) {
       if (mask[key] && this.shape[key]) {
-        shape[key] = this.shape[key];
+        shape2[key] = this.shape[key];
       }
     }
     return new _ZodObject({
       ...this._def,
-      shape: () => shape
+      shape: () => shape2
     });
   }
   omit(mask) {
-    const shape = {};
+    const shape2 = {};
     for (const key of util.objectKeys(this.shape)) {
       if (!mask[key]) {
-        shape[key] = this.shape[key];
+        shape2[key] = this.shape[key];
       }
     }
     return new _ZodObject({
       ...this._def,
-      shape: () => shape
+      shape: () => shape2
     });
   }
   /**
@@ -9571,27 +9571,27 @@ var ZodObject = class _ZodObject extends ZodType {
     return createZodEnum(util.objectKeys(this.shape));
   }
 };
-ZodObject.create = (shape, params) => {
+ZodObject.create = (shape2, params) => {
   return new ZodObject({
-    shape: () => shape,
+    shape: () => shape2,
     unknownKeys: "strip",
     catchall: ZodNever.create(),
     typeName: ZodFirstPartyTypeKind.ZodObject,
     ...processCreateParams(params)
   });
 };
-ZodObject.strictCreate = (shape, params) => {
+ZodObject.strictCreate = (shape2, params) => {
   return new ZodObject({
-    shape: () => shape,
+    shape: () => shape2,
     unknownKeys: "strict",
     catchall: ZodNever.create(),
     typeName: ZodFirstPartyTypeKind.ZodObject,
     ...processCreateParams(params)
   });
 };
-ZodObject.lazycreate = (shape, params) => {
+ZodObject.lazycreate = (shape2, params) => {
   return new ZodObject({
-    shape,
+    shape: shape2,
     unknownKeys: "strip",
     catchall: ZodNever.create(),
     typeName: ZodFirstPartyTypeKind.ZodObject,
@@ -11306,9 +11306,9 @@ function stringifyPrimitive(value) {
     return `"${value}"`;
   return `${value}`;
 }
-function optionalKeys(shape) {
-  return Object.keys(shape).filter((k) => {
-    return shape[k]._zod.optin === "optional" && shape[k]._zod.optout === "optional";
+function optionalKeys(shape2) {
+  return Object.keys(shape2).filter((k) => {
+    return shape2[k]._zod.optin === "optional" && shape2[k]._zod.optout === "optional";
   });
 }
 var NUMBER_FORMAT_RANGES = {
@@ -11356,14 +11356,14 @@ function omit(schema, mask) {
     checks: []
   });
 }
-function extend(schema, shape) {
-  if (!isPlainObject(shape)) {
+function extend(schema, shape2) {
+  if (!isPlainObject(shape2)) {
     throw new Error("Invalid input to extend: expected a plain object");
   }
   const def = {
     ...schema._zod.def,
     get shape() {
-      const _shape = { ...schema._zod.def.shape, ...shape };
+      const _shape = { ...schema._zod.def.shape, ...shape2 };
       assignProp(this, "shape", _shape);
       return _shape;
     },
@@ -11387,7 +11387,7 @@ function merge(a, b) {
 }
 function partial(Class2, schema, mask) {
   const oldShape = schema._zod.def.shape;
-  const shape = { ...oldShape };
+  const shape2 = { ...oldShape };
   if (mask) {
     for (const key in mask) {
       if (!(key in oldShape)) {
@@ -11395,14 +11395,14 @@ function partial(Class2, schema, mask) {
       }
       if (!mask[key])
         continue;
-      shape[key] = Class2 ? new Class2({
+      shape2[key] = Class2 ? new Class2({
         type: "optional",
         innerType: oldShape[key]
       }) : oldShape[key];
     }
   } else {
     for (const key in oldShape) {
-      shape[key] = Class2 ? new Class2({
+      shape2[key] = Class2 ? new Class2({
         type: "optional",
         innerType: oldShape[key]
       }) : oldShape[key];
@@ -11410,28 +11410,28 @@ function partial(Class2, schema, mask) {
   }
   return clone(schema, {
     ...schema._zod.def,
-    shape,
+    shape: shape2,
     checks: []
   });
 }
 function required(Class2, schema, mask) {
   const oldShape = schema._zod.def.shape;
-  const shape = { ...oldShape };
+  const shape2 = { ...oldShape };
   if (mask) {
     for (const key in mask) {
-      if (!(key in shape)) {
+      if (!(key in shape2)) {
         throw new Error(`Unrecognized key: "${key}"`);
       }
       if (!mask[key])
         continue;
-      shape[key] = new Class2({
+      shape2[key] = new Class2({
         type: "nonoptional",
         innerType: oldShape[key]
       });
     }
   } else {
     for (const key in oldShape) {
-      shape[key] = new Class2({
+      shape2[key] = new Class2({
         type: "nonoptional",
         innerType: oldShape[key]
       });
@@ -11439,7 +11439,7 @@ function required(Class2, schema, mask) {
   }
   return clone(schema, {
     ...schema._zod.def,
-    shape,
+    shape: shape2,
     // optional: [],
     checks: []
   });
@@ -12674,10 +12674,10 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
     };
   });
   defineLazy(inst._zod, "propValues", () => {
-    const shape = def.shape;
+    const shape2 = def.shape;
     const propValues = {};
-    for (const key in shape) {
-      const field = shape[key]._zod;
+    for (const key in shape2) {
+      const field = shape2[key]._zod;
       if (field.values) {
         propValues[key] ?? (propValues[key] = /* @__PURE__ */ new Set());
         for (const v of field.values)
@@ -12686,7 +12686,7 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
     }
     return propValues;
   });
-  const generateFastpass = (shape) => {
+  const generateFastpass = (shape2) => {
     const doc = new Doc(["shape", "payload", "ctx"]);
     const normalized = _normalized.value;
     const parseStr = (key) => {
@@ -12739,7 +12739,7 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
     doc.write(`payload.value = newResult;`);
     doc.write(`return payload;`);
     const fn = doc.compile();
-    return (payload, ctx) => fn(shape, payload, ctx);
+    return (payload, ctx) => fn(shape2, payload, ctx);
   };
   let fastpass;
   const isObject2 = isObject;
@@ -12767,9 +12767,9 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
       payload = fastpass(payload, ctx);
     } else {
       payload.value = {};
-      const shape = value.shape;
+      const shape2 = value.shape;
       for (const key of value.keys) {
-        const el = shape[key];
+        const el = shape2[key];
         const r = el._zod.run({ value: input[key], issues: [] }, ctx);
         const isOptional = el._zod.optin === "optional" && el._zod.optout === "optional";
         if (r instanceof Promise) {
@@ -14147,14 +14147,14 @@ var JSONSchemaGenerator = class {
             const json = _json;
             json.type = "object";
             json.properties = {};
-            const shape = def.shape;
-            for (const key in shape) {
-              json.properties[key] = this.process(shape[key], {
+            const shape2 = def.shape;
+            for (const key in shape2) {
+              json.properties[key] = this.process(shape2[key], {
                 ...params,
                 path: [...params.path, "properties", key]
               });
             }
-            const allKeys = new Set(Object.keys(shape));
+            const allKeys = new Set(Object.keys(shape2));
             const requiredKeys = new Set([...allKeys].filter((key) => {
               const v = def.shape[key]._zod;
               if (this.io === "input") {
@@ -14770,11 +14770,11 @@ var ZodMiniObject = /* @__PURE__ */ $constructor("ZodMiniObject", (inst, def) =>
   ZodMiniType.init(inst, def);
   util_exports.defineLazy(inst, "shape", () => def.shape);
 });
-function object(shape, params) {
+function object(shape2, params) {
   const def = {
     type: "object",
     get shape() {
-      util_exports.assignProp(this, "shape", { ...shape });
+      util_exports.assignProp(this, "shape", { ...shape2 });
       return this.shape;
     },
     ...util_exports.normalizeParams(params)
@@ -14787,16 +14787,16 @@ function isZ4Schema(s) {
   const schema = s;
   return !!schema._zod;
 }
-function objectFromShape(shape) {
-  const values = Object.values(shape);
+function objectFromShape(shape2) {
+  const values = Object.values(shape2);
   if (values.length === 0)
     return object({});
   const allV4 = values.every(isZ4Schema);
   const allV3 = values.every((s) => !isZ4Schema(s));
   if (allV4)
-    return object(shape);
+    return object(shape2);
   if (allV3)
-    return objectType(shape);
+    return objectType(shape2);
   throw new Error("Mixed Zod versions detected in object shape.");
 }
 function safeParse2(schema, data) {
@@ -15305,22 +15305,22 @@ var ZodObject2 = /* @__PURE__ */ $constructor("ZodObject", (inst, def) => {
   inst.partial = (...args2) => util_exports.partial(ZodOptional2, inst, args2[0]);
   inst.required = (...args2) => util_exports.required(ZodNonOptional, inst, args2[0]);
 });
-function object2(shape, params) {
+function object2(shape2, params) {
   const def = {
     type: "object",
     get shape() {
-      util_exports.assignProp(this, "shape", { ...shape });
+      util_exports.assignProp(this, "shape", { ...shape2 });
       return this.shape;
     },
     ...util_exports.normalizeParams(params)
   };
   return new ZodObject2(def);
 }
-function looseObject(shape, params) {
+function looseObject(shape2, params) {
   return new ZodObject2({
     type: "object",
     get shape() {
-      util_exports.assignProp(this, "shape", { ...shape });
+      util_exports.assignProp(this, "shape", { ...shape2 });
       return this.shape;
     },
     catchall: unknown(),
@@ -18076,9 +18076,9 @@ function parseObjectDef(def, refs) {
     properties: {}
   };
   const required2 = [];
-  const shape = def.shape();
-  for (const propName in shape) {
-    let propDef = shape[propName];
+  const shape2 = def.shape();
+  for (const propName in shape2) {
+    let propDef = shape2[propName];
     if (propDef === void 0 || propDef._def === void 0) {
       continue;
     }
@@ -18464,8 +18464,8 @@ function toJsonSchemaCompat(schema, opts) {
   });
 }
 function getMethodLiteral(schema) {
-  const shape = getObjectShape(schema);
-  const methodSchema = shape?.method;
+  const shape2 = getObjectShape(schema);
+  const methodSchema = shape2?.method;
   if (!methodSchema) {
     throw new Error("Schema is missing a method literal");
   }
@@ -19814,8 +19814,8 @@ var Server = class extends Protocol {
    * Override request handler registration to enforce server-side validation for tools/call.
    */
   setRequestHandler(requestSchema, handler) {
-    const shape = getObjectShape(requestSchema);
-    const methodSchema = shape?.method;
+    const shape2 = getObjectShape(requestSchema);
+    const methodSchema = shape2?.method;
     if (!methodSchema) {
       throw new Error("Schema is missing a method literal");
     }
@@ -20971,10 +20971,10 @@ function getZodSchemaObject(schema) {
   return schema;
 }
 function promptArgumentsFromSchema(schema) {
-  const shape = getObjectShape(schema);
-  if (!shape)
+  const shape2 = getObjectShape(schema);
+  if (!shape2)
     return [];
-  return Object.entries(shape).map(([name, field]) => {
+  return Object.entries(shape2).map(([name, field]) => {
     const description = getSchemaDescription(field);
     const isOptional = isSchemaOptional(field);
     return {
@@ -20985,8 +20985,8 @@ function promptArgumentsFromSchema(schema) {
   });
 }
 function getMethodValue(schema) {
-  const shape = getObjectShape(schema);
-  const methodSchema = shape?.method;
+  const shape2 = getObjectShape(schema);
+  const methodSchema = shape2?.method;
   if (!methodSchema) {
     throw new Error("Schema is missing a method literal");
   }
@@ -21110,10 +21110,14 @@ import Database from "better-sqlite3";
 import { execFileSync } from "child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "fs";
 import Database3 from "better-sqlite3";
-import { createHash as createHash4, randomBytes as randomBytes2 } from "crypto";
+import { createHash as createHash3, randomBytes as randomBytes2 } from "crypto";
+import { createHash as createHash2 } from "crypto";
+import { readFileSync as readFileSync2, statSync } from "fs";
+import { isAbsolute } from "path";
+import { createHash as createHash6, randomBytes as randomBytes3 } from "crypto";
 import { lstatSync as lstatSync3, realpathSync as realpathSync5 } from "fs";
-import { isAbsolute as isAbsolute2 } from "path";
-import { dirname as dirname3, isAbsolute, join as join5, relative, resolve as resolve3, sep } from "path";
+import { isAbsolute as isAbsolute3 } from "path";
+import { dirname as dirname3, isAbsolute as isAbsolute2, join as join5, relative, resolve as resolve3, sep } from "path";
 import Database4 from "better-sqlite3";
 var CAPS = {
   briefBytes: 4096,
@@ -21177,6 +21181,338 @@ var CAPS = {
 };
 var KddError = class extends Error {
 };
+var MIGRATIONS = [
+  `
+  CREATE TABLE tasks (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    title        TEXT NOT NULL,
+    body         TEXT,
+    status       TEXT NOT NULL DEFAULT 'new'
+                 CHECK (status IN ('backlog','new','in_progress','review','done')),
+    blocked      INTEGER NOT NULL DEFAULT 0,
+    block_reason TEXT,
+    priority     TEXT NOT NULL DEFAULT 'medium'
+                 CHECK (priority IN ('low','medium','high','urgent')),
+    area         TEXT,
+    position     INTEGER NOT NULL DEFAULT 0,
+    archived_at  INTEGER,
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL
+  );
+  CREATE TABLE comments (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id    INTEGER NOT NULL REFERENCES tasks(id),
+    author     TEXT NOT NULL,
+    body       TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE task_links (
+    from_id INTEGER NOT NULL REFERENCES tasks(id),
+    to_id   INTEGER NOT NULL REFERENCES tasks(id),
+    kind    TEXT NOT NULL DEFAULT 'relates_to',
+    PRIMARY KEY (from_id, to_id, kind)
+  );
+  CREATE TABLE events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id    INTEGER REFERENCES tasks(id),
+    actor_type TEXT NOT NULL CHECK (actor_type IN ('user','ai')),
+    actor_id   TEXT,
+    action     TEXT NOT NULL CHECK (action IN
+               ('created','moved','edited','commented','blocked','unblocked','linked','archived','unarchived')),
+    detail     TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE errors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT, message TEXT, created_at INTEGER NOT NULL
+  );
+  CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  CREATE INDEX idx_tasks_status ON tasks(status);
+  CREATE INDEX idx_comments_task ON comments(task_id, created_at);
+  CREATE INDEX idx_events_task ON events(task_id, created_at);
+  `,
+  `
+  CREATE TABLE decisions (
+    slug          TEXT PRIMARY KEY,
+    title         TEXT NOT NULL,
+    path          TEXT NOT NULL,
+    content_hash  TEXT NOT NULL,
+    created       TEXT,
+    superseded_by TEXT
+  );
+  CREATE INDEX idx_decisions_hash ON decisions(content_hash);
+  CREATE VIRTUAL TABLE search_index USING fts5(
+    kind UNINDEXED,
+    ref UNINDEXED,
+    title,
+    body,
+    tokenize = 'unicode61 remove_diacritics 2'
+  );
+  INSERT OR IGNORE INTO meta (key, value) VALUES ('fts_last_event_id', '0');
+  `,
+  `
+  CREATE TABLE tracks (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL UNIQUE,
+    description TEXT,
+    status      TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','done')),
+    created_at  INTEGER NOT NULL
+  );
+  ALTER TABLE tasks ADD COLUMN track_id INTEGER REFERENCES tracks(id);
+  CREATE INDEX idx_tasks_track ON tasks(track_id);
+  `,
+  `
+  CREATE TABLE criteria (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id    INTEGER NOT NULL REFERENCES tasks(id),
+    text       TEXT NOT NULL,
+    checked_at INTEGER,
+    position   INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX idx_criteria_task ON criteria(task_id, position);
+  -- \u043F\u0435\u0440\u0435\u0441\u0431\u043E\u0440\u043A\u0430 events: \u0441\u043D\u044F\u0442 CHECK \u0441 action \u2014 \u0441\u043B\u043E\u0432\u0430\u0440\u044C \u043E\u0442\u043A\u0440\u044B\u0442\u044B\u0439 (criterion_*, \u0434\u0430\u043B\u044C\u0448\u0435 claim/verify)
+  CREATE TABLE events_new (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id    INTEGER REFERENCES tasks(id),
+    actor_type TEXT NOT NULL CHECK (actor_type IN ('user','ai')),
+    actor_id   TEXT,
+    action     TEXT NOT NULL,
+    detail     TEXT,
+    created_at INTEGER NOT NULL
+  );
+  INSERT INTO events_new SELECT * FROM events;
+  DROP TABLE events;
+  ALTER TABLE events_new RENAME TO events;
+  CREATE INDEX idx_events_task ON events(task_id, created_at);
+  `,
+  `
+  -- \u0438\u0435\u0440\u0430\u0440\u0445\u0438\u044F \u0438 \u0442\u0438\u043F\u0438\u0437\u0430\u0446\u0438\u044F \u0441\u043E\u0431\u044B\u0442\u0438\u0439 (observability \u0430\u0433\u0435\u043D\u0442\u043E\u0432); \u0441\u0442\u0430\u0440\u044B\u0435 \u0441\u0442\u0440\u043E\u043A\u0438: NULL/NULL/'info'
+  ALTER TABLE events ADD COLUMN parent_id INTEGER REFERENCES events(id);
+  ALTER TABLE events ADD COLUMN type TEXT;
+  ALTER TABLE events ADD COLUMN level TEXT NOT NULL DEFAULT 'info';
+  `,
+  `
+  -- claim-\u043F\u0440\u043E\u0442\u043E\u043A\u043E\u043B: \u0430\u0433\u0435\u043D\u0442 \u0431\u0435\u0440\u0451\u0442 \u0437\u0430\u0434\u0430\u0447\u0443 \u0430\u0442\u043E\u043C\u0430\u0440\u043D\u043E (CAS), lease \u0441 TTL.
+  -- \u0418\u043D\u0432\u0430\u0440\u0438\u0430\u043D\u0442: claimed_by IS NOT NULL <=> status='in_progress'. \u0421\u0442\u0430\u0440\u044B\u0435 \u0437\u0430\u0434\u0430\u0447\u0438: NULL.
+  ALTER TABLE tasks ADD COLUMN claimed_by TEXT;
+  ALTER TABLE tasks ADD COLUMN claim_expires INTEGER;
+  `,
+  `
+  -- driver-\u0441\u043B\u0430\u0439\u0441: \u0441\u0447\u0451\u0442\u0447\u0438\u043A \u043D\u0435\u0443\u0434\u0430\u0447\u043D\u044B\u0445 \u043F\u043E\u043F\u044B\u0442\u043E\u043A \u0430\u0433\u0435\u043D\u0442\u0430 (spawn-fail + \u043D\u0435\u043F\u0440\u043E\u0434\u0443\u043A\u0442\u0438\u0432\u043D\u044B\u0439 reclaim).
+  -- reset \u043F\u0440\u0438 \u0434\u043E\u0441\u0442\u0438\u0436\u0435\u043D\u0438\u0438 review; \u043F\u0440\u0438 K \u043F\u043E\u043F\u044B\u0442\u043E\u043A \u0437\u0430\u0434\u0430\u0447\u0430 \u0430\u0432\u0442\u043E-\u0431\u043B\u043E\u043A\u0438\u0440\u0443\u0435\u0442\u0441\u044F. \u0421\u0442\u0430\u0440\u044B\u0435 \u0437\u0430\u0434\u0430\u0447\u0438: 0.
+  ALTER TABLE tasks ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0;
+  `,
+  `
+  -- Tier1 feed: \u043F\u043E\u0442\u043E\u043A \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0441\u0442\u0438 \u0432\u043E\u0440\u043A\u0435\u0440\u0430 (\u0442\u0435\u043A\u0441\u0442, tool-\u0432\u044B\u0437\u043E\u0432\u044B) \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E \u043E\u0442 audit-events.
+  -- \u0418\u0437\u043E\u043B\u0438\u0440\u043E\u0432\u0430\u043D \u043D\u0430\u043C\u0435\u0440\u0435\u043D\u043D\u043E: get_task/status/MCP \u0435\u0433\u043E \u041D\u0415 \u0447\u0438\u0442\u0430\u044E\u0442 \u2014 \u0438\u043D\u0430\u0447\u0435 \u043F\u043E\u0442\u043E\u043A \u0437\u0430\u0431\u044C\u0451\u0442 LLM-\u043A\u043E\u043D\u0442\u0435\u043A\u0441\u0442.
+  CREATE TABLE agent_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id    INTEGER NOT NULL REFERENCES tasks(id),
+    worker_id  TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    name       TEXT,
+    detail     TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX idx_agent_events_task ON agent_events(task_id, id);
+  `,
+  `
+  -- \u0422\u0438\u043F \u0440\u0430\u0431\u043E\u0442\u044B. \u0414\u0435\u0444\u043E\u043B\u0442 'feature' \u041C\u041E\u041B\u0427\u0410\u041B\u0418\u0412\u042B\u0419: \u043A\u0430\u0440\u0442\u043E\u0447\u043A\u0430 \u0435\u0433\u043E \u043D\u0435 \u0440\u0438\u0441\u0443\u0435\u0442, \u043F\u043E\u044D\u0442\u043E\u043C\u0443
+  -- \u0437\u0430\u0434\u0430\u0447\u0438, \u0437\u0430\u0432\u0435\u0434\u0451\u043D\u043D\u044B\u0435 \u0434\u043E \u044D\u0442\u043E\u0439 \u043C\u0438\u0433\u0440\u0430\u0446\u0438\u0438, \u043D\u0435 \u043D\u0430\u0447\u0438\u043D\u0430\u044E\u0442 \u0443\u0442\u0432\u0435\u0440\u0436\u0434\u0430\u0442\u044C \xAB\u044D\u0442\u043E \u0444\u0438\u0447\u0430\xBB. NOT NULL, \u0430 \u043D\u0435
+  -- nullable: \u043A \u0442\u0438\u043F\u0443 \u043F\u0440\u0438\u0432\u044F\u0437\u0430\u043D\u043E \u043F\u043E\u0432\u0435\u0434\u0435\u043D\u0438\u0435 (claim, \u043F\u0440\u043E\u043C\u043F\u0442, \u0442\u0438\u043F \u043A\u043E\u043C\u043C\u0438\u0442\u0430), \u0438 NULL-\u0432\u0435\u0442\u043A\u0430 \u0432 \u043A\u0430\u0436\u0434\u043E\u043C
+  -- \u043F\u043E\u0442\u0440\u0435\u0431\u0438\u0442\u0435\u043B\u0435 \u0431\u044B\u043B\u0430 \u0431\u044B \u0446\u0435\u043D\u043E\u0439 \u0431\u0435\u0437 \u0432\u044B\u0433\u043E\u0434\u044B.
+  ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'feature'
+    CHECK (kind IN ('feature','bug','chore','research'));
+  `,
+  `
+  -- \u0412\u043B\u043E\u0436\u0435\u043D\u0438\u044F. \u0421\u0442\u0440\u043E\u043A\u0430 \u043D\u0430 \u0421\u0412\u042F\u0417\u041A\u0423 \u0437\u0430\u0434\u0430\u0447\u0430+\u0444\u0430\u0439\u043B, \u0430 \u043D\u0435 \u043D\u0430 \u0444\u0430\u0439\u043B: \u043E\u043F\u0438\u0441\u0430\u043D\u0438\u0435 \u043F\u0440\u0438\u043D\u0430\u0434\u043B\u0435\u0436\u0438\u0442 \u0441\u0432\u044F\u0437\u043A\u0435 \u2014
+  -- \u043E\u0434\u043D\u0430 \u0438 \u0442\u0430 \u0436\u0435 \u0441\u0445\u0435\u043C\u0430 \u043D\u0430 \u0434\u0432\u0443\u0445 \u0437\u0430\u0434\u0430\u0447\u0430\u0445 \u043E\u043F\u0438\u0441\u044B\u0432\u0430\u0435\u0442\u0441\u044F \u043F\u043E-\u0440\u0430\u0437\u043D\u043E\u043C\u0443. \u0414\u0435\u0434\u0443\u043F \u043F\u0440\u0438 \u044D\u0442\u043E\u043C \u043E\u0441\u0442\u0430\u0451\u0442\u0441\u044F,
+  -- \u043E\u043D \u043D\u0430 \u0443\u0440\u043E\u0432\u043D\u0435 \u0431\u0430\u0439\u0442\u043E\u0432: \u0438\u043C\u044F \u0444\u0430\u0439\u043B\u0430 \u043D\u0430 \u0434\u0438\u0441\u043A\u0435 \u2014 sha256 \u0441\u043E\u0434\u0435\u0440\u0436\u0438\u043C\u043E\u0433\u043E.
+  CREATE TABLE files (
+    id INTEGER PRIMARY KEY,
+    task_id INTEGER NOT NULL REFERENCES tasks(id),
+    sha256 TEXT NOT NULL,
+    ext TEXT NOT NULL,
+    original_name TEXT NOT NULL,
+    mime_type TEXT,
+    size_bytes INTEGER NOT NULL,
+    description TEXT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(task_id, sha256)
+  );
+  CREATE INDEX idx_files_task_id ON files(task_id);
+  CREATE INDEX idx_files_sha256 ON files(sha256);
+  `,
+  `
+  -- \u0422\u0435\u043A\u0443\u0449\u0438\u0439 verification snapshot \u043A\u0440\u0438\u0442\u0435\u0440\u0438\u044F. \u0418\u0441\u0442\u043E\u0440\u0438\u044F \u043E\u0441\u0442\u0430\u0451\u0442\u0441\u044F \u0432 events; \u044D\u0442\u0438 nullable-\u043F\u043E\u043B\u044F
+  -- \u043D\u0443\u0436\u043D\u044B \u0442\u043E\u043B\u044C\u043A\u043E \u0434\u043B\u044F \u0431\u044B\u0441\u0442\u0440\u043E\u0433\u043E \u0447\u0442\u0435\u043D\u0438\u044F \u0430\u043A\u0442\u0443\u0430\u043B\u044C\u043D\u043E\u0433\u043E evidence \u0438 \u0430\u0432\u0442\u043E\u0440\u0430. \u0421\u0442\u0430\u0440\u044B\u0435 criteria \u0432\u0430\u043B\u0438\u0434\u043D\u044B.
+  ALTER TABLE criteria ADD COLUMN evidence TEXT;
+  ALTER TABLE criteria ADD COLUMN checked_by TEXT;
+  `,
+  `
+  -- \u041A\u0430\u043D\u043E\u043D provenance \u0436\u0438\u0432\u0451\u0442 \u0432\u043E frontmatter decision Markdown. \u042D\u0442\u0430 JSON-\u043A\u043E\u043B\u043E\u043D\u043A\u0430 \u2014 \u0442\u043E\u043B\u044C\u043A\u043E
+  -- rebuildable \u0438\u043D\u0434\u0435\u043A\u0441 \u0434\u043B\u044F \u043E\u0431\u0440\u0430\u0442\u043D\u043E\u0433\u043E \u0437\u0430\u043F\u0440\u043E\u0441\u0430 task -> decisions.
+  ALTER TABLE decisions ADD COLUMN source_tasks TEXT NOT NULL DEFAULT '[]';
+  `,
+  `
+  CREATE TABLE repositories (
+    repo_id TEXT PRIMARY KEY CHECK(length(repo_id) = 32 AND repo_id NOT GLOB '*[^0-9a-f]*'),
+    purpose TEXT NOT NULL CHECK(length(trim(purpose)) > 0),
+    access TEXT NOT NULL CHECK(access IN ('context_only','implementation')),
+    remote TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE project (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    project_id TEXT NOT NULL UNIQUE CHECK(length(project_id) = 32 AND project_id NOT GLOB '*[^0-9a-f]*'),
+    primary_repo_id TEXT REFERENCES repositories(repo_id),
+    legacy_decisions_dir TEXT,
+    autonomy_enabled INTEGER NOT NULL DEFAULT 0 CHECK(autonomy_enabled IN (0,1)),
+    default_execution_mode TEXT NOT NULL DEFAULT 'manual' CHECK(default_execution_mode IN ('manual','orchestrated')),
+    created_at INTEGER NOT NULL
+  );
+  INSERT INTO project(singleton,project_id,created_at)
+    VALUES(1,lower(hex(randomblob(16))),CAST(strftime('%s','now') AS INTEGER));
+  CREATE TABLE repository_bindings (
+    common_dir TEXT PRIMARY KEY,
+    repo_id TEXT NOT NULL REFERENCES repositories(repo_id),
+    checkout_path TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('source','managed')),
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX idx_repository_bindings_repo ON repository_bindings(repo_id);
+  `,
+  `
+  CREATE TABLE managed_task_policy (
+    task_id INTEGER PRIMARY KEY REFERENCES tasks(id),
+    created_at INTEGER NOT NULL,
+    source TEXT NOT NULL
+  );
+  CREATE TABLE run_authorities (
+    authority_id TEXT PRIMARY KEY,
+    task_id INTEGER NOT NULL REFERENCES tasks(id),
+    work_item_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK(typeof(generation)='integer' AND generation > 0),
+    expires_at REAL NOT NULL,
+    revoked_at INTEGER,
+    token_hash TEXT NOT NULL UNIQUE,
+    grant_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(task_id,work_item_id,generation)
+  );
+  CREATE UNIQUE INDEX idx_run_authorities_current ON run_authorities(task_id,work_item_id)
+    WHERE revoked_at IS NULL;
+  `,
+  // v15: task membership, immutable execution contracts and fenced ownership.
+  `
+ALTER TABLE tasks ADD COLUMN parent_id INTEGER REFERENCES tasks(id);
+ALTER TABLE tasks ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'manual'
+  CHECK(execution_mode IN ('manual','orchestrated'));
+CREATE INDEX idx_tasks_parent ON tasks(parent_id);
+CREATE TRIGGER task_parent_insert BEFORE INSERT ON tasks WHEN NEW.parent_id IS NOT NULL BEGIN
+  SELECT CASE WHEN NEW.parent_id=NEW.id OR NOT EXISTS
+    (SELECT 1 FROM tasks WHERE id=NEW.parent_id AND parent_id IS NULL)
+    THEN RAISE(ABORT,'invalid root parent') END;
+END;
+CREATE TRIGGER task_parent_update BEFORE UPDATE OF parent_id ON tasks
+WHEN NEW.parent_id IS NOT OLD.parent_id BEGIN
+  SELECT CASE WHEN NEW.parent_id IS NOT NULL AND
+    (NEW.parent_id=NEW.id OR NOT EXISTS
+      (SELECT 1 FROM tasks WHERE id=NEW.parent_id AND parent_id IS NULL)
+      OR EXISTS (SELECT 1 FROM tasks WHERE parent_id=OLD.id))
+    THEN RAISE(ABORT,'invalid root parent') END;
+END;
+CREATE TABLE work_items (
+  id TEXT PRIMARY KEY, task_id INTEGER NOT NULL REFERENCES tasks(id),
+  current_revision INTEGER NOT NULL CHECK(typeof(current_revision)='integer' AND current_revision BETWEEN 1 AND 9007199254740991),
+  state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN
+    ('pending','ready','running','waiting_input','retry_wait','completed','failed','cancelled')),
+  fence INTEGER NOT NULL DEFAULT 0 CHECK(typeof(fence)='integer' AND fence BETWEEN 0 AND 9007199254740991),
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY(id,current_revision) REFERENCES work_item_revisions(work_item_id,revision) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX idx_work_items_task ON work_items(task_id);
+CREATE TABLE work_item_revisions (
+  work_item_id TEXT NOT NULL REFERENCES work_items(id),
+  revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision BETWEEN 1 AND 9007199254740991),
+  definition_json TEXT NOT NULL CHECK(json_valid(definition_json)),
+  inputs_json TEXT NOT NULL CHECK(json_valid(inputs_json)),
+  inputs_hash TEXT NOT NULL, created_at INTEGER NOT NULL,
+  PRIMARY KEY(work_item_id,revision)
+);
+CREATE TABLE work_item_dependencies (
+  consumer_id TEXT NOT NULL, consumer_revision INTEGER NOT NULL,
+  edge_key TEXT NOT NULL, producer_id TEXT NOT NULL, producer_revision INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('contract','code','merged','readiness')),
+  output_key TEXT NOT NULL, binding_json TEXT NOT NULL CHECK(json_valid(binding_json)),
+  pinned_result_id TEXT REFERENCES work_item_results(id),
+  PRIMARY KEY(consumer_id,consumer_revision,edge_key), CHECK(consumer_id<>producer_id),
+  FOREIGN KEY(consumer_id,consumer_revision) REFERENCES work_item_revisions(work_item_id,revision),
+  FOREIGN KEY(producer_id,producer_revision) REFERENCES work_item_revisions(work_item_id,revision)
+);
+CREATE INDEX idx_work_item_dependencies_producer ON work_item_dependencies(producer_id);
+CREATE TABLE work_item_results (
+  id TEXT PRIMARY KEY, command_id TEXT NOT NULL UNIQUE, command_hash TEXT NOT NULL,
+  producer_id TEXT NOT NULL, producer_revision INTEGER NOT NULL, output_key TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('contract','code','merged','readiness')),
+  payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+  source_json TEXT NOT NULL CHECK(json_valid(source_json)), created_at INTEGER NOT NULL,
+  invalidated_at INTEGER, invalidation_reason TEXT,
+  successor_id TEXT REFERENCES work_item_results(id) DEFERRABLE INITIALLY DEFERRED,
+  FOREIGN KEY(producer_id,producer_revision) REFERENCES work_item_revisions(work_item_id,revision)
+);
+CREATE UNIQUE INDEX idx_work_item_results_current
+  ON work_item_results(producer_id,producer_revision,output_key) WHERE invalidated_at IS NULL;
+CREATE TABLE work_item_owners (
+  work_item_id TEXT NOT NULL, fence INTEGER NOT NULL
+    CHECK(typeof(fence)='integer' AND fence BETWEEN 1 AND 9007199254740991),
+  revision INTEGER NOT NULL, owner_id TEXT NOT NULL,
+  mode TEXT NOT NULL CHECK(mode IN ('manual','orchestrated')),
+  write_access INTEGER NOT NULL CHECK(write_access IN (0,1)),
+  inputs_json TEXT NOT NULL CHECK(json_valid(inputs_json)),
+  launch_id TEXT, launch_json TEXT CHECK(launch_json IS NULL OR json_valid(launch_json)),
+  created_at INTEGER NOT NULL, released_at INTEGER, release_handoff_id TEXT REFERENCES execution_handoffs(id),
+  PRIMARY KEY(work_item_id,fence),
+  FOREIGN KEY(work_item_id,revision) REFERENCES work_item_revisions(work_item_id,revision),
+  CHECK((launch_id IS NULL)=(launch_json IS NULL)),
+  CHECK((released_at IS NULL)=(release_handoff_id IS NULL))
+);
+CREATE UNIQUE INDEX idx_work_item_owners_live ON work_item_owners(work_item_id) WHERE released_at IS NULL;
+CREATE TABLE execution_handoffs (
+  id TEXT PRIMARY KEY, command_id TEXT NOT NULL UNIQUE, task_id INTEGER NOT NULL REFERENCES tasks(id),
+  expected_mode TEXT NOT NULL CHECK(expected_mode IN ('manual','orchestrated')),
+  target_mode TEXT NOT NULL CHECK(target_mode IN ('manual','orchestrated')),
+  snapshot_json TEXT NOT NULL CHECK(json_valid(snapshot_json)), created_at INTEGER NOT NULL,
+  completed_at INTEGER, receipt_json TEXT CHECK(receipt_json IS NULL OR json_valid(receipt_json)),
+  CHECK((completed_at IS NULL)=(receipt_json IS NULL))
+);
+CREATE UNIQUE INDEX idx_execution_handoffs_live ON execution_handoffs(task_id) WHERE completed_at IS NULL;
+CREATE TRIGGER work_item_revisions_immutable_update BEFORE UPDATE ON work_item_revisions
+BEGIN SELECT RAISE(ABORT,'immutable work item revision'); END;
+CREATE TRIGGER work_item_revisions_immutable_delete BEFORE DELETE ON work_item_revisions
+BEGIN SELECT RAISE(ABORT,'immutable work item revision'); END;
+CREATE TRIGGER work_item_dependencies_immutable BEFORE UPDATE OF
+  consumer_id,consumer_revision,edge_key,producer_id,producer_revision,kind,output_key,binding_json
+  ON work_item_dependencies BEGIN SELECT RAISE(ABORT,'immutable dependency'); END;
+CREATE TRIGGER work_item_dependencies_no_delete BEFORE DELETE ON work_item_dependencies
+BEGIN SELECT RAISE(ABORT,'immutable dependency'); END;
+CREATE TRIGGER work_item_dependencies_pin BEFORE UPDATE OF pinned_result_id ON work_item_dependencies
+WHEN OLD.pinned_result_id IS NOT NULL AND NEW.pinned_result_id IS NOT OLD.pinned_result_id
+BEGIN SELECT RAISE(ABORT,'dependency result already pinned'); END;
+CREATE TRIGGER work_item_results_immutable BEFORE UPDATE OF
+  id,command_id,command_hash,producer_id,producer_revision,output_key,kind,payload_json,source_json,created_at
+  ON work_item_results BEGIN SELECT RAISE(ABORT,'immutable result payload'); END;
+CREATE TRIGGER work_item_results_no_delete BEFORE DELETE ON work_item_results
+BEGIN SELECT RAISE(ABORT,'immutable result payload'); END;
+CREATE TRIGGER work_item_results_no_revalidate BEFORE UPDATE OF invalidated_at,invalidation_reason,successor_id
+  ON work_item_results WHEN OLD.invalidated_at IS NOT NULL AND
+    (NEW.invalidated_at IS NOT OLD.invalidated_at OR NEW.invalidation_reason IS NOT OLD.invalidation_reason
+      OR NEW.successor_id IS NOT OLD.successor_id)
+BEGIN SELECT RAISE(ABORT,'result invalidation is final'); END;
+  `
+];
 function projectOf(db) {
   const row = db.prepare("SELECT project_id,primary_repo_id,legacy_decisions_dir,autonomy_enabled,default_execution_mode,created_at FROM project WHERE singleton=1").get();
   return { ...row, autonomy_enabled: row.autonomy_enabled === 1 };
@@ -21198,9 +21534,264 @@ function canonicalCommonDir(cwd) {
   }
 }
 var now = () => Math.floor(Date.now() / 1e3);
+function rowResult(db, id2) {
+  text(id2);
+  const row = db.prepare("SELECT * FROM work_item_results WHERE id=?").get(id2);
+  if (!row) throw new KddError("result not found");
+  const metadata = JSON.parse(row.source_json);
+  return {
+    id: row.id,
+    commandId: row.command_id,
+    binding: metadata.binding,
+    payload: JSON.parse(row.payload_json),
+    source: metadata.source,
+    inputResults: metadata.inputResults,
+    invalidatedAt: row.invalidated_at,
+    invalidationReason: row.invalidation_reason,
+    successorId: row.successor_id
+  };
+}
+function checkPayload(db, payload) {
+  dependencyKind(payload?.kind);
+  const fields = {
+    contract: ["head", "artifact"],
+    code: ["head", "proofRef"],
+    merged: ["head", "target", "baseHead", "acceptedResultId", "userRef", "receiptRef"],
+    readiness: ["resourceId", "configHash", "consumerScope", "capabilities", "userRef", "probeRef", "observedAt", "expiresAt"]
+  }[payload.kind];
+  shape(payload, ["kind", "repoId", "version", "checkRefs", ...fields]);
+  checkRepo(db, payload.repoId);
+  text(payload.version);
+  strings(payload.checkRefs);
+  if (payload.kind === "contract") {
+    if (payload.head !== null) text(payload.head);
+    shape(payload.artifact, ["path", "sha256"]);
+    text(payload.artifact.path);
+    if (!isAbsolute(payload.artifact.path) || !/^[a-f0-9]{64}$/.test(payload.artifact.sha256)) throw new KddError("invalid artifact");
+  } else if (payload.kind === "code" || payload.kind === "merged") {
+    if (payload.repoId === null) throw new KddError("result requires repository");
+    text(payload.head);
+    if (payload.kind === "code") text(payload.proofRef);
+    else {
+      text(payload.target);
+      text(payload.baseHead);
+      text(payload.acceptedResultId);
+      text(payload.userRef);
+      text(payload.receiptRef);
+    }
+  } else {
+    text(payload.resourceId);
+    text(payload.configHash);
+    text(payload.consumerScope);
+    strings(payload.capabilities);
+    text(payload.userRef);
+    text(payload.probeRef);
+    if (!Number.isFinite(payload.observedAt) || payload.observedAt < 0 || payload.observedAt > now() || payload.expiresAt !== null && (!Number.isFinite(payload.expiresAt) || payload.expiresAt <= payload.observedAt)) throw new KddError("invalid readiness time");
+  }
+}
+function pass(observers, request, fresh = false) {
+  try {
+    const expected = canonical(request), time22 = now(), observed = observers.observe?.(request);
+    if (!observed) return false;
+    shape(observed, ["request", "verdict", "origin", "observedAt", "expiresAt"]);
+    const origin = request.kind === "merge_acceptance" || request.kind === "readiness_confirmation" ? "user" : "host";
+    return canonical(observed.request) === expected && observed.verdict === "pass" && observed.origin === origin && Number.isFinite(observed.observedAt) && observed.observedAt >= 0 && observed.observedAt <= now() && (!fresh || observed.observedAt >= time22) && (observed.expiresAt === null || Number.isFinite(observed.expiresAt) && observed.expiresAt > now() && observed.expiresAt > observed.observedAt);
+  } catch {
+    return false;
+  }
+}
+function validateResult(db, record2, required2, observers, path, candidate = false, currentOnly = false) {
+  const key = record2.id;
+  if (path.has(key)) return "stale_revision";
+  path.add(key);
+  try {
+    const item = scopedWorkItem(db, record2.binding.producer), payload = record2.payload, binding = record2.binding;
+    if (record2.invalidatedAt !== null || item.revision !== binding.producerRevision || item.inputsHash !== binding.inputsHash || !inputsCurrent(db, item)) return "stale_revision";
+    if (item.state === "failed" || item.state === "cancelled") return item.state;
+    const output = item.definition.outputs.find((o) => o.key === binding.outputKey);
+    if (!output || output.kind !== binding.kind || output.version !== binding.version || item.definition.repoId !== binding.repoId || payload.kind !== binding.kind || payload.repoId !== binding.repoId || payload.version !== binding.version) return "scope_mismatch";
+    if (required2 && (required2.kind !== payload.kind || required2.repoId !== payload.repoId || required2.version !== payload.version)) return "scope_mismatch";
+    checkPayload(db, payload);
+    if (!candidate) {
+      const row = db.prepare("SELECT source_json FROM work_item_results WHERE id=?").get(record2.id);
+      if (!row) return "stale_revision";
+      const meta2 = JSON.parse(row.source_json);
+      if (meta2.fence !== item.fence) return "stale_revision";
+      if (record2.source.kind === "owned") {
+        const owner = db.prepare("SELECT inputs_json FROM work_item_owners WHERE work_item_id=? AND fence=? AND revision=? AND owner_id=?").get(item.ref.workItemId, record2.source.owner.fence, record2.source.owner.revision, record2.source.owner.ownerId);
+        if (!owner || record2.source.owner.fence !== item.fence || JSON.parse(owner.inputs_json).inputsHash !== item.inputsHash) return "stale_revision";
+      }
+    }
+    for (const dep of item.dependencies) {
+      const pin2 = record2.inputResults.find((p) => p.edgeKey === dep.key);
+      if (!pin2 || dep.resultId !== pin2.resultId) return "stale_revision";
+      const reason = validateEdge(db, dep, observers, path, pin2.resultId, currentOnly).reason;
+      if (reason) return reason;
+    }
+    if (record2.inputResults.length !== item.dependencies.length) return "stale_revision";
+    if (output.checkRefs.some((ref) => !payload.checkRefs.includes(ref))) return "checks_not_passed";
+    const payloadHash = digest(payload);
+    if (!currentOnly) {
+      for (const ref of payload.checkRefs) if (!pass(observers, { kind: "check", ref, binding, payloadHash })) return "checks_not_passed";
+    }
+    switch (payload.kind) {
+      case "contract": {
+        if (!statSync(payload.artifact.path).isFile() || createHash2("sha256").update(readFileSync2(payload.artifact.path)).digest("hex") !== payload.artifact.sha256) return "stale_revision";
+        return null;
+      }
+      case "code":
+        if (currentOnly) return null;
+        if (!pass(observers, { kind: "code_result", ref: payload.proofRef, binding, head: payload.head })) return "checks_not_passed";
+        return required2?.kind === "code" && !pass(observers, { kind: "code_in_base", ref: payload.proofRef, binding, head: payload.head, baseHead: required2.baseHead }) ? "base_missing_code" : null;
+      case "merged": {
+        const accepted = rowResult(db, payload.acceptedResultId), producer = scopedWorkItem(db, accepted.binding.producer);
+        if (accepted.payload.kind !== "code" || accepted.payload.repoId !== payload.repoId || accepted.payload.head !== payload.head || producer.state !== "completed" || validateResult(db, accepted, null, observers, path, false, currentOnly)) return "merge_not_succeeded";
+        if (required2?.kind === "merged" && (required2.target !== payload.target || required2.baseHead !== payload.baseHead)) return "scope_mismatch";
+        const common = { binding, acceptedResultId: payload.acceptedResultId };
+        return currentOnly || pass(observers, { kind: "merge_acceptance", ref: payload.userRef, ...common }) && pass(observers, { kind: "merge_receipt", ref: payload.receiptRef, ...common, target: payload.target, baseHead: payload.baseHead, head: payload.head }) ? null : "merge_not_succeeded";
+      }
+      case "readiness": {
+        if (payload.expiresAt !== null && payload.expiresAt <= now()) return "readiness_expired";
+        if (required2?.kind === "readiness" && (required2.resourceId !== payload.resourceId || required2.configHash !== payload.configHash || required2.consumerScope !== payload.consumerScope || canonical([...required2.capabilities].sort()) !== canonical([...payload.capabilities].sort()))) return "scope_mismatch";
+        if (currentOnly) return null;
+        if (!pass(observers, { kind: "readiness_confirmation", ref: payload.userRef, binding, resourceId: payload.resourceId })) return "readiness_unconfirmed";
+        return pass(observers, {
+          kind: "readiness_probe",
+          ref: payload.probeRef,
+          binding,
+          resourceId: payload.resourceId,
+          configHash: payload.configHash,
+          consumerScope: payload.consumerScope,
+          capabilities: payload.capabilities
+        }, true) ? null : "readiness_unverified";
+      }
+    }
+  } catch {
+    return "stale_revision";
+  } finally {
+    path.delete(key);
+  }
+}
+function validateEdge(db, dep, observers, path, explicitId, currentOnly = false) {
+  const producer = scopedWorkItem(db, dep.producer);
+  const id2 = explicitId ?? dep.resultId ?? db.prepare("SELECT id FROM work_item_results WHERE producer_id=? AND producer_revision=? AND output_key=? AND invalidated_at IS NULL").get(dep.producer.workItemId, dep.producerRevision, dep.outputKey)?.id ?? null;
+  if (producer.state === "failed" || producer.state === "cancelled") return { resultId: id2, reason: producer.state };
+  if (producer.revision !== dep.producerRevision || !inputsCurrent(db, producer)) return { resultId: id2, reason: "stale_revision" };
+  if (producer.state !== "completed") return { resultId: id2, reason: "producer_not_completed" };
+  if (!id2) return { resultId: null, reason: "missing_output" };
+  const record2 = rowResult(db, id2);
+  if (record2.binding.producer.workItemId !== dep.producer.workItemId || record2.binding.producerRevision !== dep.producerRevision || record2.binding.outputKey !== dep.outputKey) return { resultId: id2, reason: "scope_mismatch" };
+  return { resultId: id2, reason: validateResult(db, record2, dep.binding, observers, path, false, currentOnly) };
+}
+function pinnedInputsCurrent(db, item, pins) {
+  try {
+    return Array.isArray(pins) && pins.length === item.dependencies.length && item.dependencies.every((dep) => {
+      const pin2 = pins.find((p) => p.edgeKey === dep.key);
+      return !!pin2 && typeof pin2.resultId === "string" && dep.resultId === pin2.resultId && !validateEdge(db, dep, {}, /* @__PURE__ */ new Set(), pin2.resultId, true).reason;
+    });
+  } catch {
+    return false;
+  }
+}
+function shape(value, required2, optional2 = []) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((k) => !required2.includes(k) && !optional2.includes(k)) || required2.some((k) => !Object.hasOwn(value, k))) throw new KddError("invalid input shape");
+}
+function text(value) {
+  if (typeof value !== "string" || !value.trim()) throw new KddError("invalid nonempty string");
+}
+function integer2(value, min = 1) {
+  if (!Number.isSafeInteger(value) || value < min) throw new KddError("invalid safe integer");
+}
+function scopedTask(db, ref) {
+  shape(ref, ["projectId", "taskId"]);
+  text(ref.projectId);
+  integer2(ref.taskId);
+  if (ref.projectId !== projectOf(db).project_id) throw new KddError("foreign project reference");
+  return mustGetTask(db, ref.taskId);
+}
+function contractHash(db, ref) {
+  const task = scopedTask(db, ref);
+  const criteria = db.prepare("SELECT id,text FROM criteria WHERE task_id=? ORDER BY id").all(task.id);
+  return createHash3("sha256").update(JSON.stringify({
+    projectId: ref.projectId,
+    taskId: task.id,
+    title: task.title,
+    body: task.body,
+    criteria
+  })).digest("hex");
+}
+function canonical(value) {
+  const sort = (v) => Array.isArray(v) ? v.map(sort) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sort(v[k])])) : v;
+  return JSON.stringify(sort(value));
+}
+var digest = (value) => createHash3("sha256").update(canonical(value)).digest("hex");
+function strings(value) {
+  if (!Array.isArray(value)) throw new KddError("invalid strings");
+  value.forEach(text);
+  if (new Set(value).size !== value.length) throw new KddError("duplicate strings");
+}
+function dependencyKind(value) {
+  if (!["contract", "code", "merged", "readiness"].includes(value)) throw new KddError("invalid dependency kind");
+}
+function checkRepo(db, repoId) {
+  if (repoId === null) return;
+  text(repoId);
+  if (!db.prepare("SELECT 1 FROM repositories WHERE repo_id=?").get(repoId)) throw new KddError("unknown repository");
+}
+function scopedWorkItem(db, ref, revision) {
+  shape(ref, ["projectId", "workItemId"]);
+  text(ref.projectId);
+  text(ref.workItemId);
+  if (ref.projectId !== projectOf(db).project_id) throw new KddError("foreign project reference");
+  const row = db.prepare("SELECT * FROM work_items WHERE id=?").get(ref.workItemId);
+  if (!row) throw new KddError("work item not found");
+  if (revision !== void 0) integer2(revision);
+  const rev = revision ?? row.current_revision;
+  const contract = db.prepare("SELECT * FROM work_item_revisions WHERE work_item_id=? AND revision=?").get(row.id, rev);
+  if (!contract) throw new KddError("work item revision not found");
+  const dependencies = db.prepare(`SELECT * FROM work_item_dependencies WHERE consumer_id=? AND consumer_revision=? ORDER BY edge_key`).all(row.id, rev).map((d) => ({
+    key: d.edge_key,
+    producer: { projectId: ref.projectId, workItemId: d.producer_id },
+    producerRevision: d.producer_revision,
+    outputKey: d.output_key,
+    binding: JSON.parse(d.binding_json),
+    ...d.pinned_result_id === null ? {} : { resultId: d.pinned_result_id }
+  }));
+  return {
+    ref: { ...ref },
+    task: { projectId: ref.projectId, taskId: row.task_id },
+    revision: rev,
+    state: row.state,
+    fence: row.fence,
+    definition: JSON.parse(contract.definition_json),
+    inputs: JSON.parse(contract.inputs_json),
+    inputsHash: contract.inputs_hash,
+    dependencies
+  };
+}
+function inputsCurrent(db, item) {
+  return item.inputs.every((input) => contractHash(db, input.task) === input.hash);
+}
+function checkOwnershipRef(db, ref) {
+  shape(ref, ["projectId", "workItemId", "revision", "ownerId", "fence"]);
+  text(ref.ownerId);
+  integer2(ref.revision);
+  integer2(ref.fence);
+  scopedWorkItem(db, { projectId: ref.projectId, workItemId: ref.workItemId }, ref.revision);
+}
+function liveOwner(db, ref) {
+  checkOwnershipRef(db, ref);
+  const item = scopedWorkItem(db, { projectId: ref.projectId, workItemId: ref.workItemId });
+  const row = db.prepare("SELECT * FROM work_item_owners WHERE work_item_id=? AND fence=? AND owner_id=? AND revision=? AND released_at IS NULL").get(ref.workItemId, ref.fence, ref.ownerId, ref.revision);
+  if (!row || item.revision !== ref.revision || item.fence !== ref.fence || !inputsCurrent(db, item) || JSON.parse(row.inputs_json).inputsHash !== item.inputsHash || !pinnedInputsCurrent(db, item, JSON.parse(row.inputs_json).inputResults)) throw new KddError("ownership fence or inputs stale");
+  return row;
+}
+var LEGACY_EXECUTION_SQL = `execution_mode='manual'
+  AND NOT EXISTS (SELECT 1 FROM managed_task_policy p WHERE p.task_id=tasks.id)
+  AND NOT EXISTS (SELECT 1 FROM execution_handoffs h WHERE h.task_id=tasks.id AND h.completed_at IS NULL)`;
 function inside(parent, path) {
   const suffix = relative(parent, path);
-  return suffix === "" || suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix);
+  return suffix === "" || suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute2(suffix);
 }
 var SECRETS = [
   [/-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----/g, "[redacted key]"],
@@ -21239,9 +21830,23 @@ function listCriteria(db, taskId) {
 var operations = ["get_context", "submit_report", "request_question"];
 var contexts = /* @__PURE__ */ new WeakMap();
 var denied = () => new KddError("run authority denied");
-var tokenHash = (token) => createHash4("sha256").update(token).digest("hex");
+var tokenHash = (token) => createHash6("sha256").update(token).digest("hex");
+function modeledOwnership(db, input, scope) {
+  const modeled = db.prepare("SELECT 1 FROM work_items WHERE id=?").get(input.workItemId);
+  if (!modeled) {
+    if (input.ownership !== void 0) throw denied();
+    return;
+  }
+  if (!input.ownership) throw new KddError("modeled work requires ownership");
+  const owner = liveOwner(db, input.ownership);
+  const item = scopedWorkItem(db, { projectId: input.ownership.projectId, workItemId: input.workItemId });
+  if (owner.work_item_id !== input.workItemId || item.task.taskId !== input.taskId) throw denied();
+  if (scope.some((repo) => repo.write && (!owner.write_access || item.definition.repoId === null || item.definition.repoId !== repo.repoId))) {
+    throw new KddError("ownership writable repository mismatch");
+  }
+}
 function canonicalCheckout(path) {
-  if (typeof path !== "string" || !isAbsolute2(path) || !lstatSync3(path).isDirectory()) throw new KddError("invalid repository scope");
+  if (typeof path !== "string" || !isAbsolute3(path) || !lstatSync3(path).isDirectory()) throw new KddError("invalid repository scope");
   return realpathSync5(path);
 }
 function repositoryScope(db, input, native) {
@@ -21273,9 +21878,7 @@ function privateStore(db, scope, native) {
     }
   }
 }
-function lookup(db, token) {
-  if (typeof token !== "string" || !/^[0-9a-f]{64}$/.test(token)) throw denied();
-  const row = db.prepare("SELECT * FROM run_authorities WHERE token_hash=?").get(tokenHash(token));
+function currentAuthority(db, row) {
   if (!row || row.revoked_at !== null || !Number.isFinite(row.expires_at) || row.expires_at <= now()) throw denied();
   let grant;
   try {
@@ -21289,11 +21892,17 @@ function lookup(db, token) {
   try {
     const repositories = repositoryScope(db, grant.repositories, grant.native);
     if (JSON.stringify(repositories) !== JSON.stringify(grant.repositories)) throw denied();
+    modeledOwnership(db, grant, repositories);
     privateStore(db, repositories, grant.native);
   } catch {
     throw denied();
   }
   return { row, grant };
+}
+function lookup(db, token) {
+  if (typeof token !== "string" || !/^[0-9a-f]{64}$/.test(token)) throw denied();
+  const row = db.prepare("SELECT * FROM run_authorities WHERE token_hash=?").get(tokenHash(token));
+  return currentAuthority(db, row);
 }
 function openRunContext(db, token) {
   return db.transaction(() => {
@@ -21371,7 +21980,12 @@ function mustGetTask(db, id2) {
   if (!t) throw new KddError(`task #${id2} not found`);
   return t;
 }
+var READY_SQL = `(status = 'new' AND blocked = 0 AND archived_at IS NULL AND kind <> 'research' AND ${LEGACY_EXECUTION_SQL})`;
 var DEFAULT_TTL = 15 * 60;
+var CLAIMABLE_SQL = `status = 'new' AND blocked = 0 AND archived_at IS NULL AND claimed_by IS NULL
+   AND ${LEGACY_EXECUTION_SQL}
+   AND kind <> 'research'
+   AND (SELECT COUNT(*) FROM criteria WHERE criteria.task_id = tasks.id) > 0`;
 var OK_TTL = 60 * 60 * 1e3;
 var ERR_TTL = 5 * 60 * 1e3;
 
@@ -21408,12 +22022,12 @@ function createRunServer(context) {
 async function startRunServer(configPath) {
   let db;
   try {
-    if (!isAbsolute3(configPath)) throw new Error();
+    if (!isAbsolute4(configPath)) throw new Error();
     const stat = lstatSync(configPath);
     if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 511) !== 384) throw new Error();
-    const config2 = external_exports.object({ dbPath: external_exports.string().refine(isAbsolute3), token: external_exports.string().regex(/^[0-9a-f]{64}$/) }).strict().parse(JSON.parse(readFileSync2(configPath, "utf8")));
+    const config2 = external_exports.object({ dbPath: external_exports.string().refine(isAbsolute4), token: external_exports.string().regex(/^[0-9a-f]{64}$/) }).strict().parse(JSON.parse(readFileSync3(configPath, "utf8")));
     db = new Database5(config2.dbPath, { fileMustExist: true });
-    if (db.pragma("user_version", { simple: true }) !== 14) throw new Error();
+    if (db.pragma("user_version", { simple: true }) !== MIGRATIONS.length) throw new Error();
     db.pragma("foreign_keys=ON");
     db.pragma("busy_timeout=5000");
     const server = createRunServer(openRunContext(db, config2.token));
@@ -21430,7 +22044,7 @@ async function startRunServer(configPath) {
 
 // src/run_main.ts
 var args = process.argv.slice(2);
-if (args.length !== 2 || args[0] !== "--config" || !isAbsolute4(args[1])) {
+if (args.length !== 2 || args[0] !== "--config" || !isAbsolute5(args[1])) {
   console.error("run broker startup denied");
   process.exit(1);
 }

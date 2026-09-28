@@ -1,4 +1,7 @@
 import type Database from 'better-sqlite3';
+import { controllerDb, type ControllerHandle } from './controller.js';
+import { assertNoHandoff, liveOwner, scopedWorkItem, type AuthorityBinding, type OwnershipRef } from './execution.js';
+export { openController, type ControllerHandle } from './controller.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { lstatSync, realpathSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
@@ -13,16 +16,16 @@ import { listCriteria } from './criteria.js';
 
 export type RunOperation = 'get_context' | 'submit_report' | 'request_question';
 const operations: readonly RunOperation[] = ['get_context', 'submit_report', 'request_question'];
-export interface ControllerHandle { readonly kind: 'controller' }
 export interface RunContext { readonly kind: 'run' }
 export interface IssueRunInput {
   taskId: number; workItemId: string; runId: string; expectedGeneration: number; expiresAt: number;
   operations: readonly RunOperation[];
   repositories: readonly { repoId: string; checkoutPath: string; write: boolean }[];
-  native: VerifiedCodexPackage;
+  native: VerifiedCodexPackage; ownership?: OwnershipRef;
 }
 export interface IssuedRunAuthority { authorityId: string; generation: number; token: string }
 interface Grant {
+  ownership?: OwnershipRef;
   projectId: string; taskId: number; workItemId: string; runId: string; generation: number;
   operations: readonly RunOperation[];
   repositories: readonly { repoId: string; checkoutPath: string; write: boolean; commonDir: string }[];
@@ -32,27 +35,19 @@ interface AuthorityRow {
   authority_id: string; task_id: number; work_item_id: string; run_id: string; generation: number;
   expires_at: number; revoked_at: number | null; token_hash: string; grant_json: string;
 }
-const controllers = new WeakMap<object, Database.Database>();
 const contexts = new WeakMap<object, { db: Database.Database; token: string; authorityId: string; grant: Grant }>();
 const denied = () => new KddError('run authority denied');
 const tokenHash = (token: string) => createHash('sha256').update(token).digest('hex');
 const controllerActor = { type: 'ai', id: 'controller' } as const;
 
-function controllerDb(handle: ControllerHandle): Database.Database {
-  const db = typeof handle === 'object' && handle !== null ? controllers.get(handle) : undefined;
-  if (!db?.open) throw denied();
-  return db;
-}
-export function openController(db: Database.Database): ControllerHandle {
-  if (!db.open || db.pragma('user_version', { simple: true }) !== 14) throw denied();
-  projectOf(db);
-  const handle = Object.freeze({ kind: 'controller' as const }); controllers.set(handle, db); return handle;
-}
 export function assertLegacyTaskMutation(db: Database.Database, taskIds: readonly number[]): void {
   const ids = [...new Set(taskIds)];
   if (ids.some(id => !Number.isSafeInteger(id) || id < 1)) throw new KddError('invalid task ids');
   if (ids.length && db.prepare(`SELECT task_id FROM managed_task_policy WHERE task_id IN (${ids.map(() => '?').join(',')}) LIMIT 1`).get(...ids)) {
     throw new KddError('managed task requires controller authority');
+  }
+  if (ids.length && db.prepare(`SELECT task_id FROM execution_handoffs WHERE completed_at IS NULL AND task_id IN (${ids.map(() => '?').join(',')}) LIMIT 1`).get(...ids)) {
+    throw new KddError('task handoff requires controller authority');
   }
 }
 function mark(db: Database.Database, taskId: number): void {
@@ -65,6 +60,17 @@ function mark(db: Database.Database, taskId: number): void {
 }
 export function protectTask(handle: ControllerHandle, taskId: number): void {
   const db = controllerDb(handle); db.transaction(() => mark(db, taskId)).immediate();
+}
+function modeledOwnership(db: Database.Database, input: Pick<IssueRunInput, 'taskId' | 'workItemId' | 'ownership'>, scope: Grant['repositories']): void {
+  const modeled = db.prepare('SELECT 1 FROM work_items WHERE id=?').get(input.workItemId);
+  if (!modeled) { if (input.ownership !== undefined) throw denied(); return; }
+  if (!input.ownership) throw new KddError('modeled work requires ownership');
+  const owner = liveOwner(db, input.ownership);
+  const item = scopedWorkItem(db, { projectId: input.ownership.projectId, workItemId: input.workItemId });
+  if (owner.work_item_id !== input.workItemId || item.task.taskId !== input.taskId) throw denied();
+  if (scope.some(repo => repo.write && (!owner.write_access || item.definition.repoId === null || item.definition.repoId !== repo.repoId))) {
+    throw new KddError('ownership writable repository mismatch');
+  }
 }
 function canonicalCheckout(path: string): string {
   if (typeof path !== 'string' || !isAbsolute(path) || !lstatSync(path).isDirectory()) throw new KddError('invalid repository scope');
@@ -110,16 +116,18 @@ export function issueRunAuthority(handle: ControllerHandle, input: IssueRunInput
       || !Number.isFinite(input.expiresAt) || input.expiresAt <= now()
       || !Array.isArray(input.operations) || !input.operations.length || new Set(input.operations).size !== input.operations.length
       || input.operations.some(operation => !operations.includes(operation))) throw denied();
+    assertNoHandoff(db, input.taskId);
     const generation = (db.prepare('SELECT COALESCE(MAX(generation),0) generation FROM run_authorities WHERE task_id=? AND work_item_id=?')
       .get(input.taskId, input.workItemId) as { generation: number }).generation;
     if (generation !== input.expectedGeneration) throw new KddError('run authority generation fence changed');
     assertVerifiedCodexPackage(input.native);
     const repositories = repositoryScope(db, input.repositories, input.native);
+    modeledOwnership(db, input, repositories);
     privateStore(db, repositories, input.native);
     mark(db, input.taskId);
     const grant: Grant = { projectId: projectOf(db).project_id, taskId: input.taskId,
       workItemId: input.workItemId, runId: input.runId, generation: generation + 1,
-      operations: [...input.operations], repositories,
+      operations: [...input.operations], repositories, ...(input.ownership ? { ownership: { ...input.ownership } } : {}),
       native: { readableRoots: [...input.native.readableRoots], writableRoot: input.native.writableRoot, scratchDir: input.native.scratchDir, configHash: input.native.configHash } };
     const token = randomBytes(32).toString('hex'), authorityId = randomBytes(16).toString('hex');
     db.prepare('UPDATE run_authorities SET revoked_at=? WHERE task_id=? AND work_item_id=? AND revoked_at IS NULL').run(now(), input.taskId, input.workItemId);
@@ -139,9 +147,7 @@ export function revokeRunAuthority(handle: ControllerHandle, authorityId: string
     }
   }).immediate();
 }
-function lookup(db: Database.Database, token: string): { row: AuthorityRow; grant: Grant } {
-  if (typeof token !== 'string' || !/^[0-9a-f]{64}$/.test(token)) throw denied();
-  const row = db.prepare('SELECT * FROM run_authorities WHERE token_hash=?').get(tokenHash(token)) as AuthorityRow | undefined;
+function currentAuthority(db: Database.Database, row: AuthorityRow | undefined): { row: AuthorityRow; grant: Grant } {
   if (!row || row.revoked_at !== null || !Number.isFinite(row.expires_at) || row.expires_at <= now()) throw denied();
   let grant: Grant;
   try { grant = JSON.parse(row.grant_json) as Grant; }
@@ -157,9 +163,22 @@ function lookup(db: Database.Database, token: string): { row: AuthorityRow; gran
   try {
     const repositories = repositoryScope(db, grant.repositories, grant.native);
     if (JSON.stringify(repositories) !== JSON.stringify(grant.repositories)) throw denied();
+    modeledOwnership(db, grant, repositories);
     privateStore(db, repositories, grant.native);
   } catch { throw denied(); }
   return { row, grant };
+}
+// Internal host boundary: the same live scope guard as token-backed run operations.
+export function assertRunAuthorityBinding(db: Database.Database, taskId: number, binding: AuthorityBinding): void {
+  const row = db.prepare(`SELECT * FROM run_authorities WHERE authority_id=? AND task_id=?
+    AND work_item_id=? AND run_id=? AND generation=?`)
+    .get(binding.authorityId, taskId, binding.workItemId, binding.runId, binding.generation) as AuthorityRow | undefined;
+  currentAuthority(db, row);
+}
+function lookup(db: Database.Database, token: string): { row: AuthorityRow; grant: Grant } {
+  if (typeof token !== 'string' || !/^[0-9a-f]{64}$/.test(token)) throw denied();
+  const row = db.prepare('SELECT * FROM run_authorities WHERE token_hash=?').get(tokenHash(token)) as AuthorityRow | undefined;
+  return currentAuthority(db, row);
 }
 export function openRunContext(db: Database.Database, token: string): RunContext {
   return db.transaction(() => {

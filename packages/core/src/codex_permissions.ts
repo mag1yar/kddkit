@@ -272,7 +272,12 @@ export async function preflightCodex(input: CodexPermissionInput): Promise<Verif
     const stamp = snapshot();
     const evidence = await observeCodexNative(executable, false, model, broker);
     if (!evidence.applicable || evidence.rawDiagnostic || evidence.observations.length !== (broker ? 158 : 129)
-      || evidence.executed !== evidence.observations.length) throw new KddError('Codex native enforcement unverified');
+      || evidence.executed !== evidence.observations.length) throw new KddError('Codex native enforcement unverified', { cause: {
+        expected: broker ? 158 : 129, attempted: evidence.attempted, executed: evidence.executed, applicable: evidence.applicable,
+        observations: evidence.observations.filter(o => o.failure).map(o => ({ caseId: o.caseId, mode: o.mode,
+          outcome: o.outcome, executed: o.executed, timedOut: o.timedOut, providerError: !!o.providerError })),
+        failedGuards: evidence.failures.filter(f => f.caseId).map(f => f.caseId),
+      } });
     if (snapshot() !== stamp) throw new KddError('native package binding changed during preflight');
     const results = Object.freeze(evidence.observations.filter(result => !result.control).map(result => Object.freeze({
       caseId: `${result.mode}:${result.caseId}`, tool: result.tool, outcome: result.outcome,

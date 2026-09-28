@@ -457,3 +457,11 @@ describe('a broken store', () => {
     });
   });
 });
+it('returns parent and mode through the actual MCP transport without adding owner tools',async()=>{
+  const db=openDb(':memory:','mode-mcp'),task=addTask(db,{title:'manual'},ai),client=await connect(db);
+  try {
+    const detail=textOf(await client.callTool({name:'get_task',arguments:{id:task.id}}));
+    expect(detail.task).toMatchObject({parent_id:null,execution_mode:'manual'});
+    expect((await client.listTools()).tools.map(t=>t.name).sort()).toEqual(['get_task','list_projects','list_tasks','list_tracks','recall','update_task']);
+  }finally{await client.close();db.close()}
+});

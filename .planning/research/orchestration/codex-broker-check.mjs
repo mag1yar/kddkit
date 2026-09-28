@@ -35,7 +35,7 @@ try {
   const backendId = core.addRepository(db, db.name, home, { cwd: backend, purpose: 'backend', access: 'context_only' }, user).repository.repo_id;
   const task = core.addTask(db, { title: 'Native broker fixture', criteria: ['prove scope'] }, user);
   const entryPath = realpathSync(fileURLToPath(new URL('../../../packages/mcp/dist/run_main.js', import.meta.url)));
-  const executable = '/opt/homebrew/bin/codex';
+  const executable = process.env.KDD_CODEX_EXECUTABLE || '/opt/homebrew/bin/codex';
   const repositories = [{ repoId, checkoutPath: workspace, write: true }, { repoId: backendId, checkoutPath: backend, write: false }];
   const nativeInput = { executable, model: 'fixture-codex', cwd: workspace, readableRoots: [workspace, backend],
     writableRoot: workspace, scratchDir: scratch, controlDir, protectedPaths: [source, home, clone] };

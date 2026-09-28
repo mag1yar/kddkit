@@ -1,4 +1,5 @@
 import { assertLegacyTaskMutation } from './authority.js';
+import { LEGACY_EXECUTION_SQL } from './execution.js';
 import type Database from 'better-sqlite3';
 import { now } from './db.js';
 import { MAX_FAILED_ATTEMPTS, type Actor } from './state.js';
@@ -17,6 +18,7 @@ export function recordFailedAttempt(
 ): void {
   db.transaction(() => {
     assertLegacyTaskMutation(db, [id]);
+    assertManualExecution(db, id);
     db.prepare(`UPDATE tasks SET failed_attempts = failed_attempts + 1, updated_at = ? WHERE id = ?`)
       .run(now(), id);
     const fa = (db.prepare(`SELECT failed_attempts FROM tasks WHERE id = ?`).get(id) as
@@ -36,12 +38,17 @@ export function releaseClaim(
 ): void {
   db.transaction(() => {
     assertLegacyTaskMutation(db, [id]);
+    assertManualExecution(db, id);
     db.prepare(
       `UPDATE tasks SET status='new', claimed_by=NULL, claim_expires=NULL, updated_at=? WHERE id=?`,
     ).run(now(), id);
     appendEvent(db, id, actor, 'released', { reason }, { type: 'claim', level: 'warn' });
     recordFailedAttempt(db, id, actor, reason);
   }).immediate();
+}
+
+function assertManualExecution(db: Database.Database, id: number): void {
+  if (mustGetTask(db, id).execution_mode !== 'manual') throw new KddError('orchestrated task requires controller execution');
 }
 
 // NaN/0/negative ttl -> claim_expires = NaN, который reclaimExpired (< ?) никогда не матчит: lease навечно.
@@ -58,7 +65,7 @@ function assertTtl(ttl: number): void {
 // человеку через явный `kdd claim <id>` research взять можно, агенту нет.
 const CLAIMABLE_SQL =
   `status = 'new' AND blocked = 0 AND archived_at IS NULL AND claimed_by IS NULL
-   AND NOT EXISTS (SELECT 1 FROM managed_task_policy p WHERE p.task_id=tasks.id)
+   AND ${LEGACY_EXECUTION_SQL}
    AND kind <> 'research'
    AND (SELECT COUNT(*) FROM criteria WHERE criteria.task_id = tasks.id) > 0`;
 
@@ -96,7 +103,7 @@ export function expiredLeases(db: Database.Database): ReclaimedLease[] {
   return db.prepare(
     `SELECT id, claimed_by FROM tasks
      WHERE status = 'in_progress' AND claim_expires IS NOT NULL AND claim_expires < ?
-       AND NOT EXISTS (SELECT 1 FROM managed_task_policy p WHERE p.task_id=tasks.id)`,
+       AND ${LEGACY_EXECUTION_SQL}`,
   ).all(now()) as ReclaimedLease[];
 }
 
@@ -112,7 +119,7 @@ export function reclaimExpired(
     const expired = expiredLeases(db).filter((e) => !opts.except?.has(e.id));
     assertLegacyTaskMutation(db, expired.map(row => row.id));
     const clear = db.prepare(
-      `UPDATE tasks SET status='new', claimed_by=NULL, claim_expires=NULL, updated_at=? WHERE id=?`);
+      `UPDATE tasks SET status='new', claimed_by=NULL, claim_expires=NULL, updated_at=? WHERE id=? AND ${LEGACY_EXECUTION_SQL}`);
     for (const e of expired) {
       clear.run(t, e.id);
       appendEvent(db, e.id, SYSTEM, 'reclaimed', { former: e.claimed_by }, { type: 'claim', level: 'warn' });
@@ -203,7 +210,7 @@ export interface StopResult { killed: number; released: number; stuck: number }
 export function stopWorkers(db: Database.Database, kill?: KillFn): StopResult {
   const live = db.prepare(
     `SELECT id, claimed_by FROM tasks WHERE status='in_progress' AND claimed_by IS NOT NULL
-     AND NOT EXISTS (SELECT 1 FROM managed_task_policy p WHERE p.task_id=tasks.id)`,
+     AND ${LEGACY_EXECUTION_SQL}`,
   ).all() as ReclaimedLease[];
   const dead: { id: number; claimedBy: string }[] = [];
   let killed = 0;
@@ -220,16 +227,17 @@ export function stopWorkers(db: Database.Database, kill?: KillFn): StopResult {
     dead.push({ id: l.id, claimedBy });
   }
   const released = db.transaction(() => {
-    assertLegacyTaskMutation(db, dead.map(row => row.id));
+    const eligible = dead.filter(row => db.prepare(`SELECT 1 FROM tasks WHERE id=? AND ${LEGACY_EXECUTION_SQL}`).get(row.id));
+    assertLegacyTaskMutation(db, eligible.map(row => row.id));
     // Снимок брали ДО убийства, а kill спит секундами — за это время воркер мог успеть честно
     // доделать работу и уйти в review, сняв claim. Без CAS мы вернули бы его готовую задачу в
     // new и следующим тиком посадили бы на неё второго агента. Условие в WHERE — та же защита,
     // что reclaimExpired получает даром, перечитывая expiredLeases внутри транзакции.
     const clear = db.prepare(
       `UPDATE tasks SET status='new', claimed_by=NULL, claim_expires=NULL, updated_at=?
-       WHERE id=? AND status='in_progress' AND claimed_by=?`);
+       WHERE id=? AND status='in_progress' AND claimed_by=? AND ${LEGACY_EXECUTION_SQL}`);
     let n = 0;
-    for (const d of dead) {
+    for (const d of eligible) {
       if (clear.run(now(), d.id, d.claimedBy).changes !== 1) continue; // ушла из-под нас — не трогаем
       n++;
       appendEvent(db, d.id, SYSTEM, 'released',
@@ -248,10 +256,12 @@ export function claimTask(
 ): { ok: true; task: Task } | { ok: false; error: string } {
   assertTtl(ttl);
   assertLegacyTaskMutation(db, [id]);
+  if (mustGetTask(db, id).execution_mode !== 'manual') return { ok: false, error: 'orchestrated task requires controller execution' };
   reapExpired(db, opts.kill); // ДО транзакции: внутри неё нельзя убивать
   return db.transaction((): { ok: true; task: Task } | { ok: false; error: string } => {
     assertLegacyTaskMutation(db, [id]);
     const t = mustGetTask(db, id);
+    if (t.execution_mode !== 'manual') return { ok: false, error: 'orchestrated task requires controller execution' };
     // Только ai: человеку research брать можно, `kdd claim <id>` для него — «я это взял».
     // Контраст с CLAIMABLE_SQL выше: там research исключён для ВСЕХ (actor туда не приходит),
     // здесь actor известен и гейт бьёт только по ai. Гейт защищает не задачу, а агента:
@@ -270,7 +280,7 @@ export function claimTask(
     const expires = now() + ttl;
     const r = db.prepare(
       `UPDATE tasks SET status='in_progress', claimed_by=?, claim_expires=?, updated_at=?
-       WHERE id=? AND status='new' AND blocked=0 AND archived_at IS NULL AND claimed_by IS NULL`,
+       WHERE id=? AND status='new' AND blocked=0 AND archived_at IS NULL AND claimed_by IS NULL AND ${LEGACY_EXECUTION_SQL}`,
     ).run(authorOf(actor), expires, now(), id);
     if (r.changes !== 1) {
       return { ok: false,
@@ -297,7 +307,7 @@ export function claimNext(
       const expires = now() + ttl;
       const r = db.prepare(
         `UPDATE tasks SET status='in_progress', claimed_by=?, claim_expires=?, updated_at=?
-         WHERE id=? AND status='new' AND blocked=0 AND archived_at IS NULL AND claimed_by IS NULL`,
+         WHERE id=? AND status='new' AND blocked=0 AND archived_at IS NULL AND claimed_by IS NULL AND ${LEGACY_EXECUTION_SQL}`,
       ).run(authorOf(actor), expires, now(), id);
       if (r.changes === 1) {
         appendTaskMutationEvent(db, id, actor, 'claimed', { ttl, expires }, { type: 'claim' });
@@ -321,10 +331,10 @@ export function renewClaim(
   assertTtl(ttl);
   return db.transaction((): { ok: true; task: Task } | { ok: false; error: string } => {
     assertLegacyTaskMutation(db, [id]);
-    mustGetTask(db, id);
+    if (mustGetTask(db, id).execution_mode !== 'manual') return { ok: false, error: 'orchestrated task requires controller execution' };
     const expires = now() + ttl;
     const r = db.prepare(
-      `UPDATE tasks SET claim_expires=?, updated_at=? WHERE id=? AND claimed_by=?`,
+      `UPDATE tasks SET claim_expires=?, updated_at=? WHERE id=? AND claimed_by=? AND ${LEGACY_EXECUTION_SQL}`,
     ).run(expires, now(), id, authorOf(actor));
     if (r.changes !== 1) {
       return { ok: false,

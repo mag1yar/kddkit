@@ -12,6 +12,7 @@ export interface Task {
   id: number; title: string; body: string | null; status: Status;
   blocked: 0 | 1; block_reason: string | null; priority: Priority; area: string | null;
   kind: Kind;
+  parent_id: number | null; execution_mode: 'manual' | 'orchestrated';
   track_id: number | null;
   ready: 0 | 1; // takeable агентом прямо сейчас: new & не blocked & не archived (core: READY_SQL)
   criteria_checked: number; criteria_total: number;

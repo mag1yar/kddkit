@@ -4,7 +4,7 @@ import { isAbsolute } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { CAPS, openRunContext, runOperations, readRunContext, submitRunReport, requestRunQuestion, type RunContext } from '@kddkit/core';
+import { CAPS, MIGRATIONS, openRunContext, runOperations, readRunContext, submitRunReport, requestRunQuestion, type RunContext } from '@kddkit/core';
 
 export function createRunServer(context: RunContext): McpServer {
   const server = new McpServer({ name: 'kdd-run', version: '0.1.0' });
@@ -39,7 +39,7 @@ export async function startRunServer(configPath: string): Promise<void> {
     const config = z.object({ dbPath: z.string().refine(isAbsolute), token: z.string().regex(/^[0-9a-f]{64}$/) }).strict()
       .parse(JSON.parse(readFileSync(configPath, 'utf8')));
     db = new Database(config.dbPath, { fileMustExist: true });
-    if (db.pragma('user_version', { simple: true }) !== 14) throw new Error();
+    if (db.pragma('user_version', { simple: true }) !== MIGRATIONS.length) throw new Error();
     db.pragma('foreign_keys=ON'); db.pragma('busy_timeout=5000');
     const server = createRunServer(openRunContext(db, config.token));
     const connection = db; server.server.onclose = () => { if (connection.open) connection.close(); };

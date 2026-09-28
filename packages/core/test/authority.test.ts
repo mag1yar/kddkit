@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, linkSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -169,8 +170,11 @@ it('preserves all v13 rows and a WAL-aware backup, without implicitly managing l
   const tables = ['tasks', 'criteria', 'comments', 'events', 'decisions', 'search_index', 'project'];
   const before = Object.fromEntries(tables.map(table => [table, raw.prepare(`SELECT * FROM ${table}`).all()]));
   const upgraded = core.openDb(path); connections.push(upgraded);
-  expect(upgraded.pragma('user_version', { simple: true })).toBe(14);
-  for (const table of tables) expect(upgraded.prepare(`SELECT * FROM ${table}`).all()).toEqual(before[table]);
+  expect(upgraded.pragma('user_version', { simple: true })).toBe(core.MIGRATIONS.length);
+  for (const table of tables) {
+    const rows = upgraded.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
+    expect(table === 'tasks' ? rows.map(({ parent_id, execution_mode, ...old }) => old) : rows).toEqual(before[table]);
+  }
   expect(upgraded.prepare('SELECT COUNT(*) n FROM managed_task_policy').get()).toEqual({ n: 0 });
   expect(upgraded.prepare('SELECT COUNT(*) n FROM run_authorities').get()).toEqual({ n: 0 });
   const backup = new Database(`${path}.v13.bak`, { readonly: true });
@@ -216,4 +220,185 @@ it('refuses a persisted grant without its scratch scope on every later operation
   expect(() => authority.readRunContext(context)).toThrow(/authority/);
   expect(() => authority.submitRunReport(context, 'late')).toThrow(/authority/);
   expect(db.prepare('SELECT * FROM events').all()).toEqual(before);
+});
+
+it('binds subtask provenance to an actual current scoped report, never a question or worker JSON', () => {
+  const parent = core.addTask(db, { title: 'BA parent', criteria: ['deliver'] }, user);
+  const handle = core.openController(db), issued = core.issueRunAuthority(handle, issueInput(parent.id));
+  const context = core.openRunContext(db, issued.token), report = core.submitRunReport(context, 'proposed children');
+  const question = core.requestRunQuestion(context, 'question');
+  const ref = { projectId: core.projectOf(db).project_id, taskId: parent.id };
+  const input: core.CreateSubtasksInput = { parent: ref, expectedParentHash: core.taskContractHash(handle, ref),
+    source: { kind: 'run', sourceTask: ref, authority: { authorityId: issued.authorityId,
+      workItemId: 'w1', runId: 'r1', generation: 1 }, proposalEventId: report },
+    children: [{ key: 'a', title: 'child', criteria: ['outcome'] }] };
+  expect(core.createSubtasks(handle, input).a.parent_id).toBe(parent.id);
+  const before = db.prepare('SELECT * FROM events').all();
+  expect(() => core.createSubtasks(handle, { ...input, source: { ...input.source as Extract<core.CreationSource, {kind:'run'}>, proposalEventId: question } })).toThrow(/proposal/);
+  expect(() => core.createSubtasks(context as unknown as core.ControllerHandle, input)).toThrow(/authority/);
+  core.revokeRunAuthority(handle, issued.authorityId);
+  const afterRevoke = db.prepare('SELECT * FROM events').all();
+  expect(() => core.createSubtasks(handle, input)).toThrow(/authority/);
+  expect(db.prepare('SELECT * FROM events').all()).toEqual(afterRevoke);
+  expect(before).toHaveLength(afterRevoke.length - 1);
+});
+
+function modeledTask(repoId: string|null = core.projectOf(db).primary_repo_id, kind: core.WorkItemKind = 'implementation', write = true) {
+  const task=core.addTask(db,{title:'modeled'},user), handle=core.openController(db);
+  const item=core.createWorkItem(handle,{task:{projectId:core.projectOf(db).project_id,taskId:task.id},
+    definition:{kind,repoId,sourceTasks:[],outputs:[]},dependencies:[]});
+  const owner=core.reserveWorkItem(handle,{ref:item.ref,expectedRevision:1,expectedFence:0,expectedMode:'manual',ownerId:'host',write});
+  return {task,handle,item,owner,input:{...issueInput(task.id),workItemId:item.ref.workItemId,ownership:owner.ref}};
+}
+it('refuses a run proposal after its modeled parent inputs become stale without creating children',()=>{
+  const parent=core.addTask(db,{title:'main requirements',body:'original',criteria:['deliver']},user);
+  const handle=core.openController(db),projectId=core.projectOf(db).project_id;
+  const parentRef={projectId,taskId:parent.id};
+  const child=core.createSubtasks(handle,{parent:parentRef,expectedParentHash:core.taskContractHash(handle,parentRef),
+    source:{kind:'manual',sourceTask:parentRef,instructionRef:'owner:BA'},children:[{key:'ba',title:'BA',criteria:['proposal']}]}).ba;
+  const childRef={projectId,taskId:child.id};
+  const item=core.createWorkItem(handle,{task:childRef,definition:{kind:'analysis',repoId:null,sourceTasks:[],outputs:[]},dependencies:[]});
+  const owner=core.reserveWorkItem(handle,{ref:item.ref,expectedRevision:1,expectedFence:0,expectedMode:'manual',ownerId:'BA',write:false});
+  const input=issueInput(child.id);
+  const issued=core.issueRunAuthority(handle,{...input,workItemId:item.ref.workItemId,ownership:owner.ref,native:native(workspace,false),
+    repositories:input.repositories.map(repo=>({...repo,write:false}))});
+  const context=core.openRunContext(db,issued.token),report=core.submitRunReport(context,'proposed children');
+  const proposal:core.CreateSubtasksInput={parent:parentRef,expectedParentHash:core.taskContractHash(handle,parentRef),
+    source:{kind:'run',sourceTask:childRef,authority:{authorityId:issued.authorityId,workItemId:item.ref.workItemId,runId:'r1',generation:1},proposalEventId:report},
+    children:[{key:'work',title:'implementation',criteria:['deliver']}]};
+  expect(core.createSubtasks(handle,proposal).work.parent_id).toBe(parent.id);
+  core.editTask(db,parent.id,{body:'changed requirements'},user);
+  expect(core.inspectDependencies(handle,item.ref).inputsCurrent).toBe(false);
+  expect(()=>core.readRunContext(context)).toThrow(/authority/);
+  const freshParent={...proposal,expectedParentHash:core.taskContractHash(handle,parentRef)};
+  const before={tasks:db.prepare('SELECT * FROM tasks').all(),events:db.prepare('SELECT * FROM events').all()};
+  expect(()=>core.createSubtasks(handle,freshParent)).toThrow(/authority/);
+  expect(()=>core.createSubtaskPlan(handle,{...freshParent,workItems:[],dependencies:[]})).toThrow(/authority/);
+  expect({tasks:db.prepare('SELECT * FROM tasks').all(),events:db.prepare('SELECT * FROM events').all()}).toEqual(before);
+});
+it('requires modeled ownership and binds native writes to its definition repository and write access',()=>{
+  const f=modeledTask();const {ownership,...without}=f.input;
+  const before=db.prepare('SELECT * FROM events').all();
+  expect(()=>core.issueRunAuthority(f.handle,without)).toThrow(/ownership/);
+  for(const patch of [{fence:2},{ownerId:'other'},{revision:999},{projectId:'foreign'}]) {
+    expect(()=>core.issueRunAuthority(f.handle,{...f.input,ownership:{...f.owner.ref,...patch}})).toThrow();
+  }
+  expect(db.prepare('SELECT * FROM events').all()).toEqual(before);
+  const issued=core.issueRunAuthority(f.handle,f.input), context=core.openRunContext(db,issued.token);
+  expect(core.readRunContext(context).workItemId).toBe(f.item.ref.workItemId);
+  const nullRepo=modeledTask(null);
+  expect(()=>core.issueRunAuthority(nullRepo.handle,nullRepo.input)).toThrow(/repository/);
+  const readonly=modeledTask(core.projectOf(db).primary_repo_id,'analysis',false);
+  expect(()=>core.issueRunAuthority(readonly.handle,readonly.input)).toThrow(/repository/);
+  const packet={...readonly.input,native:native(workspace,false),repositories:[{...readonly.input.repositories[0],write:false}]};
+  const readGrant=core.issueRunAuthority(readonly.handle,packet);
+  expect(core.readRunContext(core.openRunContext(db,readGrant.token)).taskId).toBe(readonly.task.id);
+  db.prepare("UPDATE run_authorities SET grant_json=json_set(grant_json,'$.ownership.fence',2) WHERE authority_id=?").run(issued.authorityId);
+  expect(()=>core.readRunContext(context)).toThrow(/authority/);
+});
+it('rotates credentials independently of owner fence and does not strand handoff on revoke or expiry',async()=>{
+  const f=modeledTask();const first=core.issueRunAuthority(f.handle,f.input);
+  const second=core.issueRunAuthority(f.handle,{...f.input,expectedGeneration:1,runId:'r2'});
+  expect(second.generation).toBe(2);expect(core.ownership(f.handle,f.owner.ref).ref.fence).toBe(1);
+  const binding={authorityId:second.authorityId,workItemId:f.item.ref.workItemId,runId:'r2',generation:2};
+  core.recordLaunchIntent(f.handle,{owner:f.owner.ref,intent:{launchId:'launch',writerScopeId:'writers',authority:binding}});
+  const transfer=core.beginHandoff(f.handle,{commandId:'transfer',task:f.item.task,expectedMode:'manual',targetMode:'manual',expectedOwners:[f.owner.ref]});
+  const before=db.prepare('SELECT * FROM events').all();
+  expect(()=>core.issueRunAuthority(f.handle,{...f.input,expectedGeneration:2})).toThrow(/handoff/);
+  expect(db.prepare('SELECT * FROM events').all()).toEqual(before);
+  core.revokeRunAuthority(f.handle,second.authorityId);
+  db.prepare('UPDATE run_authorities SET expires_at=1 WHERE authority_id=?').run(first.authorityId);
+  expect((await core.finishHandoff(f.handle,{handoffId:transfer.id})).status).toBe('held');
+  expect(core.ownership(f.handle,f.owner.ref).releasedAt).toBeNull();
+  const finished=await core.finishHandoff(f.handle,{handoffId:transfer.id},async owner=>({observationId:'host:full-stop',owner:owner.ref,
+    launchId:owner.launchIntent!.launchId,writerScopeId:owner.launchIntent!.writerScopeId,observedAt:core.now(),verdict:'stopped',complete:true,writers:[{id:'writer',state:'gone'}]}));
+  expect(finished.status).toBe('complete');expect(core.ownership(f.handle,f.owner.ref).releasedAt).not.toBeNull();
+  expect(()=>core.openRunContext(db,second.token)).toThrow(/authority/);
+});
+it('atomically revokes still-live modeled credentials at never-started handoff and retains the marker',async()=>{
+  const f=modeledTask(),issued=core.issueRunAuthority(f.handle,f.input), context=core.openRunContext(db,issued.token);
+  const transfer=core.beginHandoff(f.handle,{commandId:'no launch',task:f.item.task,expectedMode:'manual',targetMode:'orchestrated',expectedOwners:[f.owner.ref]});
+  expect(core.readRunContext(context).taskId).toBe(f.task.id);
+  const finished=await core.finishHandoff(f.handle,{handoffId:transfer.id});
+  expect(finished).toMatchObject({status:'complete',receipt:{revokedAuthorityIds:[issued.authorityId]}});
+  expect(()=>core.readRunContext(context)).toThrow(/authority/);
+  expect(()=>core.assertLegacyTaskMutation(db,[f.task.id])).toThrow(/managed/);
+});
+
+it.each(['live','revoked','expired'] as const)('holds handoff for an unmodeled %s credential even beside a known owner',async state=>{
+  const f=modeledTask(), known=core.issueRunAuthority(f.handle,f.input);
+  const issued=core.issueRunAuthority(f.handle,{...issueInput(f.task.id),workItemId:'external-work-id'});
+  const context=core.openRunContext(db,issued.token);
+  if(state==='revoked')core.revokeRunAuthority(f.handle,issued.authorityId);
+  if(state==='expired')db.prepare('UPDATE run_authorities SET expires_at=1 WHERE authority_id=?').run(issued.authorityId);
+  const transfer=core.beginHandoff(f.handle,{commandId:'unknown writer',task:f.item.task,
+    expectedMode:'manual',targetMode:'orchestrated',expectedOwners:[f.owner.ref]});
+  expect(transfer.authorities.map(a=>a.authorityId).sort()).toEqual([known.authorityId,issued.authorityId].sort());
+  expect(await core.finishHandoff(f.handle,{handoffId:transfer.id})).toMatchObject({status:'held',reason:'unknown'});
+  expect(core.mustGetTask(db,f.task.id).execution_mode).toBe('manual');
+  expect(core.ownership(f.handle,f.owner.ref).releasedAt).toBeNull();
+  expect(()=>core.reserveWorkItem(f.handle,{ref:f.item.ref,expectedRevision:1,expectedFence:1,expectedMode:'manual',ownerId:'next',write:true})).toThrow(/handoff/);
+  if(state==='live')expect(core.readRunContext(context).taskId).toBe(f.task.id);
+});
+
+it('recognizes grants retired by a completed handoff when transferring the next owner',async()=>{
+  const f=modeledTask(), first=core.issueRunAuthority(f.handle,f.input);
+  const transfer=core.beginHandoff(f.handle,{commandId:'first owner',task:f.item.task,
+    expectedMode:'manual',targetMode:'orchestrated',expectedOwners:[f.owner.ref]});
+  expect((await core.finishHandoff(f.handle,{handoffId:transfer.id})).status).toBe('complete');
+  const owner=core.reserveWorkItem(f.handle,{ref:f.item.ref,expectedRevision:1,expectedFence:1,expectedMode:'orchestrated',ownerId:'next',write:true});
+  const second=core.issueRunAuthority(f.handle,{...f.input,ownership:owner.ref,expectedGeneration:1,runId:'next'});
+  const next=core.beginHandoff(f.handle,{commandId:'next owner',task:f.item.task,
+    expectedMode:'orchestrated',targetMode:'manual',expectedOwners:[owner.ref]});
+  expect(next.authorities).toHaveLength(2);
+  expect(await core.finishHandoff(f.handle,{handoffId:next.id})).toMatchObject({status:'complete',receipt:{revokedAuthorityIds:[second.authorityId]}});
+  for(const grant of [first,second])expect(()=>core.openRunContext(db,grant.token)).toThrow(/authority/);
+});
+
+it.each(['invalidation','upstream invalidation','artifact change','producer requirements change'] as const)
+('closes launch and saved BA proposals after pinned input %s without losing ownership',async change=>{
+  const handle=core.openController(db), projectId=core.projectOf(db).project_id;
+  const ref=(taskId:number)=>({projectId,taskId});
+  const definition:core.WorkItemDefinition={kind:'architecture',repoId:null,sourceTasks:[],
+    outputs:[{key:'api',kind:'contract',required:true,version:'v1',checkRefs:['check:api']}]};
+  const upstreamTask=core.addTask(db,{title:'upstream API'},user), producerTask=core.addTask(db,{title:'derived API'},user);
+  const artifact=join(root,'api.json');writeFileSync(artifact,'API v1');
+  const payload:core.ResultPayload={kind:'contract',repoId:null,head:null,version:'v1',checkRefs:['check:api'],
+    artifact:{path:artifact,sha256:createHash('sha256').update('API v1').digest('hex')}};
+  const observed:core.ResultObservers={observe:request=>({request:structuredClone(request),verdict:'pass',origin:'host',observedAt:core.now(),expiresAt:null})};
+  const edge=(producer:core.WorkItemRecord):core.DependencyInput=>({key:'api',producer:producer.ref,producerRevision:1,outputKey:'api',
+    binding:{kind:'contract',repoId:null,version:'v1'}});
+  const upstream=core.createWorkItem(handle,{task:ref(upstreamTask.id),definition,dependencies:[]});
+  const publish=(item:core.WorkItemRecord,commandId:string)=>{
+    const source:core.ResultSource={kind:'manual',sourceTask:item.task,instructionRef:'publish'};
+    const result=core.publishResult(handle,{commandId,producer:item.ref,expectedRevision:1,outputKey:'api',expectedResultId:null,source,payload},observed);
+    core.completeWorkItem(handle,{ref:item.ref,expectedRevision:1,source},observed);return result;
+  };
+  const upstreamResult=publish(upstream,'upstream');
+  const producer=core.createWorkItem(handle,{task:ref(producerTask.id),definition,dependencies:[edge(upstream)]});
+  const published=publish(producer,'derived');
+  const parent=core.addTask(db,{title:'BA consumer',criteria:['deliver']},user);
+  const consumer=core.createWorkItem(handle,{task:ref(parent.id),definition:{kind:'analysis',repoId:core.projectOf(db).primary_repo_id,sourceTasks:[],outputs:[]},dependencies:[edge(producer)]});
+  const owner=core.reserveWorkItem(handle,{ref:consumer.ref,expectedRevision:1,expectedFence:0,expectedMode:'manual',ownerId:'BA',write:true},observed);
+  const input={...issueInput(parent.id),workItemId:consumer.ref.workItemId,ownership:owner.ref};
+  const issued=core.issueRunAuthority(handle,input), context=core.openRunContext(db,issued.token);
+  const proposal:core.CreateSubtasksInput={parent:ref(parent.id),expectedParentHash:core.taskContractHash(handle,ref(parent.id)),
+    source:{kind:'run',sourceTask:ref(parent.id),authority:{authorityId:issued.authorityId,workItemId:consumer.ref.workItemId,runId:'r1',generation:1},
+      proposalEventId:core.submitRunReport(context,'split work based on API v1')},children:[{key:'child',title:'frontend',criteria:['deliver']}]};
+  expect(core.createSubtasks(handle,proposal).child.parent_id).toBe(parent.id);
+  expect(core.readRunContext(context).taskId).toBe(parent.id);
+  if(change==='invalidation'||change==='upstream invalidation')core.invalidateResult(handle,{commandId:'withdraw',
+    resultId:change==='invalidation'?published.id:upstreamResult.id,reason:'API withdrawn'});
+  if(change==='artifact change')writeFileSync(artifact,'different API');
+  if(change==='producer requirements change')core.editTask(db,producerTask.id,{body:'changed requirements'},user);
+  expect(core.inspectDependencies(handle,consumer.ref,observed).ready).toBe(false);
+  const before=['tasks','events','work_item_owners','run_authorities'].map(table=>db.prepare(`SELECT * FROM ${table}`).all());
+  expect(()=>core.recordLaunchIntent(handle,{owner:owner.ref,intent:{launchId:'late',writerScopeId:'stale-input'}})).toThrow(/stale|inputs/);
+  expect(()=>core.issueRunAuthority(handle,{...input,runId:'late',expectedGeneration:1})).toThrow(/stale|inputs/);
+  for(const call of [()=>core.readRunContext(context),()=>core.submitRunReport(context,'late'),()=>core.requestRunQuestion(context,'late'),
+    ()=>core.createSubtasks(handle,proposal),()=>core.createSubtaskPlan(handle,{...proposal,workItems:[],dependencies:[]})])expect(call).toThrow(/authority/);
+  expect(['tasks','events','work_item_owners','run_authorities'].map(table=>db.prepare(`SELECT * FROM ${table}`).all())).toEqual(before);
+  expect(core.ownership(handle,owner.ref)).toEqual(owner);
+  const transfer=core.beginHandoff(handle,{commandId:'stop stale owner',task:ref(parent.id),expectedMode:'manual',targetMode:'manual',expectedOwners:[owner.ref]});
+  expect((await core.finishHandoff(handle,{handoffId:transfer.id})).status).toBe('complete');
 });

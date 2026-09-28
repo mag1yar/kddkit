@@ -66,6 +66,7 @@ describe('taskBrief', () => {
     expect(first.task).toEqual({
       id: task.id,
       title: 'resume me',
+      parent_id: null, execution_mode: 'manual',
       goal: 'ship the packet',
       status: 'new',
       blocked: false,
@@ -404,4 +405,20 @@ describe('taskBrief', () => {
     expect(brief.provenance === undefined || brief.provenance.before_commit === before).toBe(true);
     expect(brief.provenance === undefined || brief.provenance.after_commit === after).toBe(true);
   });
+});
+
+import * as core from '../src/index.js';
+it('preserves parent/mode in bounded reads and keeps controller work out of legacy start advice',()=>{
+  const db=core.openDb(':memory:'),parent=core.addTask(db,{title:'parent'},{type:'user'}),handle=core.openController(db);
+  const ref={projectId:core.projectOf(db).project_id,taskId:parent.id};
+  const child=core.createSubtasks(handle,{parent:ref,expectedParentHash:core.taskContractHash(handle,ref),
+    source:{kind:'manual',sourceTask:ref,instructionRef:'split'},children:[{key:'child',title:'child',criteria:['outcome'],executionMode:'orchestrated'}]}).child;
+  try {
+    const brief=core.taskBrief(db,'/missing',child.id);
+    expect(brief.task).toMatchObject({parent_id:parent.id,execution_mode:'orchestrated'});
+    expect(brief.next_action.kind).toBe('await_controller');
+    expect(Buffer.byteLength(JSON.stringify(brief))).toBeLessThanOrEqual(4096);
+    expect(core.taskDetailCapped(db,child.id).task.parent_id).toBe(parent.id);
+    expect(Object.values(core.boardData(db,{ready:true})).flat().map(t=>t.id)).not.toContain(child.id);
+  }finally{db.close()}
 });

@@ -15,6 +15,7 @@ import { KddError } from './errors.js';
 import { syncIndex } from './recall.js';
 import { redact } from './agent_events.js';
 import { canSyncLegacyDecisions } from './project_store.js';
+import { LEGACY_EXECUTION_SQL } from './execution.js';
 
 export const PRIORITY_ORDER =
   `CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
@@ -67,7 +68,7 @@ function manualHistory(events: EventRow[]): {
 // и claimable расходятся: research отрапортует ready=1, board --ready её покажет, а взять
 // агент её всё равно не может — ready перестаёт значить «takeable».
 // Один источник правды — используется и как колонка, и как фильтр.
-const READY_SQL = `(status = 'new' AND blocked = 0 AND archived_at IS NULL AND kind <> 'research')`;
+const READY_SQL = `(status = 'new' AND blocked = 0 AND archived_at IS NULL AND kind <> 'research' AND ${LEGACY_EXECUTION_SQL})`;
 
 export function boardData(
   db: Database.Database,

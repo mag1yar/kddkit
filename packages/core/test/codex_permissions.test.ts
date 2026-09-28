@@ -2,7 +2,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, linkSync, existsSync, rmSync, sy
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import * as probe from '../src/codex_native_probe.js';
 import * as core from '../src/index.js';
 import { codexBrokerBinding, fixedCodexConfig } from '../src/codex_permissions.js';
 
@@ -14,7 +15,7 @@ beforeEach(() => {
   for (const path of [workspace, scratch, controlDir]) mkdirSync(path);
   writeFileSync(join(root, 'foreign'), 'foreign');
 });
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => { vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); });
 const input = (phase: 'start' | 'resume') => ({
   controlDir, writableRoots: [workspace, scratch], executable: process.execPath,
   args: ['-e', 'require("node:fs").writeFileSync("started","yes")'],
@@ -24,6 +25,19 @@ const input = (phase: 'start' | 'resume') => ({
 it('rejects fabricated native proof instead of accepting serialized evidence', () => {
   expect(() => api.assertVerifiedCodexPackage({})).toThrow(/unverified/);
   expect(() => api.assertVerifiedCodexPackage({ executable: process.execPath, results: [{ outcome: 'allowed' }] })).toThrow(/unverified/);
+});
+it.runIf(process.platform === 'darwin')('reports bounded matrix diagnostics while refusing incomplete native evidence', async () => {
+  // Unit fixture only: no real native proof or branded package is created.
+  const executable = join(root, 'fixture-codex');
+  writeFileSync(executable, '#!/bin/sh\nprintf "codex-cli 0.157.0\\n"\n', { mode: 0o755 });
+  execFileSync('/usr/bin/git', ['init', '-q', workspace]);
+  vi.spyOn(probe, 'observeCodexNative').mockResolvedValue({ version: 'fixture', model: 'fixture',
+    executableHash: 'fixture', scriptHash: 'fixture', guardHash: 'fixture', applicable: true, rawDiagnostic: false,
+    attempted: 0, executed: 0, failures: [], observations: [], operations: [], preflight: [], networkControls: [] });
+  await expect(api.preflightCodex({ executable, cwd: workspace, readableRoots: [workspace], writableRoot: workspace,
+    scratchDir: scratch, controlDir, model: 'fixture-codex', protectedPaths: [join(root, 'foreign')] }))
+    .rejects.toMatchObject({ message: 'Codex native enforcement unverified',
+      cause: { expected: 129, attempted: 0, executed: 0, applicable: true, observations: [] } });
 });
 it('binds only a private fixed broker config, independently of credential rotation', () => {
   const config = join(controlDir, 'broker.json'), entry = join(controlDir, 'run_main.js'), db = join(controlDir, 'board.db');

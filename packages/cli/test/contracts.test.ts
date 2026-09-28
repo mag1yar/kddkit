@@ -173,3 +173,18 @@ describe('output contracts (CLI-05)', () => {
     expect(EMOJI.test(out)).toBe(false);
   });
 });
+
+import { beginHandoff, finishHandoff, projectOf } from '@kddkit/core';
+import { kddFail } from './run.js';
+it('refuses built CLI claims for orchestrated work without changing its rows',async()=>{
+  const db=openDb(env.KDD_DB!,'mode-cli'),task=addTask(db,{title:'orchestrated',criteria:['proof']},{type:'user'});
+  try {
+    const handle=openController(db),ref={projectId:projectOf(db).project_id,taskId:task.id};
+    const intent=beginHandoff(handle,{commandId:'mode',task:ref,expectedMode:'manual',targetMode:'orchestrated',expectedOwners:[]});
+    await finishHandoff(handle,{handoffId:intent.id});
+    const before=db.prepare('SELECT * FROM tasks').all();
+    expect(kddFail({...env,KDD_ACTOR:'user'},'claim',String(task.id)).stderr).toMatch(/orchestrated/);
+    expect(db.prepare('SELECT * FROM tasks').all()).toEqual(before);
+    expect(JSON.parse(kdd(env,'brief',String(task.id),'--json')).task.execution_mode).toBe('orchestrated');
+  }finally{db.close()}
+});

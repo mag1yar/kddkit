@@ -161,6 +161,162 @@ declare function rebindRepository(db: Database.Database, dbPath: string, home: s
 declare function canSyncLegacyDecisions(db: Database.Database, decisionsDir: string): boolean;
 declare function assertLegacyDecisionSource(db: Database.Database, decisionsDir: string): void;
 
+interface ControllerHandle {
+    readonly kind: 'controller';
+}
+declare function openController(db: Database.Database): ControllerHandle;
+
+type ExecutionMode = 'manual' | 'orchestrated';
+interface TaskRef {
+    projectId: string;
+    taskId: number;
+}
+interface AuthorityBinding {
+    authorityId: string;
+    runId: string;
+    workItemId: string;
+    generation: number;
+}
+type CreationSource = {
+    kind: 'manual';
+    sourceTask: TaskRef;
+    instructionRef: string;
+} | {
+    kind: 'run';
+    sourceTask: TaskRef;
+    authority: AuthorityBinding;
+    proposalEventId: number;
+};
+interface SubtaskDraft {
+    key: string;
+    title: string;
+    body?: string;
+    criteria: readonly string[];
+    kind?: Kind;
+    priority?: Priority;
+    area?: string;
+    trackId?: number;
+    executionMode?: ExecutionMode;
+}
+interface CreateSubtasksInput {
+    parent: TaskRef;
+    expectedParentHash: string;
+    source: CreationSource;
+    children: readonly SubtaskDraft[];
+}
+declare function taskContractHash(handle: ControllerHandle, ref: TaskRef): string;
+declare function createSubtasks(handle: ControllerHandle, input: CreateSubtasksInput): Record<string, Task>;
+declare function listSubtasks(handle: ControllerHandle, parent: TaskRef): Task[];
+type WorkItemKind = 'analysis' | 'architecture' | 'implementation' | 'check' | 'integration' | 'human_action' | 'curation';
+type WorkItemState = 'pending' | 'ready' | 'running' | 'waiting_input' | 'retry_wait' | 'completed' | 'failed' | 'cancelled';
+type DependencyKind = 'contract' | 'code' | 'merged' | 'readiness';
+interface WorkItemRef {
+    projectId: string;
+    workItemId: string;
+}
+interface OwnershipRef extends WorkItemRef {
+    revision: number;
+    ownerId: string;
+    fence: number;
+}
+interface OutputRequirement {
+    key: string;
+    kind: DependencyKind;
+    required: boolean;
+    version: string;
+    checkRefs: readonly string[];
+}
+interface WorkItemDefinition {
+    kind: WorkItemKind;
+    repoId: string | null;
+    sourceTasks: readonly TaskRef[];
+    outputs: readonly OutputRequirement[];
+}
+type DependencyBinding = {
+    kind: 'contract';
+    repoId: string | null;
+    version: string;
+} | {
+    kind: 'code';
+    repoId: string;
+    version: string;
+    baseHead: string;
+} | {
+    kind: 'merged';
+    repoId: string;
+    version: string;
+    target: string;
+    baseHead: string;
+} | {
+    kind: 'readiness';
+    repoId: string | null;
+    version: string;
+    resourceId: string;
+    configHash: string;
+    consumerScope: string;
+    capabilities: readonly string[];
+};
+interface DependencyInput {
+    key: string;
+    producer: WorkItemRef;
+    producerRevision: number;
+    outputKey: string;
+    binding: DependencyBinding;
+    resultId?: string;
+}
+interface WorkItemRecord {
+    ref: WorkItemRef;
+    task: TaskRef;
+    revision: number;
+    state: WorkItemState;
+    fence: number;
+    definition: WorkItemDefinition;
+    inputs: readonly {
+        task: TaskRef;
+        hash: string;
+    }[];
+    inputsHash: string;
+    dependencies: readonly DependencyInput[];
+}
+interface WorkItemInput {
+    task: TaskRef;
+    definition: WorkItemDefinition;
+    dependencies: readonly DependencyInput[];
+}
+interface SubtaskPlanInput extends CreateSubtasksInput {
+    workItems: readonly {
+        key: string;
+        childKey: string;
+        definition: WorkItemDefinition;
+    }[];
+    dependencies: readonly {
+        consumerKey: string;
+        key: string;
+        producer: {
+            localKey: string;
+        } | {
+            ref: WorkItemRef;
+            revision: number;
+        };
+        outputKey: string;
+        binding: DependencyBinding;
+        resultId?: string;
+    }[];
+}
+declare function createWorkItem(handle: ControllerHandle, input: WorkItemInput): WorkItemRecord;
+declare function reviseWorkItem(handle: ControllerHandle, input: {
+    ref: WorkItemRef;
+    expectedRevision: number;
+    definition: WorkItemDefinition;
+    dependencies: readonly DependencyInput[];
+}): WorkItemRecord;
+declare function workItem(handle: ControllerHandle, ref: WorkItemRef): WorkItemRecord;
+declare function taskWorkItems(handle: ControllerHandle, task: TaskRef): WorkItemRecord[];
+declare function createSubtaskPlan(handle: ControllerHandle, input: SubtaskPlanInput): {
+    tasks: Record<string, Task>;
+    workItems: Record<string, WorkItemRecord>;
+};
+
 interface Task {
     id: number;
     title: string;
@@ -171,6 +327,8 @@ interface Task {
     priority: Priority;
     area: string | null;
     kind: Kind;
+    parent_id: number | null;
+    execution_mode: ExecutionMode;
     track_id: number | null;
     claimed_by: string | null;
     claim_expires: number | null;
@@ -717,7 +875,7 @@ interface BriefSection<T> {
     omitted: number;
 }
 type NextAction = {
-    kind: 'resolve_blocker' | 'start_work' | 'complete_criterion' | 'submit_review' | 'await_acceptance' | 'archived' | 'done';
+    kind: 'resolve_blocker' | 'start_work' | 'complete_criterion' | 'submit_review' | 'await_acceptance' | 'await_controller' | 'archived' | 'done';
     text: string;
     criterion_id?: number;
 };
@@ -733,6 +891,8 @@ interface TaskBrief {
         kind: Kind;
         area: string | null;
         archived_at: number | null;
+        parent_id: number | null;
+        execution_mode: ExecutionMode;
     };
     criteria: BriefSection<{
         id: number;
@@ -852,9 +1012,6 @@ declare function assertVerifiedCodexPackage(packet: unknown): asserts packet is 
 declare function preflightCodex(input: CodexPermissionInput): Promise<VerifiedCodexPackage>;
 
 type RunOperation = 'get_context' | 'submit_report' | 'request_question';
-interface ControllerHandle {
-    readonly kind: 'controller';
-}
 interface RunContext {
     readonly kind: 'run';
 }
@@ -871,17 +1028,18 @@ interface IssueRunInput {
         write: boolean;
     }[];
     native: VerifiedCodexPackage;
+    ownership?: OwnershipRef;
 }
 interface IssuedRunAuthority {
     authorityId: string;
     generation: number;
     token: string;
 }
-declare function openController(db: Database.Database): ControllerHandle;
 declare function assertLegacyTaskMutation(db: Database.Database, taskIds: readonly number[]): void;
 declare function protectTask(handle: ControllerHandle, taskId: number): void;
 declare function issueRunAuthority(handle: ControllerHandle, input: IssueRunInput): IssuedRunAuthority;
 declare function revokeRunAuthority(handle: ControllerHandle, authorityId: string): void;
+declare function assertRunAuthorityBinding(db: Database.Database, taskId: number, binding: AuthorityBinding): void;
 declare function openRunContext(db: Database.Database, token: string): RunContext;
 interface RunContextSnapshot {
     projectId: string;
@@ -975,4 +1133,278 @@ interface NativeEvidence {
 /** Actual Codex tools; the deterministic provider supplies model responses only. */
 declare function observeCodexNative(executablePath: string, rawDiagnostic?: boolean, model?: string, broker?: CodexBrokerBinding, brokerOnly?: boolean): Promise<NativeEvidence>;
 
-export { type Actor, type AgentEvent, type AgentEventKind, type AttentionInbox, type AttentionItem, type AttentionReason, type AutoTick, BUG_BODY_TEMPLATE, type BindingKind, type BriefSection, CAPS, type CodexPermissionInput, type Comment, type ControllerHandle, type Criterion, DEFAULT_TTL, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type EventRow, type FileRow, type IssueRunInput, type IssuedRunAuthority, KINDS, KddError, type KillFn, type KillOutcome, type Kind, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, type ManualProvenance, type ManualSession, type NativeEvidence, type NativeLaunchInput, type NativeProbeResult, type NextAction, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ProjectRecord, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RepositoryAccess, type RepositoryBinding, type RepositoryRecord, type RunContext, type RunContextSnapshot, type RunOperation, type RunResult, STATUSES, type SessionHandoff, type SpawnFn, type Status, type StopResult, TICK_INTERVALS, TRANSITIONS, type Task, type TaskBrief, type TaskDetailCapped, type TaskListRow, type TickResult, type TickRun, type Track, type UpdateChannel, type VerifiedCodexPackage, _cacheUntil, _resetCache, addCriterion, addDecision, addRepository, addTask, agentId, appendAgentEvent, appendEvent, appendTaskMutationEvent, archiveTask, assertLegacyDecisionSource, assertLegacyTaskMutation, assertVerifiedCodexPackage, assertWritableRoots, attachFile, attentionData, authorOf, bindRepository, bindingsOf, blockTask, boardData, canSyncLegacyDecisions, canonicalCommonDir, canonicalProjectPath, capDetail, capText, checkMove, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, contentHash, createTrack, decisionDetail, deleteTrack, detachFile, editTask, editTrack, ensureWorktree, expiredLeases, exportBoard, filePath, filesDir, getAutoTick, getFile, getLastRun, getReminded, headCommit, initializeProjectStore, isInlineMime, issueRunAuthority, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listFiles, listProjectCheckouts, listProjects, listTracks, logError, lookupProjectStore, manualSessionFromEnv, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, normalizeSessionId, normalizeSourceTasks, now, observeCodexNative, openController, openDb, openRunContext, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, preflightCodex, projectOf, projectPathOf, projectToplevelOf, protectTask, pruneAgentEvents, readRunContext, reapExpired, rebindRepository, rebuild, recall, reclaimExpired, recordFailedAttempt, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, repositoriesOf, requestRunQuestion, resolveDbPath, resolveDecisionsDir, resolveToplevel, revokeRunAuthority, runOperations, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, setReminded, slugify, spawnCheckedNative, statusDigest, stopWorkers, storeIdentity, submitRunReport, sweepWorktrees, syncIndex, syncedTaskDetail, taskBranchHead, taskBrief, taskDetail, taskDetailCapped, tick, unarchiveTask, unblockTask, unsubmitted, updateDisposition, versionChannel, withNativeControllerLock, worktreePath };
+type ResultSource = {
+    kind: 'manual';
+    sourceTask: TaskRef;
+    instructionRef: string;
+} | {
+    kind: 'owned';
+    owner: OwnershipRef;
+    authority?: AuthorityBinding;
+    instructionRef: string;
+};
+interface PayloadBase {
+    repoId: string | null;
+    version: string;
+    checkRefs: readonly string[];
+}
+type ResultPayload = (PayloadBase & {
+    kind: 'contract';
+    head: string | null;
+    artifact: {
+        path: string;
+        sha256: string;
+    };
+}) | (PayloadBase & {
+    kind: 'code';
+    repoId: string;
+    head: string;
+    proofRef: string;
+}) | (PayloadBase & {
+    kind: 'merged';
+    repoId: string;
+    head: string;
+    target: string;
+    baseHead: string;
+    acceptedResultId: string;
+    userRef: string;
+    receiptRef: string;
+}) | (PayloadBase & {
+    kind: 'readiness';
+    resourceId: string;
+    configHash: string;
+    consumerScope: string;
+    capabilities: readonly string[];
+    userRef: string;
+    probeRef: string;
+    observedAt: number;
+    expiresAt: number | null;
+});
+interface ResultBinding {
+    producer: WorkItemRef;
+    producerRevision: number;
+    inputsHash: string;
+    outputKey: string;
+    kind: DependencyKind;
+    version: string;
+    repoId: string | null;
+}
+type EvidenceRequest = {
+    kind: 'check';
+    ref: string;
+    binding: ResultBinding;
+    payloadHash: string;
+} | {
+    kind: 'code_result';
+    ref: string;
+    binding: ResultBinding;
+    head: string;
+} | {
+    kind: 'code_in_base';
+    ref: string;
+    binding: ResultBinding;
+    head: string;
+    baseHead: string;
+} | {
+    kind: 'merge_acceptance';
+    ref: string;
+    binding: ResultBinding;
+    acceptedResultId: string;
+} | {
+    kind: 'merge_receipt';
+    ref: string;
+    binding: ResultBinding;
+    acceptedResultId: string;
+    target: string;
+    baseHead: string;
+    head: string;
+} | {
+    kind: 'readiness_confirmation';
+    ref: string;
+    binding: ResultBinding;
+    resourceId: string;
+} | {
+    kind: 'readiness_probe';
+    ref: string;
+    binding: ResultBinding;
+    resourceId: string;
+    configHash: string;
+    consumerScope: string;
+    capabilities: readonly string[];
+};
+interface EvidenceObservation {
+    request: EvidenceRequest;
+    verdict: 'pass' | 'fail' | 'inconclusive';
+    origin: 'host' | 'user';
+    observedAt: number;
+    expiresAt: number | null;
+}
+interface ResultObservers {
+    observe?: (request: EvidenceRequest) => EvidenceObservation | null;
+}
+interface ResultRecord {
+    id: string;
+    commandId: string;
+    binding: ResultBinding;
+    payload: ResultPayload;
+    source: ResultSource;
+    inputResults: readonly {
+        edgeKey: string;
+        resultId: string;
+    }[];
+    invalidatedAt: number | null;
+    invalidationReason: string | null;
+    successorId: string | null;
+}
+interface PublishResultInput {
+    commandId: string;
+    producer: WorkItemRef;
+    expectedRevision: number;
+    outputKey: string;
+    expectedResultId: string | null;
+    payload: ResultPayload;
+    source: ResultSource;
+}
+type DependencyReason = 'missing_output' | 'producer_not_completed' | 'failed' | 'cancelled' | 'stale_revision' | 'checks_not_passed' | 'base_missing_code' | 'merge_not_succeeded' | 'readiness_unconfirmed' | 'readiness_unverified' | 'readiness_expired' | 'scope_mismatch';
+interface DependencyProjection {
+    ref: WorkItemRef;
+    revision: number;
+    inputsCurrent: boolean;
+    ready: boolean;
+    edges: readonly ({
+        key: string;
+        producer: WorkItemRef;
+        binding: DependencyBinding;
+    } & ({
+        satisfied: true;
+        resultId: string;
+        pinned: boolean;
+    } | {
+        satisfied: false;
+        reason: DependencyReason;
+        resultId: string | null;
+    }))[];
+}
+declare function result(handle: ControllerHandle, resultId: string): ResultRecord;
+declare function inspectDependencies(handle: ControllerHandle, ref: WorkItemRef, observers?: ResultObservers): DependencyProjection;
+declare function resolveDependencies(handle: ControllerHandle, input: {
+    ref: WorkItemRef;
+    expectedRevision: number;
+}, observers?: ResultObservers): DependencyProjection;
+declare function publishResult(handle: ControllerHandle, input: PublishResultInput, observers?: ResultObservers): ResultRecord;
+declare function invalidateResult(handle: ControllerHandle, input: {
+    commandId: string;
+    resultId: string;
+    reason: string;
+    successorId?: string;
+}): ResultRecord;
+declare function completeWorkItem(handle: ControllerHandle, input: {
+    ref: WorkItemRef;
+    expectedRevision: number;
+    source: ResultSource;
+}, observers?: ResultObservers): WorkItemRecord;
+declare function setWorkItemWaiting(handle: ControllerHandle, input: {
+    ref: WorkItemRef;
+    expectedRevision: number;
+    source: ResultSource;
+}): WorkItemRecord;
+declare function endWorkItem(handle: ControllerHandle, input: {
+    ref: WorkItemRef;
+    expectedRevision: number;
+    source: ResultSource;
+    state: 'failed' | 'cancelled';
+}): WorkItemRecord;
+
+interface LaunchIntent {
+    launchId: string;
+    writerScopeId: string;
+    authority?: AuthorityBinding;
+}
+interface OwnershipRecord {
+    ref: OwnershipRef;
+    mode: ExecutionMode;
+    write: boolean;
+    inputsHash: string;
+    inputResults: readonly {
+        edgeKey: string;
+        resultId: string;
+    }[];
+    launchIntent: LaunchIntent | null;
+    releasedAt: number | null;
+}
+interface ReserveWorkItemInput {
+    ref: WorkItemRef;
+    expectedRevision: number;
+    expectedFence: number;
+    expectedMode: ExecutionMode;
+    ownerId: string;
+    write: boolean;
+}
+interface HandoffRecord {
+    id: string;
+    commandId: string;
+    task: TaskRef;
+    expectedMode: ExecutionMode;
+    targetMode: ExecutionMode;
+    owners: readonly OwnershipRecord[];
+    authorities: readonly AuthorityBinding[];
+    receipt: HandoffReceipt | null;
+}
+interface HandoffReceipt {
+    handoffId: string;
+    task: TaskRef;
+    mode: ExecutionMode;
+    released: readonly OwnershipRef[];
+    revokedAuthorityIds: readonly string[];
+    stops: readonly ({
+        owner: OwnershipRef;
+        outcome: 'never_started';
+    } | {
+        owner: OwnershipRef;
+        outcome: 'stopped';
+        observationId: string;
+        launchId: string;
+        writerScopeId: string;
+    })[];
+}
+interface StopObservation {
+    observationId: string;
+    owner: OwnershipRef;
+    launchId: string;
+    writerScopeId: string;
+    observedAt: number;
+    verdict: 'stopped' | 'live' | 'unknown';
+    complete: boolean;
+    writers: readonly {
+        id: string;
+        state: 'gone' | 'alive' | 'unknown';
+    }[];
+}
+type StopObserver = (owner: OwnershipRecord) => Promise<StopObservation | null>;
+type HandoffOutcome = {
+    status: 'complete';
+    receipt: HandoffReceipt;
+} | {
+    status: 'held';
+    handoffId: string;
+    reason: 'missing_observer' | 'observer_error' | 'unknown' | 'live' | 'stale_observation' | 'snapshot_changed';
+};
+declare function ownership(handle: ControllerHandle, ref: OwnershipRef): OwnershipRecord;
+declare function reserveWorkItem(handle: ControllerHandle, input: ReserveWorkItemInput, observers?: ResultObservers): OwnershipRecord;
+declare function recordLaunchIntent(handle: ControllerHandle, input: {
+    owner: OwnershipRef;
+    intent: LaunchIntent;
+}): OwnershipRecord;
+declare function handoff(handle: ControllerHandle, handoffId: string): HandoffRecord;
+declare function beginHandoff(handle: ControllerHandle, input: {
+    commandId: string;
+    task: TaskRef;
+    expectedMode: ExecutionMode;
+    targetMode: ExecutionMode;
+    expectedOwners: readonly OwnershipRef[];
+}): HandoffRecord;
+declare function finishHandoff(handle: ControllerHandle, input: {
+    handoffId: string;
+}, observer?: StopObserver): Promise<HandoffOutcome>;
+
+export { type Actor, type AgentEvent, type AgentEventKind, type AttentionInbox, type AttentionItem, type AttentionReason, type AuthorityBinding, type AutoTick, BUG_BODY_TEMPLATE, type BindingKind, type BriefSection, CAPS, type CodexPermissionInput, type Comment, type ControllerHandle, type CreateSubtasksInput, type CreationSource, type Criterion, DEFAULT_TTL, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type DependencyBinding, type DependencyInput, type DependencyKind, type DependencyProjection, type DependencyReason, type EventRow, type EvidenceObservation, type EvidenceRequest, type ExecutionMode, type FileRow, type HandoffOutcome, type HandoffReceipt, type HandoffRecord, type IssueRunInput, type IssuedRunAuthority, KINDS, KddError, type KillFn, type KillOutcome, type Kind, type LaunchIntent, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, type ManualProvenance, type ManualSession, type NativeEvidence, type NativeLaunchInput, type NativeProbeResult, type NextAction, type OutputRequirement, type OwnershipRecord, type OwnershipRef, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ProjectRecord, type PublishResultInput, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RepositoryAccess, type RepositoryBinding, type RepositoryRecord, type ReserveWorkItemInput, type ResultBinding, type ResultObservers, type ResultPayload, type ResultRecord, type ResultSource, type RunContext, type RunContextSnapshot, type RunOperation, type RunResult, STATUSES, type SessionHandoff, type SpawnFn, type Status, type StopObservation, type StopObserver, type StopResult, type SubtaskDraft, type SubtaskPlanInput, TICK_INTERVALS, TRANSITIONS, type Task, type TaskBrief, type TaskDetailCapped, type TaskListRow, type TaskRef, type TickResult, type TickRun, type Track, type UpdateChannel, type VerifiedCodexPackage, type WorkItemDefinition, type WorkItemInput, type WorkItemKind, type WorkItemRecord, type WorkItemRef, type WorkItemState, _cacheUntil, _resetCache, addCriterion, addDecision, addRepository, addTask, agentId, appendAgentEvent, appendEvent, appendTaskMutationEvent, archiveTask, assertLegacyDecisionSource, assertLegacyTaskMutation, assertRunAuthorityBinding, assertVerifiedCodexPackage, assertWritableRoots, attachFile, attentionData, authorOf, beginHandoff, bindRepository, bindingsOf, blockTask, boardData, canSyncLegacyDecisions, canonicalCommonDir, canonicalProjectPath, capDetail, capText, checkMove, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, completeWorkItem, contentHash, createSubtaskPlan, createSubtasks, createTrack, createWorkItem, decisionDetail, deleteTrack, detachFile, editTask, editTrack, endWorkItem, ensureWorktree, expiredLeases, exportBoard, filePath, filesDir, finishHandoff, getAutoTick, getFile, getLastRun, getReminded, handoff, headCommit, initializeProjectStore, inspectDependencies, invalidateResult, isInlineMime, issueRunAuthority, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listFiles, listProjectCheckouts, listProjects, listSubtasks, listTracks, logError, lookupProjectStore, manualSessionFromEnv, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, normalizeSessionId, normalizeSourceTasks, now, observeCodexNative, openController, openDb, openRunContext, ownership, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, preflightCodex, projectOf, projectPathOf, projectToplevelOf, protectTask, pruneAgentEvents, publishResult, readRunContext, reapExpired, rebindRepository, rebuild, recall, reclaimExpired, recordFailedAttempt, recordLaunchIntent, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, repositoriesOf, requestRunQuestion, reserveWorkItem, resolveDbPath, resolveDecisionsDir, resolveDependencies, resolveToplevel, result, reviseWorkItem, revokeRunAuthority, runOperations, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, setReminded, setWorkItemWaiting, slugify, spawnCheckedNative, statusDigest, stopWorkers, storeIdentity, submitRunReport, sweepWorktrees, syncIndex, syncedTaskDetail, taskBranchHead, taskBrief, taskContractHash, taskDetail, taskDetailCapped, taskWorkItems, tick, unarchiveTask, unblockTask, unsubmitted, updateDisposition, versionChannel, withNativeControllerLock, workItem, worktreePath };
