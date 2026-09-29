@@ -1158,137 +1158,6 @@ interface VerifiedCodexPackage {
 declare function assertVerifiedCodexPackage(packet: unknown): asserts packet is VerifiedCodexPackage;
 declare function preflightCodex(input: CodexPermissionInput): Promise<VerifiedCodexPackage>;
 
-type RunOperation = 'get_context' | 'submit_report' | 'request_question';
-interface RunContext {
-    readonly kind: 'run';
-}
-interface IssueRunInput {
-    taskId: number;
-    workItemId: string;
-    runId: string;
-    expectedGeneration: number;
-    expiresAt: number;
-    operations: readonly RunOperation[];
-    repositories: readonly {
-        repoId: string;
-        checkoutPath: string;
-        write: boolean;
-    }[];
-    native: VerifiedCodexPackage;
-    ownership?: OwnershipRef;
-}
-interface IssuedRunAuthority {
-    authorityId: string;
-    generation: number;
-    token: string;
-}
-declare function assertLegacyTaskMutation(db: Database.Database, taskIds: readonly number[]): void;
-declare function protectTask(handle: ControllerHandle, taskId: number): void;
-declare function issueRunAuthority(handle: ControllerHandle, input: IssueRunInput): IssuedRunAuthority;
-declare function revokeRunAuthority(handle: ControllerHandle, authorityId: string): void;
-declare function assertRunAuthorityBinding(db: Database.Database, taskId: number, binding: AuthorityBinding): void;
-declare function openRunContext(db: Database.Database, token: string): RunContext;
-interface RunContextSnapshot {
-    projectId: string;
-    taskId: number;
-    workItemId: string;
-    runId: string;
-    generation: number;
-    task: {
-        title: string;
-        body: string | null;
-        status: string;
-    };
-    criteria: {
-        id: number;
-        text: string;
-        checked: boolean;
-    }[];
-    decisions: {
-        slug: string;
-        title: string;
-    }[];
-}
-declare function runOperations(context: RunContext): readonly RunOperation[];
-declare function readRunContext(context: RunContext): RunContextSnapshot;
-interface RunMemoryReadInput {
-    entryId?: string;
-    revision?: number;
-    candidates?: boolean;
-    withdrawn?: boolean;
-}
-declare function readRunMemory(context: RunContext, input?: RunMemoryReadInput): MemoryRecord[];
-declare function recallRunMemory(context: RunContext, query: string, options?: MemoryRecallOptions): MemoryHit[];
-declare function runMemoryRules(context: RunContext): MemoryRecord[];
-declare const submitRunReport: (context: RunContext, body: string) => number;
-declare const requestRunQuestion: (context: RunContext, body: string) => number;
-
-interface NativeTool {
-    name?: string;
-    type: string;
-    namespace?: string;
-    tools?: NativeTool[];
-}
-interface NativeObservation extends NativeProbeResult {
-    mode: 'readonly' | 'workspace';
-    control: boolean;
-    phase: 'start' | 'resume';
-    exitCode: number | null;
-    output: unknown;
-    timedOut: boolean;
-    providerError?: string;
-    requests: unknown[];
-    tools: NativeTool[];
-    permissionHash: string;
-    configHash: string;
-    challengeHash?: string;
-    protectedHashes: {
-        path: string;
-        before: string;
-        after: string;
-    }[];
-    diagnostic?: string;
-    failure?: string;
-    matchedControl?: string;
-}
-interface NativeFailure {
-    caseId?: string;
-    mode?: string;
-    reason?: string;
-    failure?: string;
-}
-interface NativeRefusal {
-    caseId: string;
-    phase: 'start' | 'resume';
-    outcome: 'denied';
-    executed: false;
-}
-interface NetworkControl {
-    caseId: string;
-    role: string;
-    exitCode: number;
-    commandHash: string;
-    output: string;
-}
-interface NativeEvidence {
-    version: string;
-    model: string;
-    executableHash: string;
-    scriptHash: string;
-    guardHash: string;
-    applicable: boolean;
-    rawDiagnostic: boolean;
-    preflight: NativeRefusal[];
-    networkControls: NetworkControl[];
-    attempted: number;
-    executed: number;
-    failures: NativeFailure[];
-    observations: NativeObservation[];
-    operations: readonly RunOperation[];
-}
-/** Actual Codex tools; the deterministic provider supplies model responses only. */
-declare function observeCodexNative(executablePath: string, rawDiagnostic?: boolean, model?: string, broker?: CodexBrokerBinding, brokerOnly?: boolean): Promise<NativeEvidence>;
-
 type ResultSource = {
     kind: 'manual';
     sourceTask: TaskRef;
@@ -1471,6 +1340,227 @@ declare function endWorkItem(handle: ControllerHandle, input: {
     state: 'failed' | 'cancelled';
 }): WorkItemRecord;
 
+interface RunInputOptions {
+    maxBytes?: number;
+    query?: string;
+    k?: number;
+}
+interface RunInputRef {
+    projectId: string;
+    authorityId: string;
+}
+interface RequirementInput {
+    task: TaskRef;
+    parentId: number | null;
+    hash: string;
+    title: string;
+    body: string | null;
+    criteria: {
+        id: number;
+        text: string;
+    }[];
+}
+type DependencyContextPayload = Exclude<ResultPayload, {
+    kind: 'contract';
+}> | Omit<Extract<ResultPayload, {
+    kind: 'contract';
+}>, 'artifact'>;
+interface DependencyContextInput {
+    edgeKey: string;
+    resultId: string;
+    payloadHash: string;
+    binding: ResultBinding;
+    payload: DependencyContextPayload;
+    artifact?: {
+        sha256: string;
+        body: string;
+    };
+}
+interface RunInputSections {
+    schemaVersion: 1;
+    authorityId: string;
+    inputHash: string;
+    createdAt: number;
+    budget: {
+        maxBytes: number;
+        omittedRecords: number;
+    };
+    requirements: RequirementInput[];
+    rules: MemoryRecord[];
+    knowledge: MemoryRecord[];
+    workItem: {
+        ref: WorkItemRef;
+        revision: number;
+        inputsHash: string;
+        definition: WorkItemDefinition;
+    } | null;
+    dependencies: DependencyContextInput[];
+    repositories: {
+        repoId: string;
+        commit: string;
+        write: boolean;
+    }[];
+    operations: RunOperation[];
+    nativeConfigHash: string;
+}
+interface RunInputValidation {
+    repositories: MemoryRepoVersion[];
+    ownership: OwnershipRef | null;
+    inputResults: {
+        edgeKey: string;
+        resultId: string;
+    }[];
+    artifacts: {
+        resultId: string;
+        path: string;
+        sha256: string;
+    }[];
+}
+interface RunInputSnapshot {
+    authorityId: string;
+    inputHash: string;
+    createdAt: number;
+    response: RunContextSnapshot & {
+        inputs: RunInputSections;
+    };
+    validation: RunInputValidation;
+}
+declare function runInputSnapshot(handle: ControllerHandle, ref: RunInputRef): RunInputSnapshot;
+
+type RunOperation = 'get_context' | 'submit_report' | 'request_question';
+interface RunContext {
+    readonly kind: 'run';
+}
+interface IssueRunInput {
+    taskId: number;
+    workItemId: string;
+    runId: string;
+    expectedGeneration: number;
+    expiresAt: number;
+    operations: readonly RunOperation[];
+    repositories: readonly {
+        repoId: string;
+        checkoutPath: string;
+        write: boolean;
+    }[];
+    native: VerifiedCodexPackage;
+    ownership?: OwnershipRef;
+    context?: RunInputOptions;
+    contextObservers?: ResultObservers;
+}
+interface IssuedRunAuthority {
+    authorityId: string;
+    generation: number;
+    token: string;
+}
+declare function assertLegacyTaskMutation(db: Database.Database, taskIds: readonly number[]): void;
+declare function protectTask(handle: ControllerHandle, taskId: number): void;
+declare function issueRunAuthority(handle: ControllerHandle, supplied: IssueRunInput): IssuedRunAuthority;
+declare function revokeRunAuthority(handle: ControllerHandle, authorityId: string): void;
+declare function assertRunAuthorityBinding(db: Database.Database, taskId: number, binding: AuthorityBinding): void;
+declare function openRunContext(db: Database.Database, token: string): RunContext;
+interface RunContextSnapshot {
+    projectId: string;
+    taskId: number;
+    workItemId: string;
+    runId: string;
+    generation: number;
+    task: {
+        title: string;
+        body: string | null;
+        status: string;
+    };
+    criteria: {
+        id: number;
+        text: string;
+        checked: boolean;
+    }[];
+    decisions: {
+        slug: string;
+        title: string;
+    }[];
+    inputs: RunInputSections;
+}
+declare function runOperations(context: RunContext): readonly RunOperation[];
+declare function readRunContext(context: RunContext): RunContextSnapshot;
+interface RunMemoryReadInput {
+    entryId?: string;
+    revision?: number;
+    candidates?: boolean;
+    withdrawn?: boolean;
+}
+declare function readRunMemory(context: RunContext, input?: RunMemoryReadInput): MemoryRecord[];
+declare function recallRunMemory(context: RunContext, query: string, options?: MemoryRecallOptions): MemoryHit[];
+declare function runMemoryRules(context: RunContext): MemoryRecord[];
+declare const submitRunReport: (context: RunContext, body: string) => number;
+declare const requestRunQuestion: (context: RunContext, body: string) => number;
+
+interface NativeTool {
+    name?: string;
+    type: string;
+    namespace?: string;
+    tools?: NativeTool[];
+}
+interface NativeObservation extends NativeProbeResult {
+    mode: 'readonly' | 'workspace';
+    control: boolean;
+    phase: 'start' | 'resume';
+    exitCode: number | null;
+    output: unknown;
+    timedOut: boolean;
+    providerError?: string;
+    requests: unknown[];
+    tools: NativeTool[];
+    permissionHash: string;
+    configHash: string;
+    challengeHash?: string;
+    protectedHashes: {
+        path: string;
+        before: string;
+        after: string;
+    }[];
+    diagnostic?: string;
+    failure?: string;
+    matchedControl?: string;
+}
+interface NativeFailure {
+    caseId?: string;
+    mode?: string;
+    reason?: string;
+    failure?: string;
+}
+interface NativeRefusal {
+    caseId: string;
+    phase: 'start' | 'resume';
+    outcome: 'denied';
+    executed: false;
+}
+interface NetworkControl {
+    caseId: string;
+    role: string;
+    exitCode: number;
+    commandHash: string;
+    output: string;
+}
+interface NativeEvidence {
+    version: string;
+    model: string;
+    executableHash: string;
+    scriptHash: string;
+    guardHash: string;
+    applicable: boolean;
+    rawDiagnostic: boolean;
+    preflight: NativeRefusal[];
+    networkControls: NetworkControl[];
+    attempted: number;
+    executed: number;
+    failures: NativeFailure[];
+    observations: NativeObservation[];
+    operations: readonly RunOperation[];
+}
+/** Actual Codex tools; the deterministic provider supplies model responses only. */
+declare function observeCodexNative(executablePath: string, rawDiagnostic?: boolean, model?: string, broker?: CodexBrokerBinding, brokerOnly?: boolean): Promise<NativeEvidence>;
+
 interface LaunchIntent {
     launchId: string;
     writerScopeId: string;
@@ -1563,4 +1653,28 @@ declare function finishHandoff(handle: ControllerHandle, input: {
     handoffId: string;
 }, observer?: StopObserver): Promise<HandoffOutcome>;
 
-export { type Actor, type AgentEvent, type AgentEventKind, type AttentionInbox, type AttentionItem, type AttentionReason, type AuthorityBinding, type AutoTick, BUG_BODY_TEMPLATE, type BindingKind, type BriefSection, CAPS, type CodexPermissionInput, type Comment, type ControllerHandle, type CreateSubtasksInput, type CreationSource, type Criterion, DEFAULT_TTL, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type DependencyBinding, type DependencyInput, type DependencyKind, type DependencyProjection, type DependencyReason, type EventRow, type EvidenceObservation, type EvidenceRequest, type ExecutionMode, type FileRow, type HandoffOutcome, type HandoffReceipt, type HandoffRecord, type IssueRunInput, type IssuedRunAuthority, KINDS, KddError, type KillFn, type KillOutcome, type Kind, type LaunchIntent, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, type ManualProvenance, type ManualSession, type MemoryApplicability, type MemoryAuthor, type MemoryDraft, type MemoryEvidenceObservation, type MemoryEvidenceRequest, type MemoryHit, type MemoryImportInput, type MemoryKind, type MemoryObservers, type MemoryOperation, type MemoryReadOptions, type MemoryRecallOptions, type MemoryReceipt, type MemoryRecord, type MemoryRepoVersion, type MemoryRevisionRef, type MemoryScope, type MemorySource, type MemoryStatus, type MemoryView, type MemoryWriteInput, type NativeEvidence, type NativeLaunchInput, type NativeProbeResult, type NextAction, type OutputRequirement, type OwnershipRecord, type OwnershipRef, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ProjectRecord, type PublishResultInput, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RepositoryAccess, type RepositoryBinding, type RepositoryRecord, type ReserveWorkItemInput, type ResultBinding, type ResultObservers, type ResultPayload, type ResultRecord, type ResultSource, type RunContext, type RunContextSnapshot, type RunMemoryReadInput, type RunOperation, type RunResult, STATUSES, type SessionHandoff, type SpawnFn, type Status, type StopObservation, type StopObserver, type StopResult, type SubtaskDraft, type SubtaskPlanInput, TICK_INTERVALS, TRANSITIONS, type Task, type TaskBrief, type TaskDetailCapped, type TaskListRow, type TaskRef, type TickResult, type TickRun, type Track, type UpdateChannel, type VerifiedCodexPackage, type WorkItemDefinition, type WorkItemInput, type WorkItemKind, type WorkItemRecord, type WorkItemRef, type WorkItemState, _cacheUntil, _resetCache, addCriterion, addDecision, addRepository, addTask, agentId, appendAgentEvent, appendEvent, appendTaskMutationEvent, archiveTask, assertLegacyDecisionSource, assertLegacyTaskMutation, assertRunAuthorityBinding, assertVerifiedCodexPackage, assertWritableRoots, attachFile, attentionData, authorOf, beginHandoff, bindRepository, bindingsOf, blockTask, boardData, canSyncLegacyDecisions, canonicalCommonDir, canonicalProjectPath, capDetail, capText, checkMove, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, completeWorkItem, contentHash, createSubtaskPlan, createSubtasks, createTrack, createWorkItem, decisionDetail, deleteTrack, detachFile, editTask, editTrack, endWorkItem, ensureWorktree, expiredLeases, exportBoard, filePath, filesDir, finishHandoff, getAutoTick, getFile, getLastRun, getReminded, handoff, headCommit, importMemory, initializeProjectStore, inspectDependencies, invalidateResult, isInlineMime, issueRunAuthority, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listFiles, listMemory, listProjectCheckouts, listProjects, listSubtasks, listTracks, logError, lookupProjectStore, manualSessionFromEnv, maxWorkers, maxWorkersEnvLocked, memoryEntry, memoryHistory, memoryRules, moveTask, mustGetTask, mustGetTrack, normalizeSessionId, normalizeSourceTasks, now, observeCodexNative, openController, openDb, openRunContext, ownership, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, preflightCodex, projectOf, projectPathOf, projectToplevelOf, protectTask, pruneAgentEvents, publishResult, readRunContext, readRunMemory, reapExpired, rebindRepository, rebuild, recall, recallMemory, recallRunMemory, reclaimExpired, recordFailedAttempt, recordLaunchIntent, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, repositoriesOf, requestRunQuestion, reserveWorkItem, resolveDbPath, resolveDecisionsDir, resolveDependencies, resolveToplevel, result, reviseWorkItem, revokeRunAuthority, runMemoryRules, runOperations, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, setReminded, setWorkItemWaiting, slugify, spawnCheckedNative, statusDigest, stopWorkers, storeIdentity, submitRunReport, sweepWorktrees, syncIndex, syncedTaskDetail, taskBranchHead, taskBrief, taskContractHash, taskDetail, taskDetailCapped, taskWorkItems, tick, unarchiveTask, unblockTask, unsubmitted, updateDisposition, versionChannel, withNativeControllerLock, workItem, worktreePath, writeMemory };
+type RunInputReason = 'requirements_changed' | 'membership_changed' | 'work_item_changed' | 'ownership_changed' | 'dependency_changed' | 'readiness_expired' | 'memory_changed' | 'rules_changed' | 'repository_changed' | 'snapshot_missing';
+interface RunInputChange {
+    reason: RunInputReason;
+    taskId?: number;
+    entryId?: string;
+    resultId?: string;
+    repoId?: string;
+    previous?: Pick<MemoryRecord, 'revision' | 'hash'> | null;
+    current?: Pick<MemoryRecord, 'revision' | 'hash'> | null;
+}
+type RunInputStatus = {
+    status: 'current';
+    authorityId: string;
+    inputHash: string;
+} | {
+    status: 'update_required';
+    authorityId: string;
+    inputHash: string | null;
+    changeHash: string;
+    changes: RunInputChange[];
+    eventId: number;
+};
+declare function checkRunInputs(handle: ControllerHandle, ref: RunInputRef): RunInputStatus;
+
+export { type Actor, type AgentEvent, type AgentEventKind, type AttentionInbox, type AttentionItem, type AttentionReason, type AuthorityBinding, type AutoTick, BUG_BODY_TEMPLATE, type BindingKind, type BriefSection, CAPS, type CodexPermissionInput, type Comment, type ControllerHandle, type CreateSubtasksInput, type CreationSource, type Criterion, DEFAULT_TTL, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type DependencyBinding, type DependencyInput, type DependencyKind, type DependencyProjection, type DependencyReason, type EventRow, type EvidenceObservation, type EvidenceRequest, type ExecutionMode, type FileRow, type HandoffOutcome, type HandoffReceipt, type HandoffRecord, type IssueRunInput, type IssuedRunAuthority, KINDS, KddError, type KillFn, type KillOutcome, type Kind, type LaunchIntent, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, type ManualProvenance, type ManualSession, type MemoryApplicability, type MemoryAuthor, type MemoryDraft, type MemoryEvidenceObservation, type MemoryEvidenceRequest, type MemoryHit, type MemoryImportInput, type MemoryKind, type MemoryObservers, type MemoryOperation, type MemoryReadOptions, type MemoryRecallOptions, type MemoryReceipt, type MemoryRecord, type MemoryRepoVersion, type MemoryRevisionRef, type MemoryScope, type MemorySource, type MemoryStatus, type MemoryView, type MemoryWriteInput, type NativeEvidence, type NativeLaunchInput, type NativeProbeResult, type NextAction, type OutputRequirement, type OwnershipRecord, type OwnershipRef, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ProjectRecord, type PublishResultInput, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RepositoryAccess, type RepositoryBinding, type RepositoryRecord, type ReserveWorkItemInput, type ResultBinding, type ResultObservers, type ResultPayload, type ResultRecord, type ResultSource, type RunContext, type RunContextSnapshot, type RunInputChange, type RunInputOptions, type RunInputReason, type RunInputRef, type RunInputSections, type RunInputSnapshot, type RunInputStatus, type RunMemoryReadInput, type RunOperation, type RunResult, STATUSES, type SessionHandoff, type SpawnFn, type Status, type StopObservation, type StopObserver, type StopResult, type SubtaskDraft, type SubtaskPlanInput, TICK_INTERVALS, TRANSITIONS, type Task, type TaskBrief, type TaskDetailCapped, type TaskListRow, type TaskRef, type TickResult, type TickRun, type Track, type UpdateChannel, type VerifiedCodexPackage, type WorkItemDefinition, type WorkItemInput, type WorkItemKind, type WorkItemRecord, type WorkItemRef, type WorkItemState, _cacheUntil, _resetCache, addCriterion, addDecision, addRepository, addTask, agentId, appendAgentEvent, appendEvent, appendTaskMutationEvent, archiveTask, assertLegacyDecisionSource, assertLegacyTaskMutation, assertRunAuthorityBinding, assertVerifiedCodexPackage, assertWritableRoots, attachFile, attentionData, authorOf, beginHandoff, bindRepository, bindingsOf, blockTask, boardData, canSyncLegacyDecisions, canonicalCommonDir, canonicalProjectPath, capDetail, capText, checkMove, checkRunInputs, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, completeWorkItem, contentHash, createSubtaskPlan, createSubtasks, createTrack, createWorkItem, decisionDetail, deleteTrack, detachFile, editTask, editTrack, endWorkItem, ensureWorktree, expiredLeases, exportBoard, filePath, filesDir, finishHandoff, getAutoTick, getFile, getLastRun, getReminded, handoff, headCommit, importMemory, initializeProjectStore, inspectDependencies, invalidateResult, isInlineMime, issueRunAuthority, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listFiles, listMemory, listProjectCheckouts, listProjects, listSubtasks, listTracks, logError, lookupProjectStore, manualSessionFromEnv, maxWorkers, maxWorkersEnvLocked, memoryEntry, memoryHistory, memoryRules, moveTask, mustGetTask, mustGetTrack, normalizeSessionId, normalizeSourceTasks, now, observeCodexNative, openController, openDb, openRunContext, ownership, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, preflightCodex, projectOf, projectPathOf, projectToplevelOf, protectTask, pruneAgentEvents, publishResult, readRunContext, readRunMemory, reapExpired, rebindRepository, rebuild, recall, recallMemory, recallRunMemory, reclaimExpired, recordFailedAttempt, recordLaunchIntent, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, repositoriesOf, requestRunQuestion, reserveWorkItem, resolveDbPath, resolveDecisionsDir, resolveDependencies, resolveToplevel, result, reviseWorkItem, revokeRunAuthority, runInputSnapshot, runMemoryRules, runOperations, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, setReminded, setWorkItemWaiting, slugify, spawnCheckedNative, statusDigest, stopWorkers, storeIdentity, submitRunReport, sweepWorktrees, syncIndex, syncedTaskDetail, taskBranchHead, taskBrief, taskContractHash, taskDetail, taskDetailCapped, taskWorkItems, tick, unarchiveTask, unblockTask, unsubmitted, updateDisposition, versionChannel, withNativeControllerLock, workItem, worktreePath, writeMemory };

@@ -49,32 +49,13 @@ try {
     writableRoot: workspace, scratchDir: scratch, controlDir, protectedPaths: [source, home, clone] };
   const input = { taskId: task.id, workItemId: work.ref.workItemId, runId: 'fixture-run', expectedGeneration: 0,
     expiresAt: core.now() + 7200, operations, repositories, ownership:owner.ref };
-  let issued;
-  if (calibrate) {
-    // Trusted fixture data only, used to debug the real tool protocol before the full gate.
-    core.protectTask(controller, task.id);
-    const token = randomBytes(32).toString('hex'), authorityId = randomBytes(16).toString('hex');
-    const grant = { projectId: core.projectOf(db).project_id, ...input, generation: 1,
-      repositories: repositories.map(repo => ({ repoId: repo.repoId, checkoutPath: repo.checkoutPath,
-        commonDir: core.canonicalCommonDir(repo.checkoutPath), write: repo.write })),
-      native: { readableRoots: [workspace, backend], writableRoot: workspace, scratchDir: scratch, configHash: 'calibration-only' } };
-    db.prepare('INSERT INTO run_authorities(authority_id,task_id,work_item_id,run_id,generation,expires_at,token_hash,grant_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
-      .run(authorityId, task.id, input.workItemId, input.runId, 1, input.expiresAt, createHash('sha256').update(token).digest('hex'), JSON.stringify(grant), core.now());
-    issued = { token, authorityId, generation: 1 };
-  } else {
-    process.stderr.write('initial native preflight started\n');
-    const initial = await core.preflightCodex(nativeInput);
-    process.stderr.write(`initial native preflight passed: ${initial.results.length} observations\n`);
-    issued = core.issueRunAuthority(controller, { ...input, native: initial });
-  }
   const memoryChecks=[];
-  if(!calibrate) {
+  let sibling;
+  const draft=taskId=>({commandId:`fixture-memory-${taskId}`,entryId:null,expectedRevision:0,scope:{projectId:taskRef.projectId,taskId},applicability:{repoId:null,commit:null},kind:'rule',status:'active',title:'Fixture policy',body:'Preserve scoped memory',source:{kind:'user',ref:'fixture:explicit instruction'},author:{type:'user',id:null}});
+  {
     const canonical=value=>JSON.stringify(order(value));
     function order(value){return Array.isArray(value)?value.map(order):value && typeof value==='object'?
       Object.fromEntries(Object.keys(value).sort().map(key=>[key,order(value[key])])):value;}
-    const draft=taskId=>({commandId:`fixture-memory-${taskId}`,entryId:null,expectedRevision:0,
-      scope:{projectId:taskRef.projectId,taskId},applicability:{repoId:null,commit:null},kind:'rule',status:'active',
-      title:'Fixture policy',body:'Preserve scoped memory',source:{kind:'user',ref:'fixture:explicit instruction'},author:{type:'user',id:null}});
     const own=draft(task.id),{commandId,entryId,expectedRevision,...payload}=own;
     const request={operation:'create',entryId,expectedRevision,origin:'user',scope:own.scope,applicability:own.applicability,
       payloadHash:createHash('sha256').update(canonical(payload)).digest('hex'),source:own.source};
@@ -82,8 +63,15 @@ try {
     writeFileSync(receiptPath,JSON.stringify({request,origin:'user',verdict:'pass',observedAt:core.now(),expiresAt:null}),{mode:0o600});
     core.writeMemory(controller,own,{observe:incoming=>{const receipt=JSON.parse(readFileSync(receiptPath,'utf8'));
       return canonical(incoming)===canonical(receipt.request)?receipt:null;}});
-    const sibling=core.writeMemory(controller,{...draft(children.sibling.id),kind:'candidate',
+    sibling=core.writeMemory(controller,{...draft(children.sibling.id),kind:'candidate',
       source:{kind:'host',ref:'fixture:proposal'}});
+  }
+  process.stderr.write('initial native preflight started\n');
+  const initial=await core.preflightCodex(nativeInput);
+  process.stderr.write(`initial native preflight passed: ${initial.results.length} observations\n`);
+  const issued=core.issueRunAuthority(controller,{...input,native:initial});
+  const contextChecks=[];
+  if(!calibrate) {
     const context=core.openRunContext(db,issued.token),snapshot=core.readRunContext(context);
     assert.deepEqual(core.readRunMemory(context).map(row=>row.body),['Preserve scoped memory']);
     assert.equal(core.recallRunMemory(context,'memory',{k:1}).length,1);
@@ -127,6 +115,9 @@ try {
     const context = await host.callTool({ name: 'get_context', arguments: {} });
     assert.equal(context.isError, undefined);
     assert.ok(JSON.stringify(context).includes('Native broker fixture'));
+    const payload=JSON.parse(context.content[0].text),stored=core.runInputSnapshot(controller,{projectId:taskRef.projectId,authorityId:issued.authorityId});
+    assert.deepEqual(payload,stored.response);
+    contextChecks.push({authorityId:issued.authorityId,inputHash:stored.inputHash,wireBytes:Buffer.byteLength(JSON.stringify(context)),savedBytes:true});
   } finally { await host.close(); }
   const binding = { configPath, entryPath, dbPath: db.name, nodePath: realpathSync(process.execPath) };
   if (calibrate) {
@@ -140,6 +131,7 @@ try {
     core.assertVerifiedCodexPackage(packet);
     const next = core.issueRunAuthority(controller, { ...input, expectedGeneration: 1, runId: 'fixture-final', native: packet });
     const finalContext=core.openRunContext(db,next.token);
+    const finalSnapshot=core.readRunContext(finalContext);
     assert.equal(core.readRunMemory(finalContext).length,1);
     await core.withNativeControllerLock(controlDir, () => writeFileSync(configPath, JSON.stringify({ dbPath: db.name, token: next.token })));
     core.assertVerifiedCodexPackage(packet); // Public binding stays fixed across private credential rotation.
@@ -148,6 +140,10 @@ try {
     const final = await core.observeCodexNative(executable, false, 'fixture-codex', binding, true);
     process.stderr.write(`final native broker matrix: ${final.executed}/${final.attempted}, applicable=${final.applicable}\n`);
     assert.equal(final.applicable, true);
+    const nativeContexts=final.observations.filter(o=>o.caseId==='broker-context');
+    assert.equal(nativeContexts.length,2);
+    for(const observation of nativeContexts)assert.ok(JSON.stringify(observation.output).includes(finalSnapshot.inputs.inputHash));
+    contextChecks.push({authorityId:next.authorityId,inputHash:finalSnapshot.inputs.inputHash,nativeReads:nativeContexts.length});
     assert.throws(() => core.openRunContext(db, next.token), /authority/); // Actual native live-revoke case revoked it.
     for(const call of [()=>core.readRunMemory(finalContext),()=>core.recallRunMemory(finalContext,'memory'),()=>core.runMemoryRules(finalContext)])assert.throws(call,/authority/);
     memoryChecks.push('memory-live-revoke-refused');
@@ -189,6 +185,6 @@ try {
         'json-copy-refused', 'public-broker-binding-change-refused', 'legacy-sandbox-override-refused', 'late-private-alias-resume-refused',
         'git-common-dir-start-resume-refused', 'scratch-store-issue-refused-before-marker',...memoryChecks],
       memoryEvidence:'core library calls with genuine production-issued credential; fixture user receipt, no new MCP tools',
-      results: packet.results, final }, null, 2) + '\n');
+      contextChecks, operations, initialResults:initial.results, results: packet.results, final }, null, 2) + '\n');
   }
 } finally { db?.close(); process.env = saved; rmSync(root, { recursive: true, force: true }); }

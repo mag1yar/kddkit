@@ -1,0 +1,261 @@
+{
+  "observedAt": "2026-09-29T15:35:51.742Z",
+  "node": "v24.15.0",
+  "schema": 17,
+  "runtimeHash": "420473eee4574a464998c771a18756e5f216575268e5e9d02a1b7331c7a12a96",
+  "checks": [
+    {
+      "id": "C01",
+      "passed": true,
+      "observations": {
+        "tables": 26,
+        "walBytes": 1244272,
+        "backupVersion": 16,
+        "newVersion": 17,
+        "oldBinaryExit": 1
+      }
+    },
+    {
+      "id": "C02",
+      "passed": true,
+      "observations": {
+        "parent": 2,
+        "child": 3,
+        "requirements": 2,
+        "rules": 3,
+        "siblingExcluded": true
+      }
+    },
+    {
+      "id": "C03",
+      "passed": true,
+      "observations": {
+        "mandatoryOverflowRefused": true,
+        "rejectedRotationWrites": 0,
+        "kOneRules": 3
+      }
+    },
+    {
+      "id": "C04",
+      "passed": true,
+      "observations": {
+        "contract": {
+          "resultId": "8c9d6eb52917db0365899e9aa2146a6d",
+          "sha256": "0fee00c35982098024b130d3d0e8728b07f1994dab80639c242e695e4ffbbc6c",
+          "bodyBytes": 21,
+          "crossRepo": true
+        },
+        "readiness": {
+          "resultId": "6c14788e889f627c78c08029ee0f0e0b",
+          "expiresAt": 1790700783
+        },
+        "codeResultId": "6a943a6f281840624e3c5525361cce3f",
+        "mergedResultId": "2a0f2dfec326bba486b601062a753c15",
+        "backendCodeMerged": false
+      }
+    },
+    {
+      "id": "C05",
+      "passed": true,
+      "observations": {
+        "artifactMutationRefused": true,
+        "producerInputInvalidationRefused": true,
+        "readinessExpiryRefused": true,
+        "oldBytesPreserved": true
+      }
+    },
+    {
+      "id": "C06",
+      "passed": true,
+      "observations": {
+        "inputHash": "c627edfbcbd41740f6e26cb9d526944df1b25e85e1fcd507a6eb8821aa2617b3",
+        "wireBytes": 5797,
+        "stdio": true,
+        "reopen": true
+      }
+    },
+    {
+      "id": "C07",
+      "passed": true,
+      "observations": {
+        "noticeId": 24,
+        "secondNoticeId": 26,
+        "deduplicated": true,
+        "exactRevisionRefs": true,
+        "distinctChangesNotCollapsed": true,
+        "selectedRevisionDetected": true,
+        "addedRuleDetected": true,
+        "archiveImmutable": true
+      }
+    },
+    {
+      "id": "C08",
+      "passed": true,
+      "observations": {
+        "noImplicitRebuild": true,
+        "progressExcluded": true,
+        "unselectedKnowledgeExcluded": true
+      }
+    },
+    {
+      "id": "C09",
+      "passed": true,
+      "observations": {
+        "continuationBoundariesRefused": 6,
+        "omittedAuthorityRefused": true,
+        "revokedOwnerStillFenced": true,
+        "unknownStopHeld": true,
+        "completeStopAllowed": true
+      }
+    },
+    {
+      "id": "C10",
+      "passed": true,
+      "observations": {
+        "forgedContextsRefused": 3,
+        "foreignProjectRefused": true,
+        "triggersImmutable": true,
+        "rotationGeneration": 2,
+        "getContextOnly": true
+      }
+    },
+    {
+      "id": "C11",
+      "passed": true,
+      "observations": {
+        "wireBytes": 7199,
+        "limit": 7399,
+        "unicodeMandatoryComplete": true,
+        "optionalWholeOmission": true,
+        "secretRefusedWrites": 0,
+        "unsafeArtifactsRefused": 8,
+        "publicationRefusals": 1,
+        "grantRefusals": 7,
+        "protectedCheckoutBootstrapRefused": true,
+        "canonicalFilesDirAllowed": true,
+        "privatePathAbsent": true
+      }
+    },
+    {
+      "id": "C12",
+      "passed": true,
+      "observations": {
+        "inputCommit": "6c18f60fff75c9c2f6ca49573f02e0dd37a93ce3",
+        "outputCommit": "8b1d85d0038ed7e5c450ec99e12cc83f8d002f8a",
+        "noImplicitFactSubstitution": true,
+        "newGenerationPinned": true
+      }
+    },
+    {
+      "id": "C13",
+      "passed": true,
+      "observations": {
+        "rounds": 20,
+        "singleWinners": 20,
+        "duplicates": 0,
+        "crash": {
+          "code": null,
+          "signal": "SIGKILL"
+        },
+        "oneGrantSnapshotEventReceiptPerWinner": true,
+        "oldSnapshotsUnchanged": true,
+        "rollback": true
+      }
+    },
+    {
+      "id": "C14",
+      "passed": true,
+      "observations": {
+        "dependencies": 12,
+        "memory": 14,
+        "legacyStore": 8,
+        "oldRowsPreserved": true
+      }
+    },
+    {
+      "id": "C15",
+      "passed": true,
+      "observations": {
+        "matrices": [
+          {
+            "operations": [
+              "get_context",
+              "submit_report",
+              "request_question"
+            ],
+            "initial": 124,
+            "bound": 153,
+            "final": 29,
+            "inputHashes": [
+              "ea019b7d5ab10eca4929d53f7d221d93a2188697a6d1da93716c6a36d6709aed",
+              "ff9e0cf98e7bfdea7f6b51707bb2ff650c009a0b74a2d92f793fd2f1dc133ff3"
+            ],
+            "nativeContextReads": 2
+          },
+          {
+            "operations": [
+              "get_context"
+            ],
+            "initial": 124,
+            "bound": 153,
+            "final": 29,
+            "inputHashes": [
+              "f120b3e24825bc0059e48324f02580f919809b5c59c2ba0d9a278683ca8273f6",
+              "404e035878fe13233227c4b35ad1c8f9b429057238ee51793a2365bb3dcd8d3a"
+            ],
+            "nativeContextReads": 2
+          }
+        ],
+        "failures": 0
+      }
+    }
+  ],
+  "races": {
+    "rounds": 20,
+    "singleWinners": 20,
+    "duplicates": 0,
+    "crash": {
+      "code": null,
+      "signal": "SIGKILL"
+    }
+  },
+  "limitations": [
+    "Fixed host/user fixture receipts are not product acceptance.",
+    "Bytes are not model tokens; prompt capacity and runtime delivery belong to later tasks.",
+    "Native proof uses pinned Codex 0.157.0; process-local packets never cross IPC."
+  ],
+  "nativeIssuers": [
+    {
+      "ready": true,
+      "version": "codex-cli 0.157.0",
+      "configHash": "6aef6159f92d5d3cb9ebdb7b029bb667ac25f1ce09c27d1bd91add37b7d8bd97",
+      "observations": 124
+    },
+    {
+      "ready": true,
+      "version": "codex-cli 0.157.0",
+      "configHash": "2123fd7f53da4329d0823e5650e2c5a4ee5cb8e25743fe63cad18a7dc4aa721c",
+      "observations": 124
+    }
+  ],
+  "runtimeHashes": {
+    "packages/core/dist/index.js": "420473eee4574a464998c771a18756e5f216575268e5e9d02a1b7331c7a12a96",
+    "integrations/codex-plugin/runtime/core.js": "420473eee4574a464998c771a18756e5f216575268e5e9d02a1b7331c7a12a96",
+    "packages/mcp/dist/main.js": "c9164efd17f75489bad2ad68469867b4b36ce85ef62f20e261f25d35be09a13b",
+    "integrations/codex-plugin/runtime/mcp.js": "c9164efd17f75489bad2ad68469867b4b36ce85ef62f20e261f25d35be09a13b",
+    "packages/mcp/dist/run_main.js": "5bb47310c02a353aaca94ab330dd951563d3bd59697e47277dc987b88839ed56"
+  },
+  "commandExits": {
+    "migrationBaseline": 1,
+    "issuers": [
+      {
+        "code": null,
+        "signal": "SIGKILL"
+      },
+      {
+        "code": null,
+        "signal": "SIGKILL"
+      }
+    ]
+  }
+}

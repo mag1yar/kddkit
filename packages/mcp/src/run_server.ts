@@ -16,7 +16,7 @@ export function createRunServer(context: RunContext): McpServer {
     catch { return { content: [{ type: 'text' as const, text: 'run operation denied' }], isError: true }; }
   };
   if (granted.includes('get_context')) server.registerTool('get_context', {
-    description: 'Read this run’s task context', inputSchema: z.object({}).strict(),
+    description: 'Read this run’s saved input context', inputSchema: z.object({}).strict(),
     annotations: { ...annotations, readOnlyHint: true, idempotentHint: true },
   }, async () => result(() => readRunContext(context)));
   if (granted.includes('submit_report')) server.registerTool('submit_report', {

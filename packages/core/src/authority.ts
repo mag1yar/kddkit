@@ -3,7 +3,6 @@ import { controllerDb, type ControllerHandle } from './controller.js';
 import { assertNoHandoff, liveOwner, scopedWorkItem, shape, integer, text, scopedTask, type AuthorityBinding, type OwnershipRef } from './execution.js';
 export { openController, type ControllerHandle } from './controller.js';
 import { createHash, randomBytes } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import { lstatSync, realpathSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { now } from './db.js';
@@ -13,10 +12,12 @@ import { projectOf, repositoriesOf, bindingsOf, canonicalCommonDir } from './pro
 import { assertVerifiedCodexPackage, inside, type VerifiedCodexPackage } from './codex_permissions.js';
 import { CAPS } from './caps.js';
 import { redact } from './agent_events.js';
-import { listCriteria } from './criteria.js';
 import { selectMemory, type MemoryScope, type MemoryApplicability, type MemorySource, type MemoryAuthor,
   type MemoryView, type MemoryRecord, type MemoryRecallOptions, type MemoryHit } from './memory.js';
 import { queryMemoryDb } from './memory_query.js';
+import { buildRunInputSnapshot, persistRunInputSnapshotDb, readRunInputSnapshotDb, runContextWireBytes, type RunInputGrant, type RunInputOptions, type RunInputSections } from './run_inputs.js';
+import type { ResultObservers } from './execution_results.js';
+import { assertRunInputsCurrentDb } from './run_inputs_current.js';
 
 export type RunOperation = 'get_context' | 'submit_report' | 'request_question';
 const operations: readonly RunOperation[] = ['get_context', 'submit_report', 'request_question'];
@@ -25,16 +26,10 @@ export interface IssueRunInput {
   taskId: number; workItemId: string; runId: string; expectedGeneration: number; expiresAt: number;
   operations: readonly RunOperation[];
   repositories: readonly { repoId: string; checkoutPath: string; write: boolean }[];
-  native: VerifiedCodexPackage; ownership?: OwnershipRef;
+  native: VerifiedCodexPackage; ownership?: OwnershipRef; context?: RunInputOptions; contextObservers?: ResultObservers;
 }
 export interface IssuedRunAuthority { authorityId: string; generation: number; token: string }
-interface Grant {
-  ownership?: OwnershipRef;
-  projectId: string; taskId: number; workItemId: string; runId: string; generation: number;
-  operations: readonly RunOperation[];
-  repositories: readonly { repoId: string; checkoutPath: string; write: boolean; commonDir: string }[];
-  native: { readableRoots: readonly string[]; writableRoot?: string; scratchDir: string; configHash: string };
-}
+type Grant = RunInputGrant;
 interface AuthorityRow {
   authority_id: string; task_id: number; work_item_id: string; run_id: string; generation: number;
   expires_at: number; revoked_at: number | null; token_hash: string; grant_json: string;
@@ -110,8 +105,12 @@ function privateStore(db: Database.Database, scope: Grant['repositories'], nativ
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   }
 }
-export function issueRunAuthority(handle: ControllerHandle, input: IssueRunInput): IssuedRunAuthority {
+export function issueRunAuthority(handle: ControllerHandle, supplied: IssueRunInput): IssuedRunAuthority {
   const db = controllerDb(handle);
+  shape(supplied,['taskId','workItemId','runId','expectedGeneration','expiresAt','operations','repositories','native'],['ownership','context','contextObservers']);
+  if(supplied.contextObservers!==undefined)shape(supplied.contextObservers,[],['observe']);
+  const {native,contextObservers,...data}=supplied;
+  const input:IssueRunInput={...structuredClone(data),native,contextObservers:contextObservers?{observe:contextObservers.observe}:undefined};
   return db.transaction(() => {
     if (!Number.isSafeInteger(input.taskId) || input.taskId < 1
       || typeof input.workItemId !== 'string' || !input.workItemId.trim()
@@ -128,15 +127,20 @@ export function issueRunAuthority(handle: ControllerHandle, input: IssueRunInput
     const repositories = repositoryScope(db, input.repositories, input.native);
     modeledOwnership(db, input, repositories);
     privateStore(db, repositories, input.native);
-    mark(db, input.taskId);
     const grant: Grant = { projectId: projectOf(db).project_id, taskId: input.taskId,
       workItemId: input.workItemId, runId: input.runId, generation: generation + 1,
       operations: [...input.operations], repositories, ...(input.ownership ? { ownership: { ...input.ownership } } : {}),
       native: { readableRoots: [...input.native.readableRoots], writableRoot: input.native.writableRoot, scratchDir: input.native.scratchDir, configHash: input.native.configHash } };
     const token = randomBytes(32).toString('hex'), authorityId = randomBytes(16).toString('hex');
+    const snapshot=buildRunInputSnapshot(db,grant,authorityId,input.context,input.contextObservers,[native.controlDir,...native.protectedPaths]);
+    assertVerifiedCodexPackage(native);
+    repositoryScope(db,input.repositories,native);modeledOwnership(db,input,repositories);privateStore(db,repositories,native);
+    mark(db,input.taskId);
     db.prepare('UPDATE run_authorities SET revoked_at=? WHERE task_id=? AND work_item_id=? AND revoked_at IS NULL').run(now(), input.taskId, input.workItemId);
     db.prepare('INSERT INTO run_authorities(authority_id,task_id,work_item_id,run_id,generation,expires_at,token_hash,grant_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
       .run(authorityId, input.taskId, input.workItemId, input.runId, grant.generation, input.expiresAt, tokenHash(token), JSON.stringify(grant), now());
+    persistRunInputSnapshotDb(db,snapshot);
+    appendEvent(db,input.taskId,controllerActor,'run_inputs_snapshot',{authorityId,inputHash:snapshot.inputHash,wireBytes:runContextWireBytes(snapshot.response),limit:snapshot.response.inputs.budget.maxBytes});
     appendEvent(db, input.taskId, controllerActor, 'authority_issued', { authorityId, workItemId: grant.workItemId, runId: grant.runId, generation: grant.generation });
     return { authorityId, generation: grant.generation, token };
   }).immediate();
@@ -169,6 +173,7 @@ function currentAuthority(db: Database.Database, row: AuthorityRow | undefined):
     if (JSON.stringify(repositories) !== JSON.stringify(grant.repositories)) throw denied();
     modeledOwnership(db, grant, repositories);
     privateStore(db, repositories, grant.native);
+    assertRunInputsCurrentDb(db,row.authority_id);
   } catch { throw denied(); }
   return { row, grant };
 }
@@ -218,6 +223,7 @@ export interface RunContextSnapshot {
   task: { title: string; body: string | null; status: string };
   criteria: { id: number; text: string; checked: boolean }[];
   decisions: { slug: string; title: string }[];
+  inputs: RunInputSections;
 }
 function registered(context: RunContext) {
   const stored = typeof context === 'object' && context !== null ? contexts.get(context) : undefined;
@@ -235,43 +241,34 @@ export function runOperations(context: RunContext): readonly RunOperation[] {
 }
 export function readRunContext(context: RunContext): RunContextSnapshot {
   return registered(context).db.transaction(() => {
-    const { db, grant } = live(context, 'get_context'), task = mustGetTask(db, grant.taskId);
-    return { projectId: grant.projectId, taskId: grant.taskId, workItemId: grant.workItemId,
-      runId: grant.runId, generation: grant.generation,
-      task: { title: task.title, body: task.body, status: task.status },
-      criteria: listCriteria(db, task.id).map(c => ({ id: c.id, text: c.text, checked: c.checked_at !== null })),
-      decisions: db.prepare(`SELECT d.slug,d.title FROM decisions d,json_each(d.source_tasks) s
-        WHERE CAST(s.value AS INTEGER)=? ORDER BY d.slug`).all(task.id) as { slug: string; title: string }[] };
+    const { db, authorityId } = live(context, 'get_context');
+    return readRunInputSnapshotDb(db,authorityId).response;
   }).immediate();
 }
 export interface RunMemoryReadInput { entryId?: string; revision?: number; candidates?: boolean; withdrawn?: boolean }
-function runMemoryView(grant: Grant): MemoryView {
-  return {scope:{projectId:grant.projectId,taskId:grant.taskId},repositories:grant.repositories.map(repo=>({
-    repoId:repo.repoId,checkoutPath:repo.checkoutPath,
-    commit:execFileSync('/usr/bin/git',['--no-replace-objects','rev-parse','--verify','HEAD^{commit}'],
-      {cwd:repo.checkoutPath,encoding:'utf8',stdio:'pipe',maxBuffer:4096}).trim(),
-  }))};
+function runMemoryView(db:Database.Database,authorityId:string,grant:Grant):MemoryView {
+  return {scope:{projectId:grant.projectId,taskId:grant.taskId},repositories:readRunInputSnapshotDb(db,authorityId).validation.repositories};
 }
 export function readRunMemory(context: RunContext, input: RunMemoryReadInput = {}): MemoryRecord[] {
   return registered(context).db.transaction(()=>{
-    const {db,grant}=live(context,'get_context');
+    const {db,grant,authorityId}=live(context,'get_context');
     shape(input,[],['entryId','revision','candidates','withdrawn']);
     if (input.revision!==undefined) integer(input.revision);
     if (input.revision!==undefined && input.entryId===undefined) throw new KddError('memory revision requires entry');
-    return selectMemory(db,runMemoryView(grant),{candidates:input.candidates,withdrawn:input.withdrawn},
+    return selectMemory(db,runMemoryView(db,authorityId,grant),{candidates:input.candidates,withdrawn:input.withdrawn},
       input.entryId,input.entryId===undefined ? undefined : input.revision ?? null);
   }).immediate();
 }
 export function recallRunMemory(context: RunContext, query: string, options: MemoryRecallOptions = {}): MemoryHit[] {
   return registered(context).db.transaction(()=>{
-    const {db,grant}=live(context,'get_context');
-    return queryMemoryDb(db,runMemoryView(grant),query,options);
+    const {db,grant,authorityId}=live(context,'get_context');
+    return queryMemoryDb(db,runMemoryView(db,authorityId,grant),query,options);
   }).immediate();
 }
 export function runMemoryRules(context: RunContext): MemoryRecord[] {
   return registered(context).db.transaction(()=>{
-    const {db,grant}=live(context,'get_context');
-    return selectMemory(db,runMemoryView(grant)).filter(record=>record.kind==='rule');
+    const {db,grant,authorityId}=live(context,'get_context');
+    return selectMemory(db,runMemoryView(db,authorityId,grant)).filter(record=>record.kind==='rule');
   }).immediate();
 }
 function runEvent(context: RunContext, operation: 'submit_report' | 'request_question', body: string): number {

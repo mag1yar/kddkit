@@ -5,7 +5,7 @@ import { shape, integer } from './execution.js';
 import { CAPS, capText } from './caps.js';
 import { sanitizeQuery } from './recall.js';
 import { selectMemory, memoryReadOptions, safeMemoryText,
-  type MemoryView, type MemoryRecord, type MemoryHit, type MemoryReadOptions,
+  type MemoryKind, type MemoryView, type MemoryRecord, type MemoryHit, type MemoryReadOptions,
   type MemoryRecallOptions } from './memory.js';
 
 export function memoryEntry(handle: ControllerHandle, view: MemoryView, entryId: string, revision?: number): MemoryRecord {
@@ -26,7 +26,7 @@ export function memoryRules(handle: ControllerHandle, view: MemoryView): MemoryR
   return db.transaction(() => selectMemory(db,view).filter(record=>record.kind==='rule'))();
 }
 export function queryMemoryDb(db: Database.Database, view: MemoryView, query: string,
-  options: MemoryRecallOptions = {}): MemoryHit[] {
+  options: MemoryRecallOptions = {}, kinds?: readonly MemoryKind[]): MemoryHit[] {
   shape(options,[],['k','candidates','withdrawn']);
   const readOptions = {candidates:options.candidates,withdrawn:options.withdrawn};
   memoryReadOptions(readOptions);
@@ -35,7 +35,7 @@ export function queryMemoryDb(db: Database.Database, view: MemoryView, query: st
   safeMemoryText(query,CAPS.bodyChars);
   const match = sanitizeQuery(query);
   if (!match) throw new KddError('memory query requires words');
-  const eligible = selectMemory(db,view,readOptions);
+  const eligible = selectMemory(db,view,readOptions).filter(record=>!kinds || kinds.includes(record.kind));
   // ponytail: O(n) allowed records per query; use isolated partitions only after measured corpus cost.
   const corpus = new Database(':memory:');
   try {

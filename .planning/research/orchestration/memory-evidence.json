@@ -1,8 +1,8 @@
 {
-  "observedAt": "2026-09-29T11:22:57.354Z",
+  "observedAt": "2026-09-29T16:19:17.843Z",
   "node": "v24.15.0",
-  "schema": 16,
-  "runtimeHash": "be239ec65a2a5a3c90f6f3cc8f4468ec98bae7a24c50515f329ef1028398bffa",
+  "schema": 17,
+  "runtimeHash": "420473eee4574a464998c771a18756e5f216575268e5e9d02a1b7331c7a12a96",
   "checks": [
     {
       "id": "M01",
@@ -11,7 +11,7 @@
         "oldTables": 23,
         "walBytes": 1190712,
         "backupVersion": 15,
-        "newVersion": 16,
+        "newVersion": 17,
         "oldBinaryExit": 1,
         "emptyMemory": true
       }
@@ -44,11 +44,11 @@
       "observations": {
         "foreignHits": 200,
         "k": 1,
-        "eligibleHit": "c22a42a946c3a84bbb4e0eac2118349e",
+        "eligibleHit": "39ea1debb59b816c5ef13c01e21782a6",
         "unchangedHitAndSnippet": true,
         "rankedPermittedHits": [
-          "c22a42a946c3a84bbb4e0eac2118349e",
-          "efd45d6749d15dffafd148a4f883472e"
+          "39ea1debb59b816c5ef13c01e21782a6",
+          "bdc0960edfaa7a1c71fb2dc06a16c52f"
         ],
         "unchangedOrderAcrossCorpusStatistics": true
       }
@@ -57,9 +57,9 @@
       "id": "M04",
       "passed": true,
       "observations": {
-        "repoId": "4da8dfdc8bf75757d134482edcde2405",
-        "a": "685188fe100e0377f25b9368732fedd463f2229f",
-        "b": "a8e8f990193e6c84cf7801a5ff0ce85740bd3e64",
+        "repoId": "5db6149092a79ff9130ceac1a6f76087",
+        "a": "56537a8b915d9ee06817f730326210eeaaba1b2d",
+        "b": "62911b3248d15977c00702ef7ee8d2fcdb03efae",
         "ancestorDoesNotBroaden": true,
         "foreignBindingDenied": true
       }
@@ -68,9 +68,9 @@
       "id": "M05",
       "passed": true,
       "observations": {
-        "entryId": "42fb889b46946ad9425758dada5176c6",
+        "entryId": "fd9c52050b2f691b3cea80203aee81d3",
         "revisions": 4,
-        "originalHash": "180feb3335095d7189b4c9d686e19c092f609005a7b8fa8ec2661cfc297d22b5",
+        "originalHash": "0f3f6fb419385779a0ef419d49abedae62f47ec9802f6335e829fcf5bf681683",
         "originalBytesAndProofPreserved": true
       }
     },
@@ -163,8 +163,8 @@
       "id": "M09",
       "passed": true,
       "observations": {
-        "entryId": "9524548829404de20cf108bfe77a7a40",
-        "commit": "08e4f2ce311f9dde6d6f4ac03738b41a0f9398c6",
+        "entryId": "f917db92e2c2837d63a6cc3c132aad7f",
+        "commit": "296137fa6f95451865c25047d5e9e5b248062773",
         "blobHash": "47a30137e6accae9f4c153d889cfdfe5bb4f121529c5947def5ff005b49b5a92",
         "rawBOMAndCRLFPreserved": true,
         "refusedInputs": 16,
@@ -261,7 +261,7 @@
           "runMemoryRules"
         ],
         "actualRevision": 1,
-        "hash": "959ac5008bbbdaf296f94d7b868b0a0b92d3f1e107c228f13f9319b1dbc71e16",
+        "hash": "e2379939ed93a2bc7f043f950e92a0871d661eeb6e9cab72e743e8d44ebddd3e",
         "transportRegression": 7,
         "newTools": 0
       }

@@ -373,4 +373,17 @@ CREATE TRIGGER memory_entries_current BEFORE UPDATE OF current_revision ON memor
 WHEN NEW.current_revision<>OLD.current_revision+1
 BEGIN SELECT RAISE(ABORT,'memory revision must advance once'); END;
   `,
+  // v17: immutable inputs belonging to one authority generation.
+  `
+CREATE TABLE run_input_snapshots (
+  authority_id TEXT PRIMARY KEY REFERENCES run_authorities(authority_id),
+  input_hash TEXT NOT NULL CHECK(length(input_hash)=64 AND input_hash NOT GLOB '*[^0-9a-f]*'),
+  payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+  created_at INTEGER NOT NULL
+);
+CREATE TRIGGER run_input_snapshots_immutable_update BEFORE UPDATE ON run_input_snapshots
+BEGIN SELECT RAISE(ABORT,'immutable run input snapshot'); END;
+CREATE TRIGGER run_input_snapshots_immutable_delete BEFORE DELETE ON run_input_snapshots
+BEGIN SELECT RAISE(ABORT,'immutable run input snapshot'); END;
+  `,
 ];

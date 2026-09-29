@@ -46,7 +46,7 @@ interface ResultRow {id:string;command_id:string;command_hash:string;producer_id
   output_key:string;kind:DependencyKind;payload_json:string;source_json:string;invalidated_at:number|null;invalidation_reason:string|null;successor_id:string|null}
 interface SourceMetadata {source:ResultSource;binding:ResultBinding;inputResults:{edgeKey:string;resultId:string}[];fence:number}
 const terminal = (item:WorkItemRecord) => ['completed','failed','cancelled'].includes(item.state);
-function rowResult(db:Database.Database,id:string):ResultRecord {
+export function rowResult(db:Database.Database,id:string):ResultRecord {
   text(id); const row=db.prepare('SELECT * FROM work_item_results WHERE id=?').get(id) as ResultRow|undefined;
   if (!row) throw new KddError('result not found');
   const metadata=JSON.parse(row.source_json) as SourceMetadata;

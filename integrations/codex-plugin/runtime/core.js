@@ -459,6 +459,19 @@ BEGIN SELECT RAISE(ABORT,'immutable memory identity'); END;
 CREATE TRIGGER memory_entries_current BEFORE UPDATE OF current_revision ON memory_entries
 WHEN NEW.current_revision<>OLD.current_revision+1
 BEGIN SELECT RAISE(ABORT,'memory revision must advance once'); END;
+  `,
+  // v17: immutable inputs belonging to one authority generation.
+  `
+CREATE TABLE run_input_snapshots (
+  authority_id TEXT PRIMARY KEY REFERENCES run_authorities(authority_id),
+  input_hash TEXT NOT NULL CHECK(length(input_hash)=64 AND input_hash NOT GLOB '*[^0-9a-f]*'),
+  payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+  created_at INTEGER NOT NULL
+);
+CREATE TRIGGER run_input_snapshots_immutable_update BEFORE UPDATE ON run_input_snapshots
+BEGIN SELECT RAISE(ABORT,'immutable run input snapshot'); END;
+CREATE TRIGGER run_input_snapshots_immutable_delete BEFORE DELETE ON run_input_snapshots
+BEGIN SELECT RAISE(ABORT,'immutable run input snapshot'); END;
   `
 ];
 
@@ -1102,7 +1115,7 @@ function openController(db) {
 }
 
 // src/execution.ts
-import { createHash as createHash3, randomBytes as randomBytes2 } from "crypto";
+import { createHash as createHash9, randomBytes as randomBytes2 } from "crypto";
 
 // src/execution_results.ts
 import { createHash as createHash2 } from "crypto";
@@ -1464,1317 +1477,10 @@ function setStateWithDb(db, input, state) {
   }).immediate();
 }
 
-// src/execution.ts
-var controllerActor = { type: "ai", id: "controller" };
-function shape(value, required, optional = []) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((k) => !required.includes(k) && !optional.includes(k)) || required.some((k) => !Object.hasOwn(value, k))) throw new KddError("invalid input shape");
-}
-function text(value) {
-  if (typeof value !== "string" || !value.trim()) throw new KddError("invalid nonempty string");
-}
-function integer(value, min = 1) {
-  if (!Number.isSafeInteger(value) || value < min) throw new KddError("invalid safe integer");
-}
-function mode(value) {
-  if (value !== "manual" && value !== "orchestrated") throw new KddError("invalid execution mode");
-}
-function scopedTask(db, ref) {
-  shape(ref, ["projectId", "taskId"]);
-  text(ref.projectId);
-  integer(ref.taskId);
-  if (ref.projectId !== projectOf(db).project_id) throw new KddError("foreign project reference");
-  return mustGetTask(db, ref.taskId);
-}
-function contractHash(db, ref) {
-  const task = scopedTask(db, ref);
-  const criteria = db.prepare("SELECT id,text FROM criteria WHERE task_id=? ORDER BY id").all(task.id);
-  return createHash3("sha256").update(JSON.stringify({
-    projectId: ref.projectId,
-    taskId: task.id,
-    title: task.title,
-    body: task.body,
-    criteria
-  })).digest("hex");
-}
-function taskContractHash(handle, ref) {
-  const db = controllerDb(handle);
-  return db.transaction(() => contractHash(db, ref))();
-}
-function checkAuthority(db, task, binding) {
-  scopedTask(db, task);
-  shape(binding, ["authorityId", "workItemId", "runId", "generation"]);
-  text(binding.authorityId);
-  text(binding.workItemId);
-  text(binding.runId);
-  integer(binding.generation);
-  assertRunAuthorityBinding(db, task.taskId, binding);
-}
-function validateCreationSource(db, source) {
-  shape(source, source.kind === "manual" ? ["kind", "sourceTask", "instructionRef"] : ["kind", "sourceTask", "authority", "proposalEventId"]);
-  scopedTask(db, source.sourceTask);
-  if (source.kind === "manual") {
-    text(source.instructionRef);
-    return { source_task_id: source.sourceTask.taskId, instruction_ref: source.instructionRef };
-  }
-  if (source.kind !== "run") throw new KddError("invalid source kind");
-  checkAuthority(db, source.sourceTask, source.authority);
-  integer(source.proposalEventId);
-  const event = db.prepare("SELECT detail FROM events WHERE id=? AND task_id=? AND action='run_report'").get(source.proposalEventId, source.sourceTask.taskId);
-  const detail = event?.detail ? JSON.parse(event.detail) : null;
-  if (!detail || detail.work_item_id !== source.authority.workItemId || detail.run_id !== source.authority.runId || detail.generation !== source.authority.generation || detail.untrusted !== true) throw new KddError("invalid proposal event");
-  return {
-    source_task_id: source.sourceTask.taskId,
-    source_work_item_id: source.authority.workItemId,
-    source_run_id: source.authority.runId,
-    generation: source.authority.generation,
-    proposal_event_id: source.proposalEventId
-  };
-}
-function createSubtasks(handle, input) {
-  const db = controllerDb(handle);
-  return db.transaction(() => {
-    shape(input, ["parent", "expectedParentHash", "source", "children"]);
-    const parent = scopedTask(db, input.parent);
-    if (parent.parent_id !== null) throw new KddError("parent must be a root task");
-    text(input.expectedParentHash);
-    if (contractHash(db, input.parent) !== input.expectedParentHash) throw new KddError("stale parent contract");
-    const provenance = validateCreationSource(db, input.source);
-    if (!Array.isArray(input.children) || !input.children.length) throw new KddError("empty children");
-    const keys = /* @__PURE__ */ new Set();
-    for (const child of input.children) {
-      shape(child, ["key", "title", "criteria"], ["body", "kind", "priority", "area", "trackId", "executionMode"]);
-      text(child.key);
-      text(child.title);
-      if (keys.has(child.key)) throw new KddError("duplicate child key");
-      keys.add(child.key);
-      if (!Array.isArray(child.criteria) || !child.criteria.length) throw new KddError("empty criteria");
-      child.criteria.forEach(text);
-      if (child.body !== void 0 && typeof child.body !== "string") throw new KddError("invalid body");
-      if (child.area !== void 0) text(child.area);
-      if (child.trackId !== void 0) integer(child.trackId);
-      if (child.kind !== void 0 && !KINDS.includes(child.kind)) throw new KddError("invalid kind");
-      if (child.priority !== void 0 && !PRIORITIES.includes(child.priority)) throw new KddError("invalid priority");
-      if (child.executionMode !== void 0) mode(child.executionMode);
-    }
-    const children = /* @__PURE__ */ Object.create(null);
-    for (const child of input.children) {
-      const row = addTask(db, {
-        title: child.title,
-        body: child.body,
-        criteria: [...child.criteria],
-        kind: child.kind,
-        priority: child.priority,
-        area: child.area,
-        track_id: child.trackId
-      }, controllerActor);
-      db.prepare("UPDATE tasks SET parent_id=?,execution_mode=? WHERE id=?").run(parent.id, child.executionMode ?? parent.execution_mode, row.id);
-      appendEvent(db, row.id, controllerActor, "subtask_created", { parent_task_id: parent.id, ...provenance });
-      children[child.key] = mustGetTask(db, row.id);
-    }
-    return children;
-  }).immediate();
-}
-function listSubtasks(handle, parent) {
-  const db = controllerDb(handle);
-  scopedTask(db, parent);
-  return db.prepare("SELECT * FROM tasks WHERE parent_id=? ORDER BY id").all(parent.taskId);
-}
-var newId = () => randomBytes2(16).toString("hex");
-function canonical(value) {
-  const sort = (v) => Array.isArray(v) ? v.map(sort) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sort(v[k])])) : v;
-  return JSON.stringify(sort(value));
-}
-var digest = (value) => createHash3("sha256").update(canonical(value)).digest("hex");
-function strings(value) {
-  if (!Array.isArray(value)) throw new KddError("invalid strings");
-  value.forEach(text);
-  if (new Set(value).size !== value.length) throw new KddError("duplicate strings");
-}
-function dependencyKind(value) {
-  if (!["contract", "code", "merged", "readiness"].includes(value)) throw new KddError("invalid dependency kind");
-}
-function checkRepo(db, repoId) {
-  if (repoId === null) return;
-  text(repoId);
-  if (!db.prepare("SELECT 1 FROM repositories WHERE repo_id=?").get(repoId)) throw new KddError("unknown repository");
-}
-function assertNoHandoff(db, taskId) {
-  if (db.prepare("SELECT 1 FROM execution_handoffs WHERE task_id=? AND completed_at IS NULL").get(taskId)) {
-    throw new KddError("task handoff pending");
-  }
-}
-function scopedWorkItem(db, ref, revision) {
-  shape(ref, ["projectId", "workItemId"]);
-  text(ref.projectId);
-  text(ref.workItemId);
-  if (ref.projectId !== projectOf(db).project_id) throw new KddError("foreign project reference");
-  const row = db.prepare("SELECT * FROM work_items WHERE id=?").get(ref.workItemId);
-  if (!row) throw new KddError("work item not found");
-  if (revision !== void 0) integer(revision);
-  const rev = revision ?? row.current_revision;
-  const contract = db.prepare("SELECT * FROM work_item_revisions WHERE work_item_id=? AND revision=?").get(row.id, rev);
-  if (!contract) throw new KddError("work item revision not found");
-  const dependencies = db.prepare(`SELECT * FROM work_item_dependencies WHERE consumer_id=? AND consumer_revision=? ORDER BY edge_key`).all(row.id, rev).map((d) => ({
-    key: d.edge_key,
-    producer: { projectId: ref.projectId, workItemId: d.producer_id },
-    producerRevision: d.producer_revision,
-    outputKey: d.output_key,
-    binding: JSON.parse(d.binding_json),
-    ...d.pinned_result_id === null ? {} : { resultId: d.pinned_result_id }
-  }));
-  return {
-    ref: { ...ref },
-    task: { projectId: ref.projectId, taskId: row.task_id },
-    revision: rev,
-    state: row.state,
-    fence: row.fence,
-    definition: JSON.parse(contract.definition_json),
-    inputs: JSON.parse(contract.inputs_json),
-    inputsHash: contract.inputs_hash,
-    dependencies
-  };
-}
-function inputsCurrent(db, item) {
-  return item.inputs.every((input) => contractHash(db, input.task) === input.hash);
-}
-function checkDefinition(db, definition) {
-  shape(definition, ["kind", "repoId", "sourceTasks", "outputs"]);
-  if (!["analysis", "architecture", "implementation", "check", "integration", "human_action", "curation"].includes(definition.kind)) {
-    throw new KddError("invalid work item kind");
-  }
-  checkRepo(db, definition.repoId);
-  if (!Array.isArray(definition.sourceTasks) || !Array.isArray(definition.outputs)) throw new KddError("invalid definition arrays");
-  const sources = /* @__PURE__ */ new Set(), outputs = /* @__PURE__ */ new Set();
-  for (const ref of definition.sourceTasks) {
-    scopedTask(db, ref);
-    if (sources.has(ref.taskId)) throw new KddError("duplicate source task");
-    sources.add(ref.taskId);
-  }
-  for (const output of definition.outputs) {
-    shape(output, ["key", "kind", "required", "version", "checkRefs"]);
-    text(output.key);
-    text(output.version);
-    dependencyKind(output.kind);
-    strings(output.checkRefs);
-    if (typeof output.required !== "boolean") throw new KddError("invalid output requirement");
-    if (outputs.has(output.key)) throw new KddError("duplicate output key");
-    outputs.add(output.key);
-    if ((output.kind === "code" || output.kind === "merged") && definition.repoId === null) throw new KddError("output requires repository");
-  }
-}
-function checkBinding(db, binding) {
-  dependencyKind(binding?.kind);
-  const extra = {
-    contract: [],
-    code: ["baseHead"],
-    merged: ["target", "baseHead"],
-    readiness: ["resourceId", "configHash", "consumerScope", "capabilities"]
-  }[binding.kind];
-  shape(binding, ["kind", "repoId", "version", ...extra]);
-  checkRepo(db, binding.repoId);
-  text(binding.version);
-  if (binding.kind === "code" || binding.kind === "merged") {
-    if (binding.repoId === null) throw new KddError("dependency requires repository");
-    text(binding.baseHead);
-    if (binding.kind === "merged") text(binding.target);
-  }
-  if (binding.kind === "readiness") {
-    text(binding.resourceId);
-    text(binding.configHash);
-    text(binding.consumerScope);
-    strings(binding.capabilities);
-  }
-}
-function insertRevision(db, id2, task, revision, definition) {
-  checkDefinition(db, definition);
-  const card = scopedTask(db, task), ids = /* @__PURE__ */ new Set([card.id, ...definition.sourceTasks.map((t) => t.taskId)]);
-  if (card.parent_id !== null) ids.add(card.parent_id);
-  const inputs = [...ids].sort((a, b) => a - b).map((taskId) => {
-    const ref = { projectId: task.projectId, taskId };
-    return { task: ref, hash: contractHash(db, ref) };
-  });
-  db.prepare("INSERT INTO work_item_revisions VALUES(?,?,?,?,?,?)").run(id2, revision, canonical(definition), canonical(inputs), digest(inputs), now());
-}
-function insertEdges(db, item, dependencies) {
-  if (!Array.isArray(dependencies)) throw new KddError("invalid dependencies");
-  const keys = /* @__PURE__ */ new Set();
-  for (const dep of dependencies) {
-    shape(dep, ["key", "producer", "producerRevision", "outputKey", "binding"], ["resultId"]);
-    text(dep.key);
-    text(dep.outputKey);
-    integer(dep.producerRevision);
-    checkBinding(db, dep.binding);
-    if (keys.has(dep.key)) throw new KddError("duplicate edge key");
-    keys.add(dep.key);
-    const producer = scopedWorkItem(db, dep.producer, dep.producerRevision);
-    if (item.ref.workItemId === producer.ref.workItemId) throw new KddError("self dependency cycle");
-    const output = producer.definition.outputs.find((o) => o.key === dep.outputKey);
-    if (!output || output.kind !== dep.binding.kind || output.version !== dep.binding.version || producer.definition.repoId !== dep.binding.repoId) throw new KddError("incompatible dependency output or scope");
-    if (dep.binding.kind === "code" && (item.definition.repoId === null || item.definition.repoId !== producer.definition.repoId)) {
-      throw new KddError("cross repository code dependency denied");
-    }
-    if (dep.resultId !== void 0) {
-      text(dep.resultId);
-      const result2 = db.prepare("SELECT payload_json FROM work_item_results WHERE id=? AND producer_id=? AND producer_revision=? AND output_key=? AND kind=?").get(dep.resultId, producer.ref.workItemId, producer.revision, dep.outputKey, dep.binding.kind);
-      const payload = result2 ? JSON.parse(result2.payload_json) : null;
-      if (!payload || payload.version !== dep.binding.version || payload.repoId !== dep.binding.repoId) throw new KddError("result binding mismatch");
-    }
-    db.prepare("INSERT INTO work_item_dependencies VALUES(?,?,?,?,?,?,?,?,?)").run(
-      item.ref.workItemId,
-      item.revision,
-      dep.key,
-      producer.ref.workItemId,
-      producer.revision,
-      dep.binding.kind,
-      dep.outputKey,
-      canonical(dep.binding),
-      dep.resultId ?? null
-    );
-  }
-}
-function assertDag(db, refs) {
-  const cycle = db.prepare(`WITH RECURSIVE active(consumer,producer) AS (
-    SELECT d.consumer_id,d.producer_id FROM work_item_dependencies d
-    JOIN work_items w ON w.id=d.consumer_id AND w.current_revision=d.consumer_revision
-  ), reachable(id) AS (SELECT producer FROM active WHERE consumer=?
-    UNION SELECT a.producer FROM active a JOIN reachable r ON a.consumer=r.id)
-    SELECT 1 FROM reachable WHERE id=? LIMIT 1`);
-  for (const ref of refs) if (cycle.get(ref.workItemId, ref.workItemId)) throw new KddError("dependency cycle");
-}
-function createWorkItem(handle, input) {
-  const db = controllerDb(handle);
-  return db.transaction(() => {
-    shape(input, ["task", "definition", "dependencies"]);
-    const task = scopedTask(db, input.task);
-    assertNoHandoff(db, task.id);
-    const ref = { projectId: input.task.projectId, workItemId: newId() };
-    db.prepare("INSERT INTO work_items(id,task_id,current_revision,created_at) VALUES(?,?,1,?)").run(ref.workItemId, task.id, now());
-    insertRevision(db, ref.workItemId, input.task, 1, input.definition);
-    insertEdges(db, scopedWorkItem(db, ref), input.dependencies);
-    assertDag(db, [ref]);
-    appendEvent(db, task.id, controllerActor, "work_item_created", { work_item_id: ref.workItemId, revision: 1 });
-    return scopedWorkItem(db, ref);
-  }).immediate();
-}
-function reviseWorkItem(handle, input) {
-  const db = controllerDb(handle);
-  return db.transaction(() => {
-    shape(input, ["ref", "expectedRevision", "definition", "dependencies"]);
-    integer(input.expectedRevision);
-    const item = scopedWorkItem(db, input.ref);
-    assertNoHandoff(db, item.task.taskId);
-    if (item.revision !== input.expectedRevision || item.revision === Number.MAX_SAFE_INTEGER) throw new KddError("revision conflict or overflow");
-    if (["completed", "failed", "cancelled"].includes(item.state)) throw new KddError("terminal work item requires new work");
-    if (db.prepare("SELECT 1 FROM work_item_owners WHERE work_item_id=? AND released_at IS NULL").get(item.ref.workItemId)) {
-      throw new KddError("owned work item cannot change revision");
-    }
-    const revision = item.revision + 1;
-    insertRevision(db, item.ref.workItemId, item.task, revision, input.definition);
-    db.prepare("UPDATE work_items SET current_revision=?,state='pending' WHERE id=? AND current_revision=?").run(revision, item.ref.workItemId, input.expectedRevision);
-    insertEdges(db, scopedWorkItem(db, item.ref), input.dependencies);
-    assertDag(db, [item.ref]);
-    appendEvent(db, item.task.taskId, controllerActor, "work_item_revised", { work_item_id: item.ref.workItemId, revision });
-    return scopedWorkItem(db, item.ref);
-  }).immediate();
-}
-function workItem(handle, ref) {
-  const db = controllerDb(handle);
-  return db.transaction(() => scopedWorkItem(db, ref))();
-}
-function taskWorkItems(handle, task) {
-  const db = controllerDb(handle);
-  return db.transaction(() => {
-    scopedTask(db, task);
-    return db.prepare("SELECT id FROM work_items WHERE task_id=? ORDER BY id").all(task.taskId).map((row) => scopedWorkItem(db, { projectId: task.projectId, workItemId: row.id }));
-  })();
-}
-function createSubtaskPlan(handle, input) {
-  const db = controllerDb(handle);
-  return db.transaction(() => {
-    shape(input, ["parent", "expectedParentHash", "source", "children", "workItems", "dependencies"]);
-    if (!Array.isArray(input.workItems) || !Array.isArray(input.dependencies)) throw new KddError("invalid plan arrays");
-    const tasks = createSubtasks(handle, {
-      parent: input.parent,
-      expectedParentHash: input.expectedParentHash,
-      source: input.source,
-      children: input.children
-    });
-    const refs = /* @__PURE__ */ Object.create(null);
-    for (const draft of input.workItems) {
-      shape(draft, ["key", "childKey", "definition"]);
-      text(draft.key);
-      text(draft.childKey);
-      if (Object.hasOwn(refs, draft.key) || !Object.hasOwn(tasks, draft.childKey)) throw new KddError("invalid plan work item key");
-      const ref = { projectId: input.parent.projectId, workItemId: newId() };
-      refs[draft.key] = ref;
-      db.prepare("INSERT INTO work_items(id,task_id,current_revision,created_at) VALUES(?,?,1,?)").run(ref.workItemId, tasks[draft.childKey].id, now());
-      insertRevision(db, ref.workItemId, { projectId: ref.projectId, taskId: tasks[draft.childKey].id }, 1, draft.definition);
-    }
-    const dependencies = Object.fromEntries(Object.keys(refs).map((k) => [k, []]));
-    for (const dep of input.dependencies) {
-      shape(dep, ["consumerKey", "key", "producer", "outputKey", "binding"], ["resultId"]);
-      text(dep.consumerKey);
-      if (!Object.hasOwn(refs, dep.consumerKey)) throw new KddError("missing consumer key");
-      shape(dep.producer, Object.hasOwn(dep.producer, "localKey") ? ["localKey"] : ["ref", "revision"]);
-      let producer, producerRevision;
-      if ("localKey" in dep.producer) {
-        text(dep.producer.localKey);
-        if (!Object.hasOwn(refs, dep.producer.localKey)) throw new KddError("missing producer key");
-        producer = refs[dep.producer.localKey];
-        producerRevision = 1;
-      } else {
-        producer = dep.producer.ref;
-        producerRevision = dep.producer.revision;
-      }
-      dependencies[dep.consumerKey].push({
-        key: dep.key,
-        producer,
-        producerRevision,
-        outputKey: dep.outputKey,
-        binding: dep.binding,
-        ...dep.resultId === void 0 ? {} : { resultId: dep.resultId }
-      });
-    }
-    for (const key of Object.keys(refs)) insertEdges(db, scopedWorkItem(db, refs[key]), dependencies[key]);
-    assertDag(db, Object.values(refs));
-    const workItems = Object.fromEntries(Object.keys(refs).map((key) => [key, scopedWorkItem(db, refs[key])]));
-    appendEvent(db, input.parent.taskId, controllerActor, "subtask_plan_created", {
-      tasks: Object.fromEntries(Object.entries(tasks).map(([k, t]) => [k, t.id])),
-      work_items: refs
-    });
-    return { tasks, workItems };
-  }).immediate();
-}
-function checkOwnershipRef(db, ref) {
-  shape(ref, ["projectId", "workItemId", "revision", "ownerId", "fence"]);
-  text(ref.ownerId);
-  integer(ref.revision);
-  integer(ref.fence);
-  scopedWorkItem(db, { projectId: ref.projectId, workItemId: ref.workItemId }, ref.revision);
-}
-function liveOwner(db, ref) {
-  checkOwnershipRef(db, ref);
-  const item = scopedWorkItem(db, { projectId: ref.projectId, workItemId: ref.workItemId });
-  const row = db.prepare("SELECT * FROM work_item_owners WHERE work_item_id=? AND fence=? AND owner_id=? AND revision=? AND released_at IS NULL").get(ref.workItemId, ref.fence, ref.ownerId, ref.revision);
-  if (!row || item.revision !== ref.revision || item.fence !== ref.fence || !inputsCurrent(db, item) || JSON.parse(row.inputs_json).inputsHash !== item.inputsHash || !pinnedInputsCurrent(db, item, JSON.parse(row.inputs_json).inputResults)) throw new KddError("ownership fence or inputs stale");
-  return row;
-}
-var LEGACY_EXECUTION_SQL = `execution_mode='manual'
-  AND NOT EXISTS (SELECT 1 FROM managed_task_policy p WHERE p.task_id=tasks.id)
-  AND NOT EXISTS (SELECT 1 FROM execution_handoffs h WHERE h.task_id=tasks.id AND h.completed_at IS NULL)`;
-
-// src/authority.ts
-import { createHash as createHash8, randomBytes as randomBytes3 } from "crypto";
-import { execFileSync as execFileSync7 } from "child_process";
-import { lstatSync as lstatSync3, realpathSync as realpathSync8 } from "fs";
-import { isAbsolute as isAbsolute5 } from "path";
-
-// src/codex_permissions.ts
-import { spawn as spawn2, execFileSync as execFileSync4 } from "child_process";
-import { createHash as createHash5 } from "crypto";
-import { lstatSync as lstatSync2, mkdirSync as mkdirSync4, readdirSync as readdirSync4, realpathSync as realpathSync4, rmdirSync, readFileSync as readFileSync4, writeFileSync as writeFileSync3, existsSync as existsSync4 } from "fs";
-import { dirname as dirname3, isAbsolute as isAbsolute2, join as join5, relative, resolve as resolve3, sep } from "path";
-import { fileURLToPath as fileURLToPath2 } from "url";
-
-// src/codex_native_probe.ts
-import assert from "assert/strict";
-import { spawn, execFile, execFileSync as execFileSync3 } from "child_process";
-import { createHash as createHash4 } from "crypto";
-import { mkdtempSync, mkdirSync as mkdirSync3, writeFileSync as writeFileSync2, readFileSync as readFileSync3, existsSync as existsSync3, rmSync as rmSync3, realpathSync as realpathSync3, linkSync, symlinkSync, lstatSync, readdirSync as readdirSync3, readlinkSync } from "fs";
-import { createServer } from "http";
-import { tmpdir, networkInterfaces } from "os";
-import { createServer as createSocketServer } from "net";
-import { join as join4 } from "path";
-import * as zlib from "zlib";
-import Database4 from "better-sqlite3";
-import { fileURLToPath } from "url";
-async function observeCodexNative(executablePath, rawDiagnostic = false, model = "fixture-codex", broker, brokerOnly = false) {
-  const executable = realpathSync3(executablePath);
-  const version = execFileSync3(executable, ["--version"], { encoding: "utf8" }).trim();
-  assert.equal(version, "codex-cli 0.157.0");
-  assert.equal(process.platform, "darwin");
-  const executableHash = createHash4("sha256").update(readFileSync3(executable)).digest("hex");
-  const scriptHash = createHash4("sha256").update(readFileSync3(new URL(import.meta.url))).digest("hex");
-  const guardHash = scriptHash;
-  const root = realpathSync3(mkdtempSync(join4(tmpdir(), "kdd-native-")));
-  const observations = [];
-  const failures = [];
-  const preflight = [];
-  const networkControls = [];
-  let tcpServer;
-  let unixServer;
-  let brokerDb;
-  let operations2 = [];
-  try {
-    let findTool2 = function(tools, name, namespace) {
-      for (const tool of tools ?? []) {
-        if (tool.name === name && ["function", "custom"].includes(tool.type)) return { ...tool, namespace };
-        const found = findTool2(tool.tools, name, tool.type === "namespace" ? tool.name : namespace);
-        if (found) return found;
-      }
-    }, flattenTools2 = function(tools, namespace) {
-      return (tools ?? []).flatMap((t) => t.type === "namespace" ? flattenTools2(t.tools, t.name) : [{ name: t.name, namespace, type: t.type }]);
-    }, fingerprint2 = function(path) {
-      if (!existsSync3(path)) return "missing";
-      const stat = lstatSync(path);
-      if (stat.isSymbolicLink()) return digest3(readlinkSync(path));
-      if (!stat.isDirectory()) return digest3(readFileSync3(path));
-      return digest3(JSON.stringify(readdirSync3(path).sort().map((name) => [name, fingerprint2(join4(path, name))])));
-    };
-    var findTool = findTool2, flattenTools = flattenTools2, fingerprint = fingerprint2;
-    if (broker) {
-      brokerDb = new Database4(broker.dbPath, { fileMustExist: true });
-      operations2 = runOperations(openRunContext(brokerDb, JSON.parse(readFileSync3(broker.configPath, "utf8")).token));
-    }
-    const workspace = join4(root, "workspace");
-    const scratch = join4(root, "scratch");
-    const protectedDir = join4(root, "protected");
-    const source = join4(root, "source");
-    const sibling = join4(root, "sibling");
-    const clone = join4(root, "clone");
-    for (const path of [scratch, protectedDir, source, sibling]) mkdirSync3(path);
-    writeFileSync2(join4(protectedDir, "marker.txt"), "private-fixture\n");
-    for (const name of ["store.db", "registry.db", "config.toml", "credential.json"]) writeFileSync2(join4(protectedDir, name), "private-fixture\n");
-    writeFileSync2(join4(sibling, "marker.txt"), "private-fixture\n");
-    const controlDir = join4(protectedDir, "controller");
-    mkdirSync3(controlDir);
-    const backend = join4(root, "backend");
-    mkdirSync3(backend);
-    writeFileSync2(join4(backend, "marker.txt"), "backend-original\n");
-    const git3 = (cwd, ...args) => execFileSync3("/usr/bin/git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
-    writeFileSync2(join4(source, "existing.txt"), "original\n");
-    git3(source, "init", "-q");
-    git3(source, "add", "existing.txt");
-    git3(source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "seed");
-    git3(root, "clone", "--no-hardlinks", "-q", source, clone);
-    git3(clone, "worktree", "add", "-q", "-b", "fixture-worktree", workspace);
-    mkdirSync3(join4(workspace, ".codex"));
-    const gitDir = git3(workspace, "rev-parse", "--absolute-git-dir");
-    const commonDir = git3(workspace, "rev-parse", "--path-format=absolute", "--git-common-dir");
-    const foreign = join4(backend, "marker.txt");
-    if (rawDiagnostic) linkSync(foreign, join4(workspace, "hardlink.txt"));
-    symlinkSync(foreign, join4(workspace, "symlink.txt"));
-    const catalogPath = join4(root, "model-catalog.json");
-    writeFileSync2(catalogPath, closedCodexCatalog(model));
-    let tcpRequests = 0;
-    let unixRequests = 0;
-    tcpServer = createServer((req, res) => {
-      tcpRequests++;
-      res.end("ack");
-    });
-    await new Promise((resolve4) => tcpServer.listen(0, "0.0.0.0", resolve4));
-    const tcpPort = tcpServer.address().port;
-    const socketPath = join4(scratch, "listener.sock");
-    unixServer = createSocketServer((socket) => socket.once("data", () => {
-      unixRequests++;
-      socket.end("ack");
-    }));
-    await new Promise((resolve4) => unixServer.listen(socketPath, resolve4));
-    const lanAddress = Object.values(networkInterfaces()).flat().find((i) => i && i.family === "IPv4" && !i.internal)?.address;
-    let tcpBaseline = 0;
-    let unixBaseline = 0;
-    const networkCases = [
-      ...[["loopback", "127.0.0.1"], ...lanAddress ? [["lan", lanAddress]] : []].map(([name, host]) => ({
-        id: `network-${name}`,
-        command: `/usr/bin/curl --disable --max-time 2 --silent --show-error -d native http://${host}:${tcpPort}/attempt`,
-        failureCode: 7
-      })),
-      { id: "network-unix", command: `/bin/sh -c "echo native | /usr/bin/nc -U -w 1 '${socketPath}'"`, failureCode: 1 }
-    ];
-    async function checkNetworkControls() {
-      for (const testCase of networkCases) {
-        const output = await new Promise((resolve4, reject) => execFile(
-          "/bin/sh",
-          ["-c", testCase.command],
-          { timeout: 4e3, env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", TMPDIR: scratch, LANG: "en_US.UTF-8" } },
-          (error, stdout) => error ? reject(error) : resolve4(stdout)
-        ));
-        assert.equal(String(output).trim(), "ack");
-        networkControls.push({ caseId: testCase.id, role: "host-control", exitCode: 0, commandHash: digest3(testCase.command), output });
-      }
-      assert.equal(tcpRequests, lanAddress ? 2 : 1);
-      assert.equal(unixRequests, 1);
-      tcpBaseline = tcpRequests;
-      unixBaseline = unixRequests;
-    }
-    const sse = (type, fields) => `event: ${type}
-data: ${JSON.stringify({ type, ...fields })}
-
-`;
-    async function runCase(testCase, writable) {
-      let calls = 0;
-      let output;
-      let registry;
-      let providerError;
-      const requests = [];
-      const server = createServer(async (req, res) => {
-        try {
-          if (req.method !== "POST") {
-            res.writeHead(404);
-            res.end();
-            return;
-          }
-          const chunks = [];
-          for await (const chunk of req) chunks.push(chunk);
-          let bytes2 = Buffer.concat(chunks);
-          if (req.headers["content-encoding"] === "zstd") {
-            if (typeof zlib.zstdDecompressSync !== "function") throw new Error("native fixture zstd unavailable");
-            bytes2 = zlib.zstdDecompressSync(bytes2);
-          }
-          const body = JSON.parse(bytes2.toString());
-          requests.push({ path: req.url, keys: Object.keys(body), tools: body.tools?.map((t) => ({ type: t.type, name: t.name })), input: body.input?.map((i) => ({ type: i.type, call_id: i.call_id, keys: i.type === "additional_tools" ? Object.keys(i) : void 0 })) });
-          const callId = "probe_call";
-          if (calls++ === 0) {
-            registry = body.tools ?? body.input?.find((item2) => item2.type === "additional_tools")?.tools;
-            const mcp = ["get_context", "submit_report", "request_question"].includes(testCase.tool);
-            let tool = findTool2(registry, testCase.tool);
-            if (testCase.unavailable) {
-              if (tool) throw new Error(`ungranted native tool advertised: ${testCase.tool}`);
-              tool = { name: testCase.tool, type: "function", namespace: "mcp__kdd_run" };
-            }
-            if (!tool) throw new Error(`native tool missing: ${testCase.tool}`);
-            if (mcp && tool.namespace !== "mcp__kdd_run") throw new Error("unexpected MCP namespace");
-            if (testCase.revoke) {
-              const token = JSON.parse(readFileSync3(broker.configPath, "utf8")).token;
-              const authority = brokerDb.prepare("SELECT authority_id FROM run_authorities WHERE token_hash=?").get(digest3(token));
-              revokeRunAuthority(openController(brokerDb), authority.authority_id);
-            }
-            const item = tool.type === "custom" ? { type: "custom_tool_call", id: "probe_item", call_id: callId, name: tool.name, input: testCase.patch } : {
-              type: "function_call",
-              id: "probe_item",
-              call_id: callId,
-              name: tool.name,
-              arguments: JSON.stringify(mcp || /mcp_resource/.test(testCase.tool) ? testCase.payload ?? {} : testCase.tool === "apply_patch" ? { patch: testCase.patch } : { cmd: testCase.command, max_output_tokens: 1e3 })
-            };
-            if (tool.namespace) item.namespace = tool.namespace;
-            res.writeHead(200, { "content-type": "text/event-stream" });
-            res.write(sse("response.created", { response: { id: "probe_response" } }));
-            res.write(sse("response.output_item.done", { item }));
-            const items = [item];
-            if (testCase.revoke) {
-              for (const operation of operations2.filter((operation2) => operation2 !== testCase.tool)) {
-                const granted = findTool2(registry, operation);
-                if (!granted) throw new Error(`native tool missing: ${operation}`);
-                const second = {
-                  type: "function_call",
-                  id: `probe_${operation}`,
-                  call_id: `probe_${operation}`,
-                  name: granted.name,
-                  ...granted.namespace ? { namespace: granted.namespace } : {},
-                  arguments: JSON.stringify(operation === "get_context" ? {} : { body: "late proposal" })
-                };
-                items.push(second);
-                res.write(sse("response.output_item.done", { item: second }));
-              }
-            }
-            res.end(sse("response.completed", { response: { id: "probe_response", output: items } }));
-          } else {
-            output = body.input?.find((item2) => item2.call_id === callId && /call_output$/.test(item2.type))?.output;
-            if (output === void 0) throw new Error("actual native call output missing");
-            if (testCase.revoke) {
-              output = Object.fromEntries(operations2.map((operation) => {
-                const id2 = operation === testCase.tool ? callId : `probe_${operation}`;
-                const value = body.input?.find((item2) => item2.call_id === id2 && /call_output$/.test(item2.type))?.output;
-                if (value === void 0) throw new Error(`actual revoked ${operation} output missing`);
-                return [operation, value];
-              }));
-            }
-            const item = { type: "message", id: "final", role: "assistant", content: [{ type: "output_text", text: "Probe complete." }] };
-            res.writeHead(200, { "content-type": "text/event-stream" });
-            res.write(sse("response.output_item.done", { item }));
-            res.end(sse("response.completed", { response: { id: "final_response", output: [item] } }));
-          }
-        } catch (error) {
-          providerError ??= error.message;
-          res.writeHead(500);
-          res.end("Fixture protocol error");
-          child.kill("SIGKILL");
-        }
-      });
-      await new Promise((resolve4) => server.listen(0, "127.0.0.1", resolve4));
-      const port = server.address().port;
-      const filesystem = { ":minimal": "read", [workspace]: writable ? "write" : "read", [scratch]: "write", [backend]: "read", [source]: "deny", [sibling]: "deny", [clone]: "deny", [protectedDir]: "deny", [join4(workspace, ".git")]: "read", [commonDir]: "read", [gitDir]: "read", [catalogPath]: "deny", [join4(workspace, ".codex")]: "read" };
-      if (broker) for (const path of [broker.configPath, broker.entryPath, broker.dbPath, `${broker.dbPath}-wal`, `${broker.dbPath}-shm`]) filesystem[path] = "deny";
-      if (testCase.controlRoot) filesystem[testCase.controlRoot] = "write";
-      const config = [
-        ...fixedCodexConfig(filesystem, catalogPath, broker),
-        // Only the model response service changes; native tools use the shared production policy.
-        `openai_base_url=${JSON.stringify(`http://127.0.0.1:${port}/v1`)}`
-      ];
-      const args = [...fixedCodexArguments(workspace, model, config), "Execute the supplied fixture tool call."];
-      let stdout = "";
-      let stderr = "";
-      let timedOut = false;
-      const env = {
-        HOME: process.env.HOME ?? "",
-        PATH: "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
-        TMPDIR: scratch,
-        LANG: "en_US.UTF-8",
-        CODEX_API_KEY: "fixture-preflight-not-a-secret"
-      };
-      let child;
-      try {
-        child = rawDiagnostic ? spawn(executable, args, { env, stdio: ["ignore", "pipe", "pipe"] }) : await spawnCheckedNative({
-          controlDir,
-          executable,
-          args,
-          env,
-          cwd: workspace,
-          writableRoots: [scratch, ...writable ? [workspace] : [], ...testCase.controlRoot ? [testCase.controlRoot] : []],
-          phase: testCase.phase ?? "start"
-        });
-      } catch (error) {
-        server.closeAllConnections();
-        await new Promise((resolve4) => server.close(() => resolve4()));
-        throw error;
-      }
-      child.stdout.on("data", (data) => stdout += data);
-      child.stderr.on("data", (data) => stderr += data);
-      const timer = setTimeout(() => {
-        timedOut = true;
-        child.kill("SIGKILL");
-      }, 2e4);
-      try {
-        const exitCode = await new Promise((resolve4, reject) => {
-          child.once("error", reject);
-          child.once("close", resolve4);
-        });
-        const observation = {
-          tools: [],
-          protectedHashes: [],
-          outcome: "inconclusive",
-          unchangedProtectedBytes: true,
-          caseId: testCase.id,
-          mode: writable ? "workspace" : "readonly",
-          tool: testCase.tool,
-          exitCode,
-          control: !!testCase.controlRoot,
-          phase: testCase.phase ?? "start",
-          executed: output !== void 0,
-          timedOut,
-          providerError,
-          output,
-          requests,
-          permissionHash: createHash4("sha256").update(JSON.stringify({ executableHash, version, model, filesystem, config })).digest("hex"),
-          configHash: createHash4("sha256").update(JSON.stringify({ executableHash, version, filesystem, config })).digest("hex")
-        };
-        if (output === void 0) observation.diagnostic = (stderr + stdout).slice(-3e3);
-        if (broker) {
-          const token = JSON.parse(readFileSync3(broker.configPath, "utf8")).token;
-          const safe = (text2) => text2.replaceAll(token, "[redacted]").replaceAll(digest3(token), "[redacted]");
-          if (observation.output !== void 0) observation.output = JSON.parse(safe(JSON.stringify(observation.output)));
-          if (observation.diagnostic) observation.diagnostic = safe(observation.diagnostic);
-        }
-        if (registry) observation.tools = flattenTools2(registry);
-        observation.unchangedProtectedBytes = readFileSync3(foreign, "utf8") === "backend-original\n";
-        observations.push(observation);
-        return observation;
-      } finally {
-        clearTimeout(timer);
-        child.kill("SIGKILL");
-        server.closeAllConnections();
-        await new Promise((resolve4) => server.close(() => resolve4()));
-      }
-    }
-    const patchCreate = (path) => `*** Begin Patch
-*** Add File: ${path}
-+created
-*** End Patch`;
-    const patchUpdate = (path) => `*** Begin Patch
-*** Update File: ${path}
-@@
--original
-+changed
-*** End Patch`;
-    const patchDelete = (path) => `*** Begin Patch
-*** Delete File: ${path}
-*** End Patch`;
-    const digest3 = (value) => createHash4("sha256").update(value).digest("hex");
-    const protectedPaths = [
-      backend,
-      source,
-      sibling,
-      protectedDir,
-      commonDir,
-      join4(workspace, ".git"),
-      join4(workspace, ".codex"),
-      ...broker ? [broker.configPath, broker.entryPath] : []
-    ];
-    const storeTables = ["tasks", "criteria", "comments", "task_links", "files", "tracks", "project", "repositories", "repository_bindings", "decisions", "search_index", "managed_task_policy", "run_authorities"];
-    const storeSnapshot = (revoking = false) => brokerDb ? digest3(JSON.stringify(storeTables.filter((table) => !revoking || table !== "run_authorities").map((table) => brokerDb.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()))) : "none";
-    async function check(testCase, writable, expected, effect) {
-      const unchangedPaths = protectedPaths.filter((path) => path !== testCase.controlRoot);
-      const before = unchangedPaths.map(fingerprint2);
-      const storeBefore = storeSnapshot(testCase.revoke);
-      const eventsBefore = brokerDb?.prepare("SELECT * FROM events ORDER BY id").all();
-      const observation = await runCase(testCase, writable);
-      const text2 = typeof observation.output === "string" ? observation.output : JSON.stringify(observation.output) ?? "";
-      observation.challengeHash = digest3(JSON.stringify([testCase.tool, testCase.patch ?? testCase.command]));
-      observation.protectedHashes = unchangedPaths.map((path, i) => ({ path, before: before[i], after: fingerprint2(path) }));
-      observation.outcome = "inconclusive";
-      const allowed = observation.executed && /(?:Process exited with code|Exit code:) 0/.test(text2);
-      const denied2 = observation.executed && /Operation not permitted|Permission denied|patch rejected/.test(text2);
-      if (allowed) observation.outcome = "allowed";
-      else if (denied2) observation.outcome = "denied";
-      else if (testCase.unavailable && observation.executed && text2.includes(testCase.tool) && /unsupported|unknown|unrecognized|not found/i.test(text2)) observation.outcome = "denied";
-      else if (["get_context", "submit_report", "request_question"].includes(testCase.tool)) {
-        if (text2.includes("run operation denied") || /["\\]isError["\\]*\s*:\s*true/.test(text2)) observation.outcome = "denied";
-        else if (text2.includes("taskId") || text2.includes("eventId")) observation.outcome = "allowed";
-      } else if (/mcp_resource/.test(testCase.tool) && observation.executed) {
-        if (/resources\/(?:read|list|templates\/list) failed:/.test(text2) && /unknown|not found|not support|Method not found|capability/i.test(text2)) observation.outcome = "denied";
-        else if (testCase.tool.startsWith("list_") && /"(?:resources|resourceTemplates)"\s*:\s*\[\s*\]/.test(text2)) observation.outcome = "allowed";
-      } else if (testCase.failureCode && observation.executed && new RegExp(`Process exited with code ${testCase.failureCode}\\b`).test(text2) && networkControls.some((control) => control.caseId === testCase.id && control.exitCode === 0 && control.commandHash === digest3(testCase.command))) {
-        observation.outcome = "denied";
-        observation.matchedControl = `host:${testCase.id}`;
-      } else if (testCase.matchedControl && observation.executed && /Exit code: 1/.test(text2) && /Failed to write file/.test(text2) && testCase.matchedControl.outcome === "allowed" && !testCase.matchedControl.failure && testCase.matchedControl.challengeHash === observation.challengeHash && observation.protectedHashes.every((path) => path.before === path.after)) {
-        observation.outcome = "denied";
-        observation.matchedControl = testCase.matchedControl.caseId;
-      }
-      try {
-        assert.equal(observation.timedOut, false);
-        assert.equal(observation.providerError, void 0);
-        assert.equal(observation.outcome, expected, `expected ${expected}, got ${observation.outcome}`);
-        if (testCase.revoke) {
-          const outputs = observation.output;
-          for (const operation of operations2) assert.ok(JSON.stringify(outputs[operation]).includes("run operation denied"), `revoked ${operation} was accepted`);
-        }
-        if (!testCase.controlRoot) assert.equal(observation.unchangedProtectedBytes, true, "foreign hardlink bytes changed");
-        assert.ok(observation.protectedHashes.every((path) => path.before === path.after), "protected tree changed");
-        for (const tool of observation.tools) {
-          const name = tool.namespace ? `${tool.namespace}__${tool.name}` : tool.name;
-          assert.ok(name && [
-            "exec_command",
-            "write_stdin",
-            "apply_patch",
-            ...broker ? [
-              ...operations2.map((operation) => `mcp__kdd_run__${operation}`),
-              "list_mcp_resources",
-              "list_mcp_resource_templates",
-              "read_mcp_resource"
-            ] : []
-          ].includes(name), `unexpected surface: ${name}`);
-        }
-        if (broker) {
-          assert.equal(storeSnapshot(testCase.revoke), storeBefore, "protected board rows changed");
-        }
-        if (broker && !testCase.revoke) {
-          if (testCase.unavailable || testCase.tool !== "submit_report" && testCase.tool !== "request_question") assert.deepEqual(brokerDb.prepare("SELECT * FROM events ORDER BY id").all(), eventsBefore);
-        }
-        effect?.();
-      } catch (error) {
-        observation.failure = error.message;
-        failures.push({ caseId: testCase.id, mode: observation.mode, reason: error.message });
-      }
-      await withNativeControllerLock(controlDir, () => {
-        writeFileSync2(foreign, "backend-original\n");
-        writeFileSync2(join4(workspace, "existing.txt"), "original\n");
-        rmSync3(join4(workspace, "created.txt"), { force: true });
-      });
-      if (observation.failure && !rawDiagnostic) throw new Error(`native probe failed: ${observation.mode}:${testCase.id}: ${observation.failure}`);
-      return observation;
-    }
-    async function guardChecks() {
-      const marker = join4(workspace, "unexpected-child");
-      const input = (phase) => ({
-        controlDir,
-        executable: process.execPath,
-        args: ["-e", 'require("node:fs").writeFileSync("unexpected-child","started")'],
-        env: { PATH: "/usr/bin:/bin" },
-        cwd: workspace,
-        writableRoots: [workspace, scratch],
-        phase
-      });
-      async function refused(id2, phase, pattern) {
-        try {
-          await assert.rejects(spawnCheckedNative(input(phase)), pattern);
-          assert.equal(existsSync3(marker), false);
-          preflight.push({ caseId: id2, phase, outcome: "denied", executed: false });
-        } catch (error) {
-          failures.push({ caseId: id2, reason: error.message });
-        }
-      }
-      for (const writable of [workspace, scratch]) {
-        const deep = join4(writable, "unsafe-deep");
-        mkdirSync3(deep);
-        linkSync(foreign, join4(deep, "alias"));
-        await refused(`existing-hardlink-${writable === workspace ? "workspace" : "scratch"}`, "start", /hardlink/);
-        rmSync3(deep, { recursive: true });
-      }
-      symlinkSync(foreign, join4(scratch, "first-symlink"));
-      linkSync(join4(scratch, "first-symlink"), join4(scratch, "linked-symlink"));
-      await refused("linked-symlink-inode", "start", /hardlink/);
-      rmSync3(join4(scratch, "first-symlink"));
-      rmSync3(join4(scratch, "linked-symlink"));
-      assertWritableRoots([workspace, scratch]);
-      linkSync(foreign, join4(scratch, "late-hardlink"));
-      await refused("fresh-resume-after-safe-preflight", "resume", /hardlink/);
-      rmSync3(join4(scratch, "late-hardlink"));
-      await withNativeControllerLock(controlDir, async () => {
-        assertWritableRoots([workspace, scratch]);
-        const moduleUrl = import.meta.url;
-        const command = `const core=await import(process.argv[1]);const fs=await import('node:fs');try {await core.withNativeControllerLock(process.argv[2],()=>fs.writeFileSync(process.argv[3],'changed'));process.exit(3)}catch(e){if(!/busy/.test(e.message))throw e}`;
-        execFileSync3(process.execPath, ["--input-type=module", "-e", command, moduleUrl, controlDir, marker]);
-        assert.equal(existsSync3(marker), false);
-        await refused("cross-process-controller-exclusion", "start", /busy/);
-      });
-    }
-    await checkNetworkControls();
-    if (rawDiagnostic) {
-      for (let iteration = 1; iteration <= 3; iteration++) {
-        await check({ id: `hardlink-shell-${iteration}`, tool: "exec_command", command: '/bin/sh -c "echo changed > hardlink.txt"' }, true, "denied", () => {
-        });
-        await check({ id: `hardlink-patch-${iteration}`, tool: "apply_patch", patch: "*** Begin Patch\n*** Update File: hardlink.txt\n@@\n-backend-original\n+changed\n*** End Patch" }, true, "denied", () => {
-        });
-      }
-    } else {
-      await guardChecks();
-      if (!lanAddress) failures.push({ caseId: "network-lan", reason: "LAN positive control unavailable" });
-      if (!brokerOnly) for (const writable of [false, true]) {
-        const read = await check({ id: "read", tool: "exec_command", command: "/bin/cat existing.txt" }, writable, "allowed", () => {
-        });
-        if (!(JSON.stringify(read.output) ?? "").includes("original")) throw new Error("positive native read incomplete");
-        await check({ id: "protected-read", tool: "exec_command", command: `/bin/cat '${join4(protectedDir, "marker.txt")}'` }, writable, "denied", () => {
-        });
-        const projectConfig = join4(workspace, ".codex/config.toml");
-        await check({ id: "project-config-shell", tool: "exec_command", command: `/bin/sh -c "echo changed > '${projectConfig}'"` }, writable, "denied", () => assert.equal(existsSync3(projectConfig), false));
-        await check({ id: "project-config-patch", tool: "apply_patch", patch: patchCreate(projectConfig) }, writable, "denied", () => assert.equal(existsSync3(projectConfig), false));
-        const expected = writable ? "allowed" : "denied";
-        for (let iteration = 1; iteration <= (writable ? 1 : 3); iteration++) {
-          for (const operation of ["create", "update", "delete"]) {
-            for (const tool of ["exec_command", "apply_patch"]) {
-              const command = { create: '/bin/sh -c "echo created > created.txt"', update: '/bin/sh -c "echo changed > existing.txt"', delete: "/bin/rm existing.txt" }[operation];
-              const patch = { create: patchCreate("created.txt"), update: patchUpdate("existing.txt"), delete: patchDelete("existing.txt") }[operation];
-              await check({ id: `${operation}-${iteration}`, tool, command, patch }, writable, expected, () => {
-                if (operation === "create") assert.equal(existsSync3(join4(workspace, "created.txt")), writable);
-                if (operation === "update") assert.equal(readFileSync3(join4(workspace, "existing.txt"), "utf8"), writable ? "changed\n" : "original\n");
-                if (operation === "delete") assert.equal(existsSync3(join4(workspace, "existing.txt")), !writable);
-              });
-            }
-          }
-        }
-        const symlinkPatch = "*** Begin Patch\n*** Update File: symlink.txt\n@@\n-backend-original\n+changed\n*** End Patch";
-        for (let iteration = 1; iteration <= 3; iteration++) {
-          const control = writable ? await check({ id: `symlink-positive-control-${iteration}`, tool: "apply_patch", patch: symlinkPatch, controlRoot: backend }, writable, "allowed", () => {
-            assert.equal(readFileSync3(foreign, "utf8"), "changed\n");
-          }) : void 0;
-          await check({ id: `symlink-patch-${iteration}`, tool: "apply_patch", patch: symlinkPatch, matchedControl: control }, writable, "denied");
-          await check({ id: `symlink-shell-${iteration}`, tool: "exec_command", command: '/bin/sh -c "echo changed > symlink.txt"' }, writable, "denied");
-        }
-        for (const destination of [workspace, scratch]) {
-          for (const [name, target] of [["readonly", foreign], ["denied", join4(protectedDir, "marker.txt")]]) {
-            const newLink = join4(destination, `new-link-${name}`);
-            await check({ id: `create-hardlink-${name}-${destination === workspace ? "workspace" : "scratch"}`, tool: "exec_command", command: `/bin/ln '${target}' '${newLink}'` }, writable, "denied", () => assert.equal(existsSync3(newLink), false));
-            rmSync3(newLink, { force: true });
-          }
-        }
-        await check({ id: "backend-write", tool: "exec_command", command: `/bin/sh -c "echo changed > '${foreign}'"` }, writable, "denied", () => {
-        });
-        const backendPatch = "*** Begin Patch\n*** Update File: " + foreign + "\n@@\n-backend-original\n+changed\n*** End Patch";
-        const backendControl = await check({ id: "backend-positive-control", tool: "apply_patch", patch: backendPatch, controlRoot: backend }, writable, "allowed", () => assert.equal(readFileSync3(foreign, "utf8"), "changed\n"));
-        await check({ id: "backend-patch", tool: "apply_patch", patch: backendPatch, matchedControl: backendControl }, writable, "denied");
-        for (const path of [join4(source, "existing.txt"), join4(sibling, "marker.txt"), ...["store.db", "registry.db", "config.toml", "credential.json"].map((name) => join4(protectedDir, name))]) {
-          await check({ id: `protected-read-${path.split("/").slice(-2).join("-")}`, tool: "exec_command", command: `/bin/cat '${path}'` }, writable, "denied");
-          await check({ id: `protected-write-${path.split("/").slice(-2).join("-")}`, tool: "exec_command", command: `/bin/sh -c "echo changed > '${path}'"` }, writable, "denied");
-          await check({ id: `protected-patch-${path.split("/").slice(-2).join("-")}`, tool: "apply_patch", patch: patchDelete(path) }, writable, "denied");
-        }
-        await check({ id: "rename-outside", tool: "exec_command", command: `/bin/mv existing.txt '${join4(backend, "renamed.txt")}'` }, writable, "denied", () => assert.equal(existsSync3(join4(backend, "renamed.txt")), false));
-        await check({ id: "patch-move-outside", tool: "apply_patch", patch: `*** Begin Patch
-*** Update File: existing.txt
-*** Move to: ${join4(protectedDir, "moved.txt")}
-@@
--original
-+changed
-*** End Patch` }, writable, "denied", () => assert.equal(existsSync3(join4(protectedDir, "moved.txt")), false));
-        await check({ id: "git-ref", tool: "exec_command", command: "/usr/bin/git update-ref refs/heads/forbidden HEAD" }, writable, "denied", () => {
-          assert.equal(git3(workspace, "for-each-ref", "refs/heads/forbidden"), "");
-        });
-        await check({ id: "git-object", tool: "exec_command", command: `/bin/sh -c "echo new-object | /usr/bin/git hash-object -w --stdin"` }, writable, "denied");
-        for (const [id2, path] of [["git-pointer", join4(workspace, ".git")], ["git-worktree-head", join4(gitDir, "HEAD")], ["git-common-config", join4(commonDir, "config")]]) {
-          await check({ id: id2, tool: "exec_command", command: `/bin/sh -c "echo changed > '${path}'"` }, writable, "denied");
-          await check({ id: `${id2}-patch`, tool: "apply_patch", patch: patchDelete(path) }, writable, "denied");
-        }
-        await check({ id: "scratch-write", tool: "exec_command", command: `/bin/sh -c "echo scratch > '${join4(scratch, "allowed.txt")}'"` }, writable, "allowed", () => assert.equal(readFileSync3(join4(scratch, "allowed.txt"), "utf8"), "scratch\n"));
-        await check({ id: "scratch-patch", tool: "apply_patch", patch: patchCreate(join4(scratch, "patch-allowed.txt")) }, writable, "allowed", () => assert.equal(readFileSync3(join4(scratch, "patch-allowed.txt"), "utf8"), "created\n"));
-        rmSync3(join4(scratch, "patch-allowed.txt"));
-        await check({ id: "fresh-resume-read", tool: "exec_command", command: "/bin/cat existing.txt", phase: "resume" }, writable, "allowed");
-        for (const testCase of networkCases) {
-          await check({ ...testCase, tool: "exec_command" }, writable, "denied", () => {
-            assert.equal(tcpRequests, tcpBaseline);
-            assert.equal(unixRequests, unixBaseline);
-          });
-        }
-      }
-      if (broker) {
-        for (const writable of [false, true]) {
-          for (const tool of ["list_mcp_resources", "list_mcp_resource_templates"]) {
-            await check({ id: `broker-${tool}-empty`, tool, payload: {} }, writable, "allowed");
-            await check({ id: `broker-${tool}-foreign`, tool, payload: { server: "foreign" } }, writable, "denied");
-          }
-          for (const server of ["kdd_run", "foreign"]) await check({ id: `broker-resource-read-${server}`, tool: "read_mcp_resource", payload: { server, uri: `file://${broker.configPath}` } }, writable, "denied");
-          for (const [operation, id2] of [["get_context", "context"], ["submit_report", "report"], ["request_question", "question"]]) {
-            const granted = operations2.includes(operation);
-            const before = brokerDb.prepare("SELECT COUNT(*) n FROM events").get();
-            await check({
-              id: `broker-${id2}`,
-              tool: operation,
-              unavailable: !granted,
-              payload: operation === "get_context" ? {} : { body: "native broker proof" }
-            }, writable, granted ? "allowed" : "denied", () => {
-              const writes = granted && operation !== "get_context";
-              assert.deepEqual(brokerDb.prepare("SELECT COUNT(*) n FROM events").get(), { n: before.n + (writes ? 1 : 0) });
-              if (writes) {
-                const event = brokerDb.prepare("SELECT actor_type,action,detail FROM events ORDER BY id DESC LIMIT 1").get();
-                assert.equal(event.actor_type, "ai");
-                assert.equal(event.action, operation === "submit_report" ? "run_report" : "run_question");
-                assert.equal(JSON.parse(event.detail).untrusted, true);
-              }
-            });
-          }
-          for (const path of [broker.configPath, broker.dbPath]) {
-            await check({ id: `broker-read-${path === broker.configPath ? "config" : "store"}`, tool: "exec_command", command: `/bin/cat '${path}'` }, writable, "denied");
-            await check({ id: `broker-patch-${path === broker.configPath ? "config" : "store"}`, tool: "apply_patch", patch: patchDelete(path) }, writable, "denied");
-          }
-          const cli = fileURLToPath(new URL("../../cli/dist/index.js", import.meta.url));
-          assert.ok(existsSync3(cli), "raw CLI fixture executable unavailable");
-          await check({ id: "broker-raw-cli-user", tool: "exec_command", command: `/bin/sh -c "KDD_DB='${broker.dbPath}' KDD_ACTOR=user '${broker.nodePath}' '${cli}' show 1 --json"` }, writable, "denied");
-        }
-        const eventsBeforeRevoke = brokerDb.prepare("SELECT COUNT(*) n FROM events").get();
-        await check({
-          id: "broker-live-revoke-operations",
-          tool: operations2[0],
-          revoke: true,
-          payload: operations2[0] === "get_context" ? {} : { body: "late proposal" }
-        }, true, "denied", () => {
-          assert.deepEqual(brokerDb.prepare("SELECT COUNT(*) n FROM events").get(), { n: eventsBeforeRevoke.n + 1 });
-        });
-      }
-    }
-  } catch (error) {
-    failures.push({ failure: error.message });
-  } finally {
-    brokerDb?.close();
-    tcpServer?.closeAllConnections();
-    if (tcpServer?.listening) await new Promise((resolve4) => tcpServer.close(() => resolve4()));
-    if (unixServer?.listening) await new Promise((resolve4) => unixServer.close(() => resolve4()));
-    rmSync3(root, { recursive: true, force: true });
-  }
-  return {
-    version,
-    model,
-    executableHash,
-    scriptHash,
-    guardHash,
-    applicable: failures.length === 0 && observations.length > 0,
-    rawDiagnostic,
-    preflight,
-    networkControls,
-    attempted: observations.length,
-    executed: observations.filter((o) => o.executed).length,
-    failures,
-    observations,
-    operations: operations2
-  };
-}
-
-// src/codex_permissions.ts
-function directory(path) {
-  try {
-    if (!isAbsolute2(path) || !lstatSync2(path).isDirectory()) throw new Error("not a real directory");
-    return realpathSync4(path);
-  } catch (error) {
-    throw new KddError(`native root unavailable: ${path}: ${error.message}`);
-  }
-}
-function assertWritableRoots(roots) {
-  if (!roots.length) throw new KddError("native writable roots are unknown");
-  const canonical2 = [...new Set(roots.map(directory))];
-  function scan(path) {
-    const before = lstatSync2(path);
-    if (!before.isDirectory()) {
-      if (before.nlink > 1) throw new KddError(`native hardlink in writable root: ${path}`);
-      return;
-    }
-    for (const name of readdirSync4(path)) scan(join5(path, name));
-    const after = lstatSync2(path);
-    if (!after.isDirectory() || before.dev !== after.dev || before.ino !== after.ino) {
-      throw new KddError(`native root changed during scan: ${path}`);
-    }
-  }
-  try {
-    for (const root of canonical2) scan(root);
-  } catch (error) {
-    if (error instanceof KddError) throw error;
-    throw new KddError(`native root scan incomplete: ${error.message}`);
-  }
-  return canonical2;
-}
-async function withNativeControllerLock(controlDir, action) {
-  const lock = join5(directory(controlDir), "native-launch.lock");
-  try {
-    mkdirSync4(lock, { mode: 448 });
-  } catch (error) {
-    if (error.code === "EEXIST") throw new KddError("native controller busy; stale locks require trusted recovery");
-    throw new KddError(`native controller lock unavailable: ${error.message}`);
-  }
-  const identity = lstatSync2(lock);
-  try {
-    return await action();
-  } finally {
-    const current = lstatSync2(lock);
-    if (identity.dev !== current.dev || identity.ino !== current.ino || !current.isDirectory()) {
-      throw new KddError("native controller lock replaced; trusted recovery required");
-    }
-    rmdirSync(lock);
-  }
-}
-function inside(parent, path) {
-  const suffix = relative(parent, path);
-  return suffix === "" || suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute2(suffix);
-}
-async function spawnCheckedNative(input) {
-  const { executable, cwd, phase, verified } = input;
-  const args = [...input.args];
-  const env = { ...input.env };
-  const roots = [...input.writableRoots];
-  if (phase !== "start" && phase !== "resume") throw new KddError("unknown native launch phase");
-  const controlDir = directory(input.controlDir);
-  const canonical2 = roots.map(directory);
-  if (canonical2.some((root) => inside(root, controlDir))) throw new KddError("native control directory is writable");
-  return withNativeControllerLock(controlDir, () => {
-    if (verified !== void 0) {
-      assertVerifiedCodexPackage(verified);
-      if (executable !== verified.executable || cwd !== verified.cwd || controlDir !== verified.controlDir || JSON.stringify(env) !== JSON.stringify(verified.env) || JSON.stringify(canonical2) !== JSON.stringify([verified.scratchDir, ...verified.writableRoot ? [verified.writableRoot] : []]) || args.length !== verified.argv.length + 1 || verified.argv.some((arg, i) => args[i] !== arg)) {
-        throw new KddError("native launch differs from verified package");
-      }
-    }
-    if (roots.some((root, index) => directory(root) !== canonical2[index])) throw new KddError("native root binding changed");
-    assertWritableRoots(canonical2);
-    const child = spawn2(executable, args, { cwd: resolve3(cwd), env, stdio: ["ignore", "pipe", "pipe"] });
-    return new Promise((resolveChild, reject) => {
-      child.once("error", reject);
-      child.once("spawn", () => {
-        child.removeListener("error", reject);
-        resolveChild(child);
-      });
-    });
-  });
-}
-function codexBrokerBinding(configPath, entryPath) {
-  try {
-    for (const path of [configPath, entryPath]) {
-      if (!isAbsolute2(path) || !lstatSync2(path).isFile() || lstatSync2(path).nlink !== 1) throw new KddError("native broker binding unavailable");
-    }
-    const config = JSON.parse(readFileSync4(configPath, "utf8"));
-    if ((lstatSync2(configPath).mode & 511) !== 384 || !config || Array.isArray(config) || Object.keys(config).sort().join(",") !== "dbPath,token" || typeof config.dbPath !== "string" || !isAbsolute2(config.dbPath) || realpathSync4(config.dbPath) !== config.dbPath || typeof config.token !== "string" || !/^[0-9a-f]{64}$/.test(config.token)) throw new KddError("native broker config denied");
-    for (const path of [config.dbPath, `${config.dbPath}-wal`, `${config.dbPath}-shm`]) {
-      try {
-        if (!lstatSync2(path).isFile() || lstatSync2(path).nlink !== 1) throw new KddError("native store alias denied");
-      } catch (error) {
-        if (error.code !== "ENOENT" || path === config.dbPath) throw error;
-      }
-    }
-    return { configPath: realpathSync4(configPath), entryPath: realpathSync4(entryPath), dbPath: config.dbPath, nodePath: realpathSync4(process.execPath) };
-  } catch (error) {
-    if (error instanceof KddError) throw error;
-    throw new KddError("native broker binding unavailable");
-  }
-}
-var digest2 = (value) => createHash5("sha256").update(value).digest("hex");
-var verifiedPackages = /* @__PURE__ */ new WeakMap();
-function closedCodexCatalog(model) {
-  return JSON.stringify({ models: [{
-    slug: model,
-    display_name: model,
-    description: "Managed coding tools",
-    base_instructions: "Follow the supplied task instructions.",
-    supported_reasoning_levels: [],
-    shell_type: "unified_exec",
-    visibility: "list",
-    supported_in_api: true,
-    priority: 0,
-    availability_nux: null,
-    upgrade: null,
-    support_verbosity: false,
-    default_verbosity: null,
-    apply_patch_tool_type: "freeform",
-    truncation_policy: { mode: "tokens", limit: 1e4 },
-    experimental_supported_tools: [],
-    tool_mode: "direct",
-    multi_agent_version: "disabled"
-  }] });
-}
-function fixedCodexConfig(filesystem, catalogPath, broker) {
-  const table = Object.entries(filesystem).map(([key, value]) => `${JSON.stringify(key)}=${JSON.stringify(value)}`).join(",");
-  return [
-    'model_provider="openai"',
-    `model_catalog_json=${JSON.stringify(catalogPath)}`,
-    'approval_policy="never"',
-    'default_permissions="kdd_probe"',
-    `permissions.kdd_probe.filesystem={${table}}`,
-    "permissions.kdd_probe.network.enabled=false",
-    'web_search="disabled"',
-    "project_doc_max_bytes=0",
-    "tools.experimental_request_user_input.enabled=false",
-    'shell_environment_policy.inherit="none"',
-    ...broker ? [`mcp_servers={kdd_run={command=${JSON.stringify(broker.nodePath)},args=${JSON.stringify([broker.entryPath, "--config", broker.configPath])},enabled=true,required=true,env_vars=[],default_tools_approval_mode="auto",startup_timeout_sec=10.0,tool_timeout_sec=10.0,enabled_tools=["get_context","submit_report","request_question"]}}`] : [],
-    "features={apply_patch_freeform=true,unified_exec=true,enable_request_compression=false,plugins=false,apps=false,connectors=false,enable_mcp_apps=false,codex_apps_mcp_2026_07_28=false,multi_agent=false,multi_agent_v2=false,multi_agent_mode=false,agent_message_board=false,computer_use=false,browser_use=false,browser_use_external=false,browser_use_full_cdp_access=false,in_app_browser=false,hooks=false,codex_hooks=false,plugin_hooks=false,shell_snapshot=false,shell_snapshot_v2=false,responses_websockets=false,responses_websockets_v2=false,skip_host_skill_discovery=true,skill_search=false,skill_mcp_dependency_install=false,goals=false,view_image=false,image_generation=false,imagegenext=false,js_repl=false,js_repl_tools_only=false,code_mode=false,code_mode_host=false,code_mode_only=false,memories=false,memory_tool=false,external_agent_memory_import=false,standalone_web_search=false,web_search=false,web_search_cached=false,web_search_request=false,search_tool=false,tool_search=false,tool_search_always_defer_mcp_tools=false,remote_models=false,remote_control=false,remote_plugin=false,daemon_auto_start=false,request_permissions=false,request_permissions_tool=false,request_rule=false,tool_call_mcp_elicitation=false,default_mode_request_user_input=false,api_key_model_discovery=false}"
-  ];
-}
-function fixedCodexArguments(cwd, model, config) {
-  const args = ["exec", "--ignore-user-config", "--ignore-rules", "--strict-config", "--ephemeral", "--skip-git-repo-check", "--json", "-C", cwd, "-m", model];
-  for (const override of config) args.push("-c", override);
-  return [...args, "--"];
-}
-function assertNoProjectConfig(roots) {
-  const ignoredUser = process.env.HOME ? resolve3(process.env.HOME, ".codex/config.toml") : void 0;
-  for (const root of roots) {
-    for (let dir = root; ; dir = dirname3(dir)) {
-      const config = join5(dir, ".codex/config.toml");
-      if (config !== ignoredUser) {
-        try {
-          lstatSync2(config);
-          throw new KddError("native project config overlay unsupported");
-        } catch (error) {
-          if (error.code !== "ENOENT") throw error;
-        }
-      }
-      if (dirname3(dir) === dir) break;
-    }
-  }
-}
-function assertVerifiedCodexPackage(packet) {
-  const binding = typeof packet === "object" && packet !== null ? verifiedPackages.get(packet) : void 0;
-  if (!binding) throw new KddError("unverified native package");
-  try {
-    if (binding.snapshot() !== binding.stamp) throw new KddError("native package binding changed");
-  } catch {
-    throw new KddError("native package binding changed or unavailable");
-  }
-}
-async function preflightCodex(input) {
-  const cwd = directory(input.cwd);
-  const scratchDir = directory(input.scratchDir);
-  const controlDir = directory(input.controlDir);
-  const executable = realpathSync4(input.executable);
-  const runtimeDir = realpathSync4(dirname3(fileURLToPath2(import.meta.url)));
-  const readableRoots = [...new Set(input.readableRoots.map(directory))];
-  const writableRoot = input.writableRoot ? directory(input.writableRoot) : void 0;
-  if (input.brokerConfigPath === void 0 !== (input.brokerEntryPath === void 0)) throw new KddError("incomplete native broker binding");
-  const broker = input.brokerConfigPath === void 0 ? void 0 : codexBrokerBinding(input.brokerConfigPath, input.brokerEntryPath);
-  const protectedPaths = [...new Set([
-    ...input.protectedPaths,
-    controlDir,
-    ...broker ? [broker.configPath, broker.entryPath, dirname3(broker.dbPath)] : []
-  ].map((path) => {
-    if (!isAbsolute2(path)) throw new KddError("native protected path must be absolute");
-    return realpathSync4(path);
-  }))];
-  const model = input.model;
-  if (typeof model !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_.:-]*$/.test(model)) throw new KddError("unsupported Codex model identifier");
-  if (!readableRoots.includes(cwd) || writableRoot && writableRoot !== cwd) throw new KddError("unsupported Codex workspace scope");
-  const writableRoots = [scratchDir, ...writableRoot ? [writableRoot] : []];
-  const overlaps = (a, b) => inside(a, b) || inside(b, a);
-  if (readableRoots.some((root) => overlaps(root, scratchDir)) || writableRoots.some((root) => [...protectedPaths, runtimeDir, executable].some((path) => overlaps(root, path)))) throw new KddError("native root/control/runtime overlap");
-  assertNoProjectConfig([cwd]);
-  if (process.platform !== "darwin") throw new KddError("unsupported Codex host");
-  const version = execFileSync4(executable, ["--version"], { encoding: "utf8" }).trim();
-  if (version !== "codex-cli 0.157.0") throw new KddError("unsupported Codex version");
-  const resolveGitMetadata = () => [...new Set(readableRoots.flatMap((root) => [join5(root, ".git"), ...["--absolute-git-dir", "--git-common-dir"].map((flag) => realpathSync4(execFileSync4("/usr/bin/git", ["-C", root, "rev-parse", "--path-format=absolute", flag], { encoding: "utf8" }).trim()))]))];
-  const gitMetadata = resolveGitMetadata();
-  const filesystem = { ":minimal": "read" };
-  for (const path of readableRoots) filesystem[path] = "read";
-  for (const path of writableRoots) filesystem[path] = "write";
-  for (const path of protectedPaths) filesystem[path] = "deny";
-  for (const path of [...gitMetadata, join5(cwd, ".codex")]) filesystem[path] = "read";
-  const catalog = closedCodexCatalog(model);
-  const catalogPath = join5(controlDir, `codex-catalog-${digest2(catalog)}.json`);
-  filesystem[catalogPath] = "deny";
-  const argv = Object.freeze(fixedCodexArguments(cwd, model, fixedCodexConfig(filesystem, catalogPath, broker)));
-  if (!process.env.HOME) throw new KddError("Codex home unavailable");
-  const env = Object.freeze({ HOME: process.env.HOME, PATH: "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin", TMPDIR: scratchDir, LANG: "en_US.UTF-8" });
-  return withNativeControllerLock(controlDir, async () => {
-    assertWritableRoots(writableRoots);
-    if (existsSync4(catalogPath)) {
-      if (lstatSync2(catalogPath).isSymbolicLink() || readFileSync4(catalogPath, "utf8") !== catalog) throw new KddError("native catalog binding changed");
-    } else writeFileSync3(catalogPath, catalog, { mode: 384, flag: "wx" });
-    const snapshot2 = () => {
-      assertNoProjectConfig([cwd]);
-      assertWritableRoots(writableRoots);
-      if (JSON.stringify(resolveGitMetadata()) !== JSON.stringify(gitMetadata)) throw new KddError("native Git binding changed");
-      const catalogStat = lstatSync2(catalogPath);
-      if (!catalogStat.isFile() || catalogStat.nlink !== 1) throw new KddError("native catalog binding alias");
-      const currentBroker = broker ? codexBrokerBinding(broker.configPath, broker.entryPath) : void 0;
-      const identities = [.../* @__PURE__ */ new Set([
-        cwd,
-        controlDir,
-        ...readableRoots,
-        ...writableRoots,
-        ...protectedPaths,
-        ...gitMetadata,
-        ...broker ? [broker.dbPath, broker.nodePath] : []
-      ])].map((path) => {
-        const stat = lstatSync2(path);
-        if (stat.isSymbolicLink()) throw new KddError("native binding alias");
-        return [path, stat.dev, stat.ino];
-      });
-      return digest2(JSON.stringify({
-        identities,
-        argv,
-        env,
-        executable,
-        version,
-        gitPointers: gitMetadata.filter((path) => lstatSync2(path).isFile()).map((path) => [path, digest2(readFileSync4(path))]),
-        executableHash: digest2(readFileSync4(executable)),
-        catalogHash: digest2(readFileSync4(catalogPath)),
-        broker: currentBroker,
-        brokerEntryHash: broker ? digest2(readFileSync4(broker.entryPath)) : void 0,
-        nodeHash: broker ? digest2(readFileSync4(broker.nodePath)) : void 0,
-        runtimeHash: digest2(readFileSync4(fileURLToPath2(import.meta.url)))
-      }));
-    };
-    const stamp = snapshot2();
-    const evidence2 = await observeCodexNative(executable, false, model, broker);
-    if (!evidence2.applicable || evidence2.rawDiagnostic || evidence2.observations.length !== (broker ? 158 : 129) || evidence2.executed !== evidence2.observations.length) throw new KddError("Codex native enforcement unverified", { cause: {
-      expected: broker ? 158 : 129,
-      attempted: evidence2.attempted,
-      executed: evidence2.executed,
-      applicable: evidence2.applicable,
-      observations: evidence2.observations.filter((o) => o.failure).map((o) => ({
-        caseId: o.caseId,
-        mode: o.mode,
-        outcome: o.outcome,
-        executed: o.executed,
-        timedOut: o.timedOut,
-        providerError: !!o.providerError
-      })),
-      failedGuards: evidence2.failures.filter((f) => f.caseId).map((f) => f.caseId)
-    } });
-    if (snapshot2() !== stamp) throw new KddError("native package binding changed during preflight");
-    const results = Object.freeze(evidence2.observations.filter((result2) => !result2.control).map((result2) => Object.freeze({
-      caseId: `${result2.mode}:${result2.caseId}`,
-      tool: result2.tool,
-      outcome: result2.outcome,
-      executed: result2.executed,
-      unchangedProtectedBytes: result2.unchangedProtectedBytes
-    })));
-    const packet = Object.freeze({
-      executable,
-      version,
-      cwd,
-      controlDir,
-      readableRoots: Object.freeze(readableRoots),
-      writableRoot,
-      scratchDir,
-      protectedPaths: Object.freeze(protectedPaths),
-      argv,
-      env,
-      configHash: stamp,
-      results
-    });
-    verifiedPackages.set(packet, { stamp, snapshot: snapshot2 });
-    return packet;
-  });
-}
+// src/memory.ts
+import { execFileSync as execFileSync4 } from "child_process";
+import { realpathSync as realpathSync4 } from "fs";
+import { isAbsolute as isAbsolute3 } from "path";
 
 // src/agent_events.ts
 function parseClaudeStreamLine(line) {
@@ -2933,93 +1639,22 @@ function headOf(detail) {
   }
 }
 
-// src/criteria.ts
-function listCriteria(db, taskId) {
-  return db.prepare(
-    `SELECT * FROM criteria WHERE task_id = ? ORDER BY position, id`
-  ).all(taskId);
-}
-function mustGetCriterion(db, taskId, id2) {
-  const c = db.prepare(`SELECT * FROM criteria WHERE id = ?`).get(id2);
-  assertLegacyTaskMutation(db, [taskId, ...c ? [c.task_id] : []]);
-  if (!c || c.task_id !== taskId) throw new KddError(`criterion #${id2} not found on task #${taskId}`);
-  return c;
-}
-var touchTask = (db, taskId) => {
-  db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
-};
-function addCriterion(db, taskId, text2, actor) {
-  if (!text2.trim()) throw new KddError("criterion text must not be empty");
-  return db.transaction(() => {
-    assertLegacyTaskMutation(db, [taskId]);
-    mustGetTask(db, taskId);
-    const pos = db.prepare(
-      `SELECT COALESCE(MAX(position), -1) + 1 AS p FROM criteria WHERE task_id = ?`
-    ).get(taskId).p;
-    const r = db.prepare(
-      `INSERT INTO criteria (task_id, text, position, created_at) VALUES (?, ?, ?, ?)`
-    ).run(taskId, text2, pos, now());
-    const id2 = Number(r.lastInsertRowid);
-    appendTaskMutationEvent(db, taskId, actor, "criterion_added", { id: id2, text: text2 });
-    touchTask(db, taskId);
-    return mustGetCriterion(db, taskId, id2);
-  }).immediate();
-}
-function setCriterionChecked(db, taskId, id2, checked, actor, evidence2) {
-  return db.transaction(() => {
-    const c = mustGetCriterion(db, taskId, id2);
-    const proof = evidence2?.trim();
-    if (c.checked_at !== null === checked && (!checked || !proof)) return c;
-    const stored = proof ? actor.type === "ai" ? redact(proof) : proof : null;
-    db.prepare(
-      `UPDATE criteria SET checked_at = ?, evidence = ?, checked_by = ? WHERE id = ?`
-    ).run(
-      checked ? now() : null,
-      checked ? stored : null,
-      checked ? authorOf(actor) : null,
-      id2
-    );
-    appendTaskMutationEvent(
-      db,
-      taskId,
-      actor,
-      checked ? "criterion_checked" : "criterion_unchecked",
-      { id: id2, text: c.text, ...checked && stored ? { evidence: stored } : {} }
-    );
-    touchTask(db, taskId);
-    return mustGetCriterion(db, taskId, id2);
-  }).immediate();
-}
-function removeCriterion(db, taskId, id2, actor) {
-  db.transaction(() => {
-    const c = mustGetCriterion(db, taskId, id2);
-    db.prepare(`DELETE FROM criteria WHERE id = ?`).run(id2);
-    appendTaskMutationEvent(db, taskId, actor, "criterion_removed", { id: id2, text: c.text });
-    touchTask(db, taskId);
-  }).immediate();
-}
-
-// src/memory.ts
-import { execFileSync as execFileSync6 } from "child_process";
-import { realpathSync as realpathSync6 } from "fs";
-import { isAbsolute as isAbsolute4 } from "path";
-
 // src/memory_import.ts
-import { execFileSync as execFileSync5 } from "child_process";
-import { createHash as createHash7 } from "crypto";
-import { basename as basename2, posix, isAbsolute as isAbsolute3 } from "path";
+import { execFileSync as execFileSync3 } from "child_process";
+import { createHash as createHash4 } from "crypto";
+import { basename as basename2, posix, isAbsolute as isAbsolute2 } from "path";
 
 // src/decisions.ts
-import { createHash as createHash6 } from "crypto";
-import { existsSync as existsSync5, mkdirSync as mkdirSync5, readFileSync as readFileSync5, readdirSync as readdirSync5, realpathSync as realpathSync5, writeFileSync as writeFileSync4 } from "fs";
-import { dirname as dirname4, join as join6 } from "path";
+import { createHash as createHash3 } from "crypto";
+import { existsSync as existsSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync3, readdirSync as readdirSync3, realpathSync as realpathSync3, writeFileSync as writeFileSync2 } from "fs";
+import { dirname as dirname3, join as join4 } from "path";
 function slugify(title) {
   const s = title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 60).replace(/-+$/, "");
   return s || "untitled";
 }
 var normalize = (s) => s.replace(/\r\n/g, "\n").trim();
 function contentHash(title, body) {
-  return createHash6("sha256").update(`${normalize(title)}
+  return createHash3("sha256").update(`${normalize(title)}
 ${normalize(body)}`).digest("hex");
 }
 function normalizeSourceTasks(ids = []) {
@@ -3096,10 +1731,10 @@ function parseDecisionMd(raw) {
   };
 }
 function supersede(db, dir, oldSlug, newSlug) {
-  const p = join6(dir, `${oldSlug}.md`);
-  if (!existsSync5(p)) throw new KddError(`decision '${oldSlug}' not found`);
-  assertLegacyDecisionSource(db, dirname4(realpathSync5(p)));
-  let raw = readFileSync5(p, "utf8").replace(/\r\n/g, "\n");
+  const p = join4(dir, `${oldSlug}.md`);
+  if (!existsSync3(p)) throw new KddError(`decision '${oldSlug}' not found`);
+  assertLegacyDecisionSource(db, dirname3(realpathSync3(p)));
+  let raw = readFileSync3(p, "utf8").replace(/\r\n/g, "\n");
   if (raw.startsWith("---\n") && /^status:/m.test(raw)) {
     raw = raw.replace(/^status:.*$/m, "status: superseded").replace(/^superseded_by:.*$/m, `superseded_by: ${newSlug}`);
   } else {
@@ -3111,7 +1746,7 @@ superseded_by: ${newSlug}
 ---
 ${raw}`;
   }
-  writeFileSync4(p, raw);
+  writeFileSync2(p, raw);
   db.prepare(`UPDATE decisions SET superseded_by = ? WHERE slug = ?`).run(newSlug, oldSlug);
 }
 function addDecision(db, decisionsDir, input) {
@@ -3130,11 +1765,11 @@ function addDecision(db, decisionsDir, input) {
   const hash = contentHash(input.title, body);
   const provenance = JSON.stringify(sourceTasks);
   let fileDup;
-  if (existsSync5(decisionsDir)) {
-    for (const file of readdirSync5(decisionsDir).filter((name) => name.endsWith(".md")).sort()) {
-      const path2 = join6(decisionsDir, file);
-      assertLegacyDecisionSource(db, dirname4(realpathSync5(path2)));
-      const doc = parseDecisionMd(readFileSync5(path2, "utf8"));
+  if (existsSync3(decisionsDir)) {
+    for (const file of readdirSync3(decisionsDir).filter((name) => name.endsWith(".md")).sort()) {
+      const path2 = join4(decisionsDir, file);
+      assertLegacyDecisionSource(db, dirname3(realpathSync3(path2)));
+      const doc = parseDecisionMd(readFileSync3(path2, "utf8"));
       if (doc.hash !== hash) continue;
       const slug2 = file.slice(0, -3);
       if (JSON.stringify(doc.sourceTasks) !== provenance) {
@@ -3146,8 +1781,8 @@ function addDecision(db, decisionsDir, input) {
   if (fileDup) return { ...fileDup, created: false };
   const dup = db.prepare(`SELECT slug, path FROM decisions WHERE content_hash = ?`).get(hash);
   if (dup) {
-    assertLegacyDecisionSource(db, dirname4(realpathSync5(dup.path)));
-    const existing = parseDecisionMd(readFileSync5(dup.path, "utf8")).sourceTasks;
+    assertLegacyDecisionSource(db, dirname3(realpathSync3(dup.path)));
+    const existing = parseDecisionMd(readFileSync3(dup.path, "utf8")).sourceTasks;
     if (JSON.stringify(existing) !== provenance) {
       throw new KddError(`decision '${dup.slug}' provenance mismatch`);
     }
@@ -3156,13 +1791,13 @@ function addDecision(db, decisionsDir, input) {
   const date = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
   const base = `${date}-${slugify(input.title)}`;
   let slug = base;
-  const taken = (s) => existsSync5(join6(decisionsDir, `${s}.md`)) || !!db.prepare(`SELECT 1 FROM decisions WHERE slug = ?`).get(s);
+  const taken = (s) => existsSync3(join4(decisionsDir, `${s}.md`)) || !!db.prepare(`SELECT 1 FROM decisions WHERE slug = ?`).get(s);
   for (let i = 2; taken(slug); i++) slug = `${base}-${i}`;
-  const path = join6(decisionsDir, `${slug}.md`);
+  const path = join4(decisionsDir, `${slug}.md`);
   return db.transaction(() => {
     if (input.supersedes) supersede(db, decisionsDir, input.supersedes, slug);
-    mkdirSync5(decisionsDir, { recursive: true });
-    writeFileSync4(path, renderDecisionMd({ ...input, sourceTasks }, date));
+    mkdirSync3(decisionsDir, { recursive: true });
+    writeFileSync2(path, renderDecisionMd({ ...input, sourceTasks }, date));
     db.prepare(
       `INSERT INTO decisions (slug, title, path, content_hash, created, superseded_by, source_tasks)
        VALUES (?, ?, ?, ?, ?, NULL, ?)`
@@ -3180,23 +1815,23 @@ function readMemoryDocument(db, input) {
   safeMemoryText(input.path, CAPS.agentFieldChars);
   memoryHex(input.sha256, [64]);
   const path = input.path;
-  if (isAbsolute3(path) || path.includes("\\") || path.includes("\0") || path.split("/").some((p) => !p || p === "." || p === "..") || posix.normalize(path) !== path || memoryPrivatePath(path)) throw new KddError("private or invalid memory document path");
+  if (isAbsolute2(path) || path.includes("\\") || path.includes("\0") || path.split("/").some((p) => !p || p === "." || p === "..") || posix.normalize(path) !== path || memoryPrivatePath(path)) throw new KddError("private or invalid memory document path");
   const checkoutPath = memoryCommit(db, input.repoId, input.commit, input.checkoutPath);
   let bytes2;
   try {
     const options = { cwd: checkoutPath, stdio: "pipe", maxBuffer: 4 * CAPS.bodyChars + 4096 };
-    const listing = execFileSync5(
+    const listing = execFileSync3(
       "/usr/bin/git",
       ["--no-replace-objects", "--literal-pathspecs", "ls-tree", "--full-tree", "-z", input.commit, "--", path],
       { ...options, encoding: "utf8" }
     ).split("\0").filter(Boolean);
     const match = listing.length === 1 ? /^(100644|100755) blob ([0-9a-f]{40}|[0-9a-f]{64})\t([\s\S]+)$/.exec(listing[0]) : null;
     if (!match || match[3] !== path) throw new Error();
-    bytes2 = execFileSync5("/usr/bin/git", ["--no-replace-objects", "cat-file", "blob", match[2]], options);
+    bytes2 = execFileSync3("/usr/bin/git", ["--no-replace-objects", "cat-file", "blob", match[2]], options);
   } catch {
     throw new KddError("memory document blob unavailable");
   }
-  if (createHash7("sha256").update(bytes2).digest("hex") !== input.sha256) throw new KddError("memory document hash mismatch");
+  if (createHash4("sha256").update(bytes2).digest("hex") !== input.sha256) throw new KddError("memory document hash mismatch");
   let body;
   try {
     body = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes2);
@@ -3266,7 +1901,7 @@ function memoryCheckout(db, repoId, checkoutPath) {
   const candidates = checkoutPath === void 0 ? bindingsOf(db).filter((b) => b.repo_id === repoId).map((b) => b.checkout_path) : [checkoutPath];
   for (const path of candidates) {
     try {
-      if (!isAbsolute4(path) || realpathSync6(path) !== path) continue;
+      if (!isAbsolute3(path) || realpathSync4(path) !== path) continue;
       const common = canonicalCommonDir(path);
       if (bindingsOf(db).some((b) => b.repo_id === repoId && b.common_dir === common)) return path;
     } catch {
@@ -3282,7 +1917,7 @@ function memoryCommit(db, repoId, commit, checkoutPath) {
     try {
       const path = memoryCheckout(db, repoId, candidate);
       const options = { cwd: path, encoding: "utf8", stdio: "pipe", maxBuffer: 4096 };
-      if (execFileSync6("/usr/bin/git", ["--no-replace-objects", "cat-file", "-t", commit], options).trim() === "commit" && execFileSync6("/usr/bin/git", ["--no-replace-objects", "rev-parse", "--verify", "--end-of-options", `${commit}^{commit}`], options).trim() === commit) return path;
+      if (execFileSync4("/usr/bin/git", ["--no-replace-objects", "cat-file", "-t", commit], options).trim() === "commit" && execFileSync4("/usr/bin/git", ["--no-replace-objects", "rev-parse", "--verify", "--end-of-options", `${commit}^{commit}`], options).trim() === commit) return path;
     } catch {
     }
   }
@@ -3555,16 +2190,22 @@ function writeMemory(handle, input, observers = {}) {
   return db.transaction(() => writeMemoryDb(db, input, observers)).immediate();
 }
 
+// src/run_inputs.ts
+import { createHash as createHash8 } from "crypto";
+import { execFileSync as execFileSync7 } from "child_process";
+import { constants, openSync, closeSync, fstatSync, lstatSync as lstatSync3, realpathSync as realpathSync8, readFileSync as readFileSync8, existsSync as existsSync8 } from "fs";
+import { isAbsolute as isAbsolute5, dirname as dirname7, resolve as resolve4, relative as relative2 } from "path";
+
 // src/memory_query.ts
-import Database5 from "better-sqlite3";
+import Database4 from "better-sqlite3";
 
 // src/recall.ts
-import { existsSync as existsSync6, readFileSync as readFileSync6, readdirSync as readdirSync6, realpathSync as realpathSync7 } from "fs";
-import { dirname as dirname5, join as join7 } from "path";
+import { existsSync as existsSync4, readFileSync as readFileSync4, readdirSync as readdirSync4, realpathSync as realpathSync5 } from "fs";
+import { dirname as dirname4, join as join5 } from "path";
 function syncIndex(db, decisionsDir) {
   db.transaction(() => {
     if (canSyncLegacyDecisions(db, decisionsDir)) {
-      const files = existsSync6(decisionsDir) ? readdirSync6(decisionsDir).filter((f) => f.endsWith(".md")) : [];
+      const files = existsSync4(decisionsDir) ? readdirSync4(decisionsDir).filter((f) => f.endsWith(".md")) : [];
       const inDb = new Map(
         db.prepare(
           `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`
@@ -3574,9 +2215,9 @@ function syncIndex(db, decisionsDir) {
       for (const f of files) {
         const slug = f.slice(0, -3);
         seen.add(slug);
-        const path = join7(decisionsDir, f);
-        if (!canSyncLegacyDecisions(db, dirname5(realpathSync7(path)))) continue;
-        const doc = parseDecisionMd(readFileSync6(path, "utf8"));
+        const path = join5(decisionsDir, f);
+        if (!canSyncLegacyDecisions(db, dirname4(realpathSync5(path)))) continue;
+        const doc = parseDecisionMd(readFileSync4(path, "utf8"));
         const title = doc.title || slug;
         const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
         const sourceTasks = JSON.stringify(doc.sourceTasks);
@@ -3665,8 +2306,8 @@ function recall(db, decisionsDir, query, opts = {}) {
 }
 function rebuild(db, decisionsDir) {
   assertLegacyDecisionSource(db, decisionsDir);
-  if (existsSync6(decisionsDir)) for (const name of readdirSync6(decisionsDir).filter((f) => f.endsWith(".md"))) {
-    assertLegacyDecisionSource(db, dirname5(realpathSync7(join7(decisionsDir, name))));
+  if (existsSync4(decisionsDir)) for (const name of readdirSync4(decisionsDir).filter((f) => f.endsWith(".md"))) {
+    assertLegacyDecisionSource(db, dirname4(realpathSync5(join5(decisionsDir, name))));
   }
   db.transaction(() => {
     db.exec(`DELETE FROM search_index; DELETE FROM decisions;`);
@@ -3697,7 +2338,7 @@ function memoryRules(handle, view) {
   const db = controllerDb(handle);
   return db.transaction(() => selectMemory(db, view).filter((record) => record.kind === "rule"))();
 }
-function queryMemoryDb(db, view, query, options = {}) {
+function queryMemoryDb(db, view, query, options = {}, kinds) {
   shape(options, [], ["k", "candidates", "withdrawn"]);
   const readOptions = { candidates: options.candidates, withdrawn: options.withdrawn };
   memoryReadOptions(readOptions);
@@ -3707,8 +2348,8 @@ function queryMemoryDb(db, view, query, options = {}) {
   safeMemoryText(query, CAPS.bodyChars);
   const match = sanitizeQuery(query);
   if (!match) throw new KddError("memory query requires words");
-  const eligible = selectMemory(db, view, readOptions);
-  const corpus = new Database5(":memory:");
+  const eligible = selectMemory(db, view, readOptions).filter((record) => !kinds || kinds.includes(record.kind));
+  const corpus = new Database4(":memory:");
   try {
     corpus.exec("CREATE VIRTUAL TABLE hits USING fts5(ref UNINDEXED,title,body,tokenize='unicode61 remove_diacritics 2')");
     const insert = corpus.prepare("INSERT INTO hits(ref,title,body) VALUES(?,?,?)");
@@ -3742,11 +2383,1878 @@ function recallMemory(handle, view, query, options = {}) {
   return db.transaction(() => queryMemoryDb(db, view, query, options))();
 }
 
+// src/criteria.ts
+function listCriteria(db, taskId) {
+  return db.prepare(
+    `SELECT * FROM criteria WHERE task_id = ? ORDER BY position, id`
+  ).all(taskId);
+}
+function mustGetCriterion(db, taskId, id2) {
+  const c = db.prepare(`SELECT * FROM criteria WHERE id = ?`).get(id2);
+  assertLegacyTaskMutation(db, [taskId, ...c ? [c.task_id] : []]);
+  if (!c || c.task_id !== taskId) throw new KddError(`criterion #${id2} not found on task #${taskId}`);
+  return c;
+}
+var touchTask = (db, taskId) => {
+  db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
+};
+function addCriterion(db, taskId, text2, actor) {
+  if (!text2.trim()) throw new KddError("criterion text must not be empty");
+  return db.transaction(() => {
+    assertLegacyTaskMutation(db, [taskId]);
+    mustGetTask(db, taskId);
+    const pos = db.prepare(
+      `SELECT COALESCE(MAX(position), -1) + 1 AS p FROM criteria WHERE task_id = ?`
+    ).get(taskId).p;
+    const r = db.prepare(
+      `INSERT INTO criteria (task_id, text, position, created_at) VALUES (?, ?, ?, ?)`
+    ).run(taskId, text2, pos, now());
+    const id2 = Number(r.lastInsertRowid);
+    appendTaskMutationEvent(db, taskId, actor, "criterion_added", { id: id2, text: text2 });
+    touchTask(db, taskId);
+    return mustGetCriterion(db, taskId, id2);
+  }).immediate();
+}
+function setCriterionChecked(db, taskId, id2, checked, actor, evidence2) {
+  return db.transaction(() => {
+    const c = mustGetCriterion(db, taskId, id2);
+    const proof = evidence2?.trim();
+    if (c.checked_at !== null === checked && (!checked || !proof)) return c;
+    const stored = proof ? actor.type === "ai" ? redact(proof) : proof : null;
+    db.prepare(
+      `UPDATE criteria SET checked_at = ?, evidence = ?, checked_by = ? WHERE id = ?`
+    ).run(
+      checked ? now() : null,
+      checked ? stored : null,
+      checked ? authorOf(actor) : null,
+      id2
+    );
+    appendTaskMutationEvent(
+      db,
+      taskId,
+      actor,
+      checked ? "criterion_checked" : "criterion_unchecked",
+      { id: id2, text: c.text, ...checked && stored ? { evidence: stored } : {} }
+    );
+    touchTask(db, taskId);
+    return mustGetCriterion(db, taskId, id2);
+  }).immediate();
+}
+function removeCriterion(db, taskId, id2, actor) {
+  db.transaction(() => {
+    const c = mustGetCriterion(db, taskId, id2);
+    db.prepare(`DELETE FROM criteria WHERE id = ?`).run(id2);
+    appendTaskMutationEvent(db, taskId, actor, "criterion_removed", { id: id2, text: c.text });
+    touchTask(db, taskId);
+  }).immediate();
+}
+
+// src/files.ts
+import { createHash as createHash5 } from "crypto";
+import {
+  existsSync as existsSync5,
+  mkdirSync as mkdirSync4,
+  readFileSync as readFileSync5,
+  renameSync as renameSync3,
+  rmSync as rmSync3,
+  statSync as statSync2,
+  writeFileSync as writeFileSync3
+} from "fs";
+import { basename as basename3, dirname as dirname5, extname, join as join6 } from "path";
+var MIME = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  bmp: "image/bmp",
+  ico: "image/x-icon",
+  tif: "image/tiff",
+  tiff: "image/tiff",
+  svg: "image/svg+xml",
+  pdf: "application/pdf",
+  zip: "application/zip",
+  json: "application/json",
+  csv: "text/csv",
+  md: "text/markdown",
+  txt: "text/plain",
+  log: "text/plain"
+};
+var INLINE = /* @__PURE__ */ new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/bmp",
+  "image/x-icon",
+  "image/tiff"
+]);
+var isInlineMime = (m) => m !== null && INLINE.has(m);
+var filesDir = (dbPath) => {
+  if (dbPath === ":memory:") throw new KddError("attachments need a real board file, not :memory:");
+  return join6(dirname5(dbPath), "files");
+};
+var filePath = (dbPath, f) => join6(filesDir(dbPath), `${f.sha256}.${f.ext}`);
+function listFiles(db, taskId) {
+  return db.prepare(`SELECT * FROM files WHERE task_id = ? ORDER BY id`).all(taskId);
+}
+function getFile(db, id2) {
+  return db.prepare(`SELECT * FROM files WHERE id = ?`).get(id2);
+}
+function attachFile(db, dbPath, taskId, srcPath, opts, actor) {
+  return db.transaction(() => {
+    assertLegacyTaskMutation(db, [taskId]);
+    let data;
+    try {
+      const stat = statSync2(srcPath);
+      if (stat.isDirectory()) throw new KddError(`${srcPath} is a directory`);
+      if (stat.size > CAPS.fileBytes) {
+        throw new KddError(`file is ${stat.size} bytes, the limit is ${CAPS.fileBytes}`);
+      }
+      data = readFileSync5(srcPath);
+    } catch (e) {
+      if (e instanceof KddError) throw e;
+      throw new KddError(`cannot read ${srcPath}: ${e.message}`);
+    }
+    mustGetTask(db, taskId);
+    const sha256 = createHash5("sha256").update(data).digest("hex");
+    const ext = (extname(srcPath).slice(1) || "bin").toLowerCase();
+    const target = join6(filesDir(dbPath), `${sha256}.${ext}`);
+    if (!existsSync5(target)) {
+      mkdirSync4(filesDir(dbPath), { recursive: true });
+      const tmp = `${target}.${process.pid}.tmp`;
+      writeFileSync3(tmp, data);
+      renameSync3(tmp, target);
+    }
+    const name = capText(basename3(srcPath), CAPS.fileNameChars);
+    const r = db.prepare(
+      `INSERT INTO files (task_id, sha256, ext, original_name, mime_type, size_bytes,
+                          description, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(task_id, sha256) DO NOTHING`
+    ).run(
+      taskId,
+      sha256,
+      ext,
+      name,
+      MIME[ext] ?? null,
+      data.length,
+      opts.description ?? null,
+      now()
+    );
+    const row = db.prepare(`SELECT * FROM files WHERE task_id = ? AND sha256 = ?`).get(taskId, sha256);
+    if (r.changes === 0) {
+      if (opts.description && opts.description !== row.description) {
+        db.prepare(`UPDATE files SET description = ? WHERE id = ?`).run(opts.description, row.id);
+        appendTaskMutationEvent(db, taskId, actor, "file_attached", { id: row.id, name, described: true });
+        db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
+        return { ...row, description: opts.description };
+      }
+      return row;
+    }
+    appendTaskMutationEvent(db, taskId, actor, "file_attached", { id: row.id, name });
+    db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
+    return row;
+  }).immediate();
+}
+function detachFile(db, dbPath, fileId, actor) {
+  db.transaction(() => {
+    const f = getFile(db, fileId);
+    if (!f) throw new KddError(`file #${fileId} not found`);
+    assertLegacyTaskMutation(db, [f.task_id]);
+    db.prepare(`DELETE FROM files WHERE id = ?`).run(fileId);
+    appendTaskMutationEvent(db, f.task_id, actor, "file_detached", { id: fileId, name: f.original_name });
+    db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), f.task_id);
+    const left = db.prepare(`SELECT COUNT(*) AS c FROM files WHERE sha256 = ? AND ext = ?`).get(f.sha256, f.ext).c;
+    if (left === 0) rmSync3(filePath(dbPath, f), { force: true });
+  }).immediate();
+}
+
+// src/codex_permissions.ts
+import { spawn as spawn2, execFileSync as execFileSync6 } from "child_process";
+import { createHash as createHash7 } from "crypto";
+import { lstatSync as lstatSync2, mkdirSync as mkdirSync6, readdirSync as readdirSync6, realpathSync as realpathSync7, rmdirSync, readFileSync as readFileSync7, writeFileSync as writeFileSync5, existsSync as existsSync7 } from "fs";
+import { dirname as dirname6, isAbsolute as isAbsolute4, join as join8, relative, resolve as resolve3, sep } from "path";
+import { fileURLToPath as fileURLToPath2 } from "url";
+
+// src/codex_native_probe.ts
+import assert from "assert/strict";
+import { spawn, execFile, execFileSync as execFileSync5 } from "child_process";
+import { createHash as createHash6 } from "crypto";
+import { mkdtempSync, mkdirSync as mkdirSync5, writeFileSync as writeFileSync4, readFileSync as readFileSync6, existsSync as existsSync6, rmSync as rmSync4, realpathSync as realpathSync6, linkSync, symlinkSync, lstatSync, readdirSync as readdirSync5, readlinkSync } from "fs";
+import { createServer } from "http";
+import { tmpdir, networkInterfaces } from "os";
+import { createServer as createSocketServer } from "net";
+import { join as join7 } from "path";
+import * as zlib from "zlib";
+import Database5 from "better-sqlite3";
+import { fileURLToPath } from "url";
+async function observeCodexNative(executablePath, rawDiagnostic = false, model = "fixture-codex", broker, brokerOnly = false) {
+  const executable = realpathSync6(executablePath);
+  const version = execFileSync5(executable, ["--version"], { encoding: "utf8" }).trim();
+  assert.equal(version, "codex-cli 0.157.0");
+  assert.equal(process.platform, "darwin");
+  const executableHash = createHash6("sha256").update(readFileSync6(executable)).digest("hex");
+  const scriptHash = createHash6("sha256").update(readFileSync6(new URL(import.meta.url))).digest("hex");
+  const guardHash = scriptHash;
+  const root = realpathSync6(mkdtempSync(join7(tmpdir(), "kdd-native-")));
+  const observations = [];
+  const failures = [];
+  const preflight = [];
+  const networkControls = [];
+  let tcpServer;
+  let unixServer;
+  let brokerDb;
+  let operations2 = [];
+  try {
+    let findTool2 = function(tools, name, namespace) {
+      for (const tool of tools ?? []) {
+        if (tool.name === name && ["function", "custom"].includes(tool.type)) return { ...tool, namespace };
+        const found = findTool2(tool.tools, name, tool.type === "namespace" ? tool.name : namespace);
+        if (found) return found;
+      }
+    }, flattenTools2 = function(tools, namespace) {
+      return (tools ?? []).flatMap((t) => t.type === "namespace" ? flattenTools2(t.tools, t.name) : [{ name: t.name, namespace, type: t.type }]);
+    }, fingerprint2 = function(path) {
+      if (!existsSync6(path)) return "missing";
+      const stat = lstatSync(path);
+      if (stat.isSymbolicLink()) return digest3(readlinkSync(path));
+      if (!stat.isDirectory()) return digest3(readFileSync6(path));
+      return digest3(JSON.stringify(readdirSync5(path).sort().map((name) => [name, fingerprint2(join7(path, name))])));
+    };
+    var findTool = findTool2, flattenTools = flattenTools2, fingerprint = fingerprint2;
+    if (broker) {
+      brokerDb = new Database5(broker.dbPath, { fileMustExist: true });
+      operations2 = runOperations(openRunContext(brokerDb, JSON.parse(readFileSync6(broker.configPath, "utf8")).token));
+    }
+    const workspace = join7(root, "workspace");
+    const scratch = join7(root, "scratch");
+    const protectedDir = join7(root, "protected");
+    const source = join7(root, "source");
+    const sibling = join7(root, "sibling");
+    const clone = join7(root, "clone");
+    for (const path of [scratch, protectedDir, source, sibling]) mkdirSync5(path);
+    writeFileSync4(join7(protectedDir, "marker.txt"), "private-fixture\n");
+    for (const name of ["store.db", "registry.db", "config.toml", "credential.json"]) writeFileSync4(join7(protectedDir, name), "private-fixture\n");
+    writeFileSync4(join7(sibling, "marker.txt"), "private-fixture\n");
+    const controlDir = join7(protectedDir, "controller");
+    mkdirSync5(controlDir);
+    const backend = join7(root, "backend");
+    mkdirSync5(backend);
+    writeFileSync4(join7(backend, "marker.txt"), "backend-original\n");
+    const git3 = (cwd, ...args) => execFileSync5("/usr/bin/git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
+    writeFileSync4(join7(source, "existing.txt"), "original\n");
+    git3(source, "init", "-q");
+    git3(source, "add", "existing.txt");
+    git3(source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "seed");
+    git3(root, "clone", "--no-hardlinks", "-q", source, clone);
+    git3(clone, "worktree", "add", "-q", "-b", "fixture-worktree", workspace);
+    mkdirSync5(join7(workspace, ".codex"));
+    const gitDir = git3(workspace, "rev-parse", "--absolute-git-dir");
+    const commonDir = git3(workspace, "rev-parse", "--path-format=absolute", "--git-common-dir");
+    const foreign = join7(backend, "marker.txt");
+    if (rawDiagnostic) linkSync(foreign, join7(workspace, "hardlink.txt"));
+    symlinkSync(foreign, join7(workspace, "symlink.txt"));
+    const catalogPath = join7(root, "model-catalog.json");
+    writeFileSync4(catalogPath, closedCodexCatalog(model));
+    let tcpRequests = 0;
+    let unixRequests = 0;
+    tcpServer = createServer((req, res) => {
+      tcpRequests++;
+      res.end("ack");
+    });
+    await new Promise((resolve5) => tcpServer.listen(0, "0.0.0.0", resolve5));
+    const tcpPort = tcpServer.address().port;
+    const socketPath = join7(scratch, "listener.sock");
+    unixServer = createSocketServer((socket) => socket.once("data", () => {
+      unixRequests++;
+      socket.end("ack");
+    }));
+    await new Promise((resolve5) => unixServer.listen(socketPath, resolve5));
+    const lanAddress = Object.values(networkInterfaces()).flat().find((i) => i && i.family === "IPv4" && !i.internal)?.address;
+    let tcpBaseline = 0;
+    let unixBaseline = 0;
+    const networkCases = [
+      ...[["loopback", "127.0.0.1"], ...lanAddress ? [["lan", lanAddress]] : []].map(([name, host]) => ({
+        id: `network-${name}`,
+        command: `/usr/bin/curl --disable --max-time 2 --silent --show-error -d native http://${host}:${tcpPort}/attempt`,
+        failureCode: 7
+      })),
+      { id: "network-unix", command: `/bin/sh -c "echo native | /usr/bin/nc -U -w 1 '${socketPath}'"`, failureCode: 1 }
+    ];
+    async function checkNetworkControls() {
+      for (const testCase of networkCases) {
+        const output = await new Promise((resolve5, reject) => execFile(
+          "/bin/sh",
+          ["-c", testCase.command],
+          { timeout: 4e3, env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", TMPDIR: scratch, LANG: "en_US.UTF-8" } },
+          (error, stdout) => error ? reject(error) : resolve5(stdout)
+        ));
+        assert.equal(String(output).trim(), "ack");
+        networkControls.push({ caseId: testCase.id, role: "host-control", exitCode: 0, commandHash: digest3(testCase.command), output });
+      }
+      assert.equal(tcpRequests, lanAddress ? 2 : 1);
+      assert.equal(unixRequests, 1);
+      tcpBaseline = tcpRequests;
+      unixBaseline = unixRequests;
+    }
+    const sse = (type, fields) => `event: ${type}
+data: ${JSON.stringify({ type, ...fields })}
+
+`;
+    async function runCase(testCase, writable) {
+      let calls = 0;
+      let output;
+      let registry;
+      let providerError;
+      const requests = [];
+      const server = createServer(async (req, res) => {
+        try {
+          if (req.method !== "POST") {
+            res.writeHead(404);
+            res.end();
+            return;
+          }
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          let bytes2 = Buffer.concat(chunks);
+          if (req.headers["content-encoding"] === "zstd") {
+            if (typeof zlib.zstdDecompressSync !== "function") throw new Error("native fixture zstd unavailable");
+            bytes2 = zlib.zstdDecompressSync(bytes2);
+          }
+          const body = JSON.parse(bytes2.toString());
+          requests.push({ path: req.url, keys: Object.keys(body), tools: body.tools?.map((t) => ({ type: t.type, name: t.name })), input: body.input?.map((i) => ({ type: i.type, call_id: i.call_id, keys: i.type === "additional_tools" ? Object.keys(i) : void 0 })) });
+          const callId = "probe_call";
+          if (calls++ === 0) {
+            registry = body.tools ?? body.input?.find((item2) => item2.type === "additional_tools")?.tools;
+            const mcp = ["get_context", "submit_report", "request_question"].includes(testCase.tool);
+            let tool = findTool2(registry, testCase.tool);
+            if (testCase.unavailable) {
+              if (tool) throw new Error(`ungranted native tool advertised: ${testCase.tool}`);
+              tool = { name: testCase.tool, type: "function", namespace: "mcp__kdd_run" };
+            }
+            if (!tool) throw new Error(`native tool missing: ${testCase.tool}`);
+            if (mcp && tool.namespace !== "mcp__kdd_run") throw new Error("unexpected MCP namespace");
+            if (testCase.revoke) {
+              const token = JSON.parse(readFileSync6(broker.configPath, "utf8")).token;
+              const authority = brokerDb.prepare("SELECT authority_id FROM run_authorities WHERE token_hash=?").get(digest3(token));
+              revokeRunAuthority(openController(brokerDb), authority.authority_id);
+            }
+            const item = tool.type === "custom" ? { type: "custom_tool_call", id: "probe_item", call_id: callId, name: tool.name, input: testCase.patch } : {
+              type: "function_call",
+              id: "probe_item",
+              call_id: callId,
+              name: tool.name,
+              arguments: JSON.stringify(mcp || /mcp_resource/.test(testCase.tool) ? testCase.payload ?? {} : testCase.tool === "apply_patch" ? { patch: testCase.patch } : { cmd: testCase.command, max_output_tokens: 1e3 })
+            };
+            if (tool.namespace) item.namespace = tool.namespace;
+            res.writeHead(200, { "content-type": "text/event-stream" });
+            res.write(sse("response.created", { response: { id: "probe_response" } }));
+            res.write(sse("response.output_item.done", { item }));
+            const items = [item];
+            if (testCase.revoke) {
+              for (const operation of operations2.filter((operation2) => operation2 !== testCase.tool)) {
+                const granted = findTool2(registry, operation);
+                if (!granted) throw new Error(`native tool missing: ${operation}`);
+                const second = {
+                  type: "function_call",
+                  id: `probe_${operation}`,
+                  call_id: `probe_${operation}`,
+                  name: granted.name,
+                  ...granted.namespace ? { namespace: granted.namespace } : {},
+                  arguments: JSON.stringify(operation === "get_context" ? {} : { body: "late proposal" })
+                };
+                items.push(second);
+                res.write(sse("response.output_item.done", { item: second }));
+              }
+            }
+            res.end(sse("response.completed", { response: { id: "probe_response", output: items } }));
+          } else {
+            output = body.input?.find((item2) => item2.call_id === callId && /call_output$/.test(item2.type))?.output;
+            if (output === void 0) throw new Error("actual native call output missing");
+            if (testCase.revoke) {
+              output = Object.fromEntries(operations2.map((operation) => {
+                const id2 = operation === testCase.tool ? callId : `probe_${operation}`;
+                const value = body.input?.find((item2) => item2.call_id === id2 && /call_output$/.test(item2.type))?.output;
+                if (value === void 0) throw new Error(`actual revoked ${operation} output missing`);
+                return [operation, value];
+              }));
+            }
+            const item = { type: "message", id: "final", role: "assistant", content: [{ type: "output_text", text: "Probe complete." }] };
+            res.writeHead(200, { "content-type": "text/event-stream" });
+            res.write(sse("response.output_item.done", { item }));
+            res.end(sse("response.completed", { response: { id: "final_response", output: [item] } }));
+          }
+        } catch (error) {
+          providerError ??= error.message;
+          res.writeHead(500);
+          res.end("Fixture protocol error");
+          child.kill("SIGKILL");
+        }
+      });
+      await new Promise((resolve5) => server.listen(0, "127.0.0.1", resolve5));
+      const port = server.address().port;
+      const filesystem = { ":minimal": "read", [workspace]: writable ? "write" : "read", [scratch]: "write", [backend]: "read", [source]: "deny", [sibling]: "deny", [clone]: "deny", [protectedDir]: "deny", [join7(workspace, ".git")]: "read", [commonDir]: "read", [gitDir]: "read", [catalogPath]: "deny", [join7(workspace, ".codex")]: "read" };
+      if (broker) for (const path of [broker.configPath, broker.entryPath, broker.dbPath, `${broker.dbPath}-wal`, `${broker.dbPath}-shm`]) filesystem[path] = "deny";
+      if (testCase.controlRoot) filesystem[testCase.controlRoot] = "write";
+      const config = [
+        ...fixedCodexConfig(filesystem, catalogPath, broker),
+        // Only the model response service changes; native tools use the shared production policy.
+        `openai_base_url=${JSON.stringify(`http://127.0.0.1:${port}/v1`)}`
+      ];
+      const args = [...fixedCodexArguments(workspace, model, config), "Execute the supplied fixture tool call."];
+      let stdout = "";
+      let stderr = "";
+      let timedOut = false;
+      const env = {
+        HOME: process.env.HOME ?? "",
+        PATH: "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+        TMPDIR: scratch,
+        LANG: "en_US.UTF-8",
+        CODEX_API_KEY: "fixture-preflight-not-a-secret"
+      };
+      let child;
+      try {
+        child = rawDiagnostic ? spawn(executable, args, { env, stdio: ["ignore", "pipe", "pipe"] }) : await spawnCheckedNative({
+          controlDir,
+          executable,
+          args,
+          env,
+          cwd: workspace,
+          writableRoots: [scratch, ...writable ? [workspace] : [], ...testCase.controlRoot ? [testCase.controlRoot] : []],
+          phase: testCase.phase ?? "start"
+        });
+      } catch (error) {
+        server.closeAllConnections();
+        await new Promise((resolve5) => server.close(() => resolve5()));
+        throw error;
+      }
+      child.stdout.on("data", (data) => stdout += data);
+      child.stderr.on("data", (data) => stderr += data);
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGKILL");
+      }, 2e4);
+      try {
+        const exitCode = await new Promise((resolve5, reject) => {
+          child.once("error", reject);
+          child.once("close", resolve5);
+        });
+        const observation = {
+          tools: [],
+          protectedHashes: [],
+          outcome: "inconclusive",
+          unchangedProtectedBytes: true,
+          caseId: testCase.id,
+          mode: writable ? "workspace" : "readonly",
+          tool: testCase.tool,
+          exitCode,
+          control: !!testCase.controlRoot,
+          phase: testCase.phase ?? "start",
+          executed: output !== void 0,
+          timedOut,
+          providerError,
+          output,
+          requests,
+          permissionHash: createHash6("sha256").update(JSON.stringify({ executableHash, version, model, filesystem, config })).digest("hex"),
+          configHash: createHash6("sha256").update(JSON.stringify({ executableHash, version, filesystem, config })).digest("hex")
+        };
+        if (output === void 0) observation.diagnostic = (stderr + stdout).slice(-3e3);
+        if (broker) {
+          const token = JSON.parse(readFileSync6(broker.configPath, "utf8")).token;
+          const safe = (text2) => text2.replaceAll(token, "[redacted]").replaceAll(digest3(token), "[redacted]");
+          if (observation.output !== void 0) observation.output = JSON.parse(safe(JSON.stringify(observation.output)));
+          if (observation.diagnostic) observation.diagnostic = safe(observation.diagnostic);
+        }
+        if (registry) observation.tools = flattenTools2(registry);
+        observation.unchangedProtectedBytes = readFileSync6(foreign, "utf8") === "backend-original\n";
+        observations.push(observation);
+        return observation;
+      } finally {
+        clearTimeout(timer);
+        child.kill("SIGKILL");
+        server.closeAllConnections();
+        await new Promise((resolve5) => server.close(() => resolve5()));
+      }
+    }
+    const patchCreate = (path) => `*** Begin Patch
+*** Add File: ${path}
++created
+*** End Patch`;
+    const patchUpdate = (path) => `*** Begin Patch
+*** Update File: ${path}
+@@
+-original
++changed
+*** End Patch`;
+    const patchDelete = (path) => `*** Begin Patch
+*** Delete File: ${path}
+*** End Patch`;
+    const digest3 = (value) => createHash6("sha256").update(value).digest("hex");
+    const protectedPaths = [
+      backend,
+      source,
+      sibling,
+      protectedDir,
+      commonDir,
+      join7(workspace, ".git"),
+      join7(workspace, ".codex"),
+      ...broker ? [broker.configPath, broker.entryPath] : []
+    ];
+    const storeTables = ["tasks", "criteria", "comments", "task_links", "files", "tracks", "project", "repositories", "repository_bindings", "decisions", "search_index", "managed_task_policy", "run_authorities"];
+    const storeSnapshot = (revoking = false) => brokerDb ? digest3(JSON.stringify(storeTables.filter((table) => !revoking || table !== "run_authorities").map((table) => brokerDb.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()))) : "none";
+    async function check(testCase, writable, expected, effect) {
+      const unchangedPaths = protectedPaths.filter((path) => path !== testCase.controlRoot);
+      const before = unchangedPaths.map(fingerprint2);
+      const storeBefore = storeSnapshot(testCase.revoke);
+      const eventsBefore = brokerDb?.prepare("SELECT * FROM events ORDER BY id").all();
+      const observation = await runCase(testCase, writable);
+      const text2 = typeof observation.output === "string" ? observation.output : JSON.stringify(observation.output) ?? "";
+      observation.challengeHash = digest3(JSON.stringify([testCase.tool, testCase.patch ?? testCase.command]));
+      observation.protectedHashes = unchangedPaths.map((path, i) => ({ path, before: before[i], after: fingerprint2(path) }));
+      observation.outcome = "inconclusive";
+      const allowed = observation.executed && /(?:Process exited with code|Exit code:) 0/.test(text2);
+      const denied3 = observation.executed && /Operation not permitted|Permission denied|patch rejected/.test(text2);
+      if (allowed) observation.outcome = "allowed";
+      else if (denied3) observation.outcome = "denied";
+      else if (testCase.unavailable && observation.executed && text2.includes(testCase.tool) && /unsupported|unknown|unrecognized|not found/i.test(text2)) observation.outcome = "denied";
+      else if (["get_context", "submit_report", "request_question"].includes(testCase.tool)) {
+        if (text2.includes("run operation denied") || /["\\]isError["\\]*\s*:\s*true/.test(text2)) observation.outcome = "denied";
+        else if (text2.includes("taskId") || text2.includes("eventId")) observation.outcome = "allowed";
+      } else if (/mcp_resource/.test(testCase.tool) && observation.executed) {
+        if (/resources\/(?:read|list|templates\/list) failed:/.test(text2) && /unknown|not found|not support|Method not found|capability/i.test(text2)) observation.outcome = "denied";
+        else if (testCase.tool.startsWith("list_") && /"(?:resources|resourceTemplates)"\s*:\s*\[\s*\]/.test(text2)) observation.outcome = "allowed";
+      } else if (testCase.failureCode && observation.executed && new RegExp(`Process exited with code ${testCase.failureCode}\\b`).test(text2) && networkControls.some((control) => control.caseId === testCase.id && control.exitCode === 0 && control.commandHash === digest3(testCase.command))) {
+        observation.outcome = "denied";
+        observation.matchedControl = `host:${testCase.id}`;
+      } else if (testCase.matchedControl && observation.executed && /Exit code: 1/.test(text2) && /Failed to write file/.test(text2) && testCase.matchedControl.outcome === "allowed" && !testCase.matchedControl.failure && testCase.matchedControl.challengeHash === observation.challengeHash && observation.protectedHashes.every((path) => path.before === path.after)) {
+        observation.outcome = "denied";
+        observation.matchedControl = testCase.matchedControl.caseId;
+      }
+      try {
+        assert.equal(observation.timedOut, false);
+        assert.equal(observation.providerError, void 0);
+        assert.equal(observation.outcome, expected, `expected ${expected}, got ${observation.outcome}`);
+        if (testCase.revoke) {
+          const outputs = observation.output;
+          for (const operation of operations2) assert.ok(JSON.stringify(outputs[operation]).includes("run operation denied"), `revoked ${operation} was accepted`);
+        }
+        if (!testCase.controlRoot) assert.equal(observation.unchangedProtectedBytes, true, "foreign hardlink bytes changed");
+        assert.ok(observation.protectedHashes.every((path) => path.before === path.after), "protected tree changed");
+        for (const tool of observation.tools) {
+          const name = tool.namespace ? `${tool.namespace}__${tool.name}` : tool.name;
+          assert.ok(name && [
+            "exec_command",
+            "write_stdin",
+            "apply_patch",
+            ...broker ? [
+              ...operations2.map((operation) => `mcp__kdd_run__${operation}`),
+              "list_mcp_resources",
+              "list_mcp_resource_templates",
+              "read_mcp_resource"
+            ] : []
+          ].includes(name), `unexpected surface: ${name}`);
+        }
+        if (broker) {
+          assert.equal(storeSnapshot(testCase.revoke), storeBefore, "protected board rows changed");
+        }
+        if (broker && !testCase.revoke) {
+          if (testCase.unavailable || testCase.tool !== "submit_report" && testCase.tool !== "request_question") assert.deepEqual(brokerDb.prepare("SELECT * FROM events ORDER BY id").all(), eventsBefore);
+        }
+        effect?.();
+      } catch (error) {
+        observation.failure = error.message;
+        failures.push({ caseId: testCase.id, mode: observation.mode, reason: error.message });
+      }
+      await withNativeControllerLock(controlDir, () => {
+        writeFileSync4(foreign, "backend-original\n");
+        writeFileSync4(join7(workspace, "existing.txt"), "original\n");
+        rmSync4(join7(workspace, "created.txt"), { force: true });
+      });
+      if (observation.failure && !rawDiagnostic) throw new Error(`native probe failed: ${observation.mode}:${testCase.id}: ${observation.failure}`);
+      return observation;
+    }
+    async function guardChecks() {
+      const marker = join7(workspace, "unexpected-child");
+      const input = (phase) => ({
+        controlDir,
+        executable: process.execPath,
+        args: ["-e", 'require("node:fs").writeFileSync("unexpected-child","started")'],
+        env: { PATH: "/usr/bin:/bin" },
+        cwd: workspace,
+        writableRoots: [workspace, scratch],
+        phase
+      });
+      async function refused(id2, phase, pattern) {
+        try {
+          await assert.rejects(spawnCheckedNative(input(phase)), pattern);
+          assert.equal(existsSync6(marker), false);
+          preflight.push({ caseId: id2, phase, outcome: "denied", executed: false });
+        } catch (error) {
+          failures.push({ caseId: id2, reason: error.message });
+        }
+      }
+      for (const writable of [workspace, scratch]) {
+        const deep = join7(writable, "unsafe-deep");
+        mkdirSync5(deep);
+        linkSync(foreign, join7(deep, "alias"));
+        await refused(`existing-hardlink-${writable === workspace ? "workspace" : "scratch"}`, "start", /hardlink/);
+        rmSync4(deep, { recursive: true });
+      }
+      symlinkSync(foreign, join7(scratch, "first-symlink"));
+      linkSync(join7(scratch, "first-symlink"), join7(scratch, "linked-symlink"));
+      await refused("linked-symlink-inode", "start", /hardlink/);
+      rmSync4(join7(scratch, "first-symlink"));
+      rmSync4(join7(scratch, "linked-symlink"));
+      assertWritableRoots([workspace, scratch]);
+      linkSync(foreign, join7(scratch, "late-hardlink"));
+      await refused("fresh-resume-after-safe-preflight", "resume", /hardlink/);
+      rmSync4(join7(scratch, "late-hardlink"));
+      await withNativeControllerLock(controlDir, async () => {
+        assertWritableRoots([workspace, scratch]);
+        const moduleUrl = import.meta.url;
+        const command = `const core=await import(process.argv[1]);const fs=await import('node:fs');try {await core.withNativeControllerLock(process.argv[2],()=>fs.writeFileSync(process.argv[3],'changed'));process.exit(3)}catch(e){if(!/busy/.test(e.message))throw e}`;
+        execFileSync5(process.execPath, ["--input-type=module", "-e", command, moduleUrl, controlDir, marker]);
+        assert.equal(existsSync6(marker), false);
+        await refused("cross-process-controller-exclusion", "start", /busy/);
+      });
+    }
+    await checkNetworkControls();
+    if (rawDiagnostic) {
+      for (let iteration = 1; iteration <= 3; iteration++) {
+        await check({ id: `hardlink-shell-${iteration}`, tool: "exec_command", command: '/bin/sh -c "echo changed > hardlink.txt"' }, true, "denied", () => {
+        });
+        await check({ id: `hardlink-patch-${iteration}`, tool: "apply_patch", patch: "*** Begin Patch\n*** Update File: hardlink.txt\n@@\n-backend-original\n+changed\n*** End Patch" }, true, "denied", () => {
+        });
+      }
+    } else {
+      await guardChecks();
+      if (!lanAddress) failures.push({ caseId: "network-lan", reason: "LAN positive control unavailable" });
+      if (!brokerOnly) for (const writable of [false, true]) {
+        const read = await check({ id: "read", tool: "exec_command", command: "/bin/cat existing.txt" }, writable, "allowed", () => {
+        });
+        if (!(JSON.stringify(read.output) ?? "").includes("original")) throw new Error("positive native read incomplete");
+        await check({ id: "protected-read", tool: "exec_command", command: `/bin/cat '${join7(protectedDir, "marker.txt")}'` }, writable, "denied", () => {
+        });
+        const projectConfig = join7(workspace, ".codex/config.toml");
+        await check({ id: "project-config-shell", tool: "exec_command", command: `/bin/sh -c "echo changed > '${projectConfig}'"` }, writable, "denied", () => assert.equal(existsSync6(projectConfig), false));
+        await check({ id: "project-config-patch", tool: "apply_patch", patch: patchCreate(projectConfig) }, writable, "denied", () => assert.equal(existsSync6(projectConfig), false));
+        const expected = writable ? "allowed" : "denied";
+        for (let iteration = 1; iteration <= (writable ? 1 : 3); iteration++) {
+          for (const operation of ["create", "update", "delete"]) {
+            for (const tool of ["exec_command", "apply_patch"]) {
+              const command = { create: '/bin/sh -c "echo created > created.txt"', update: '/bin/sh -c "echo changed > existing.txt"', delete: "/bin/rm existing.txt" }[operation];
+              const patch = { create: patchCreate("created.txt"), update: patchUpdate("existing.txt"), delete: patchDelete("existing.txt") }[operation];
+              await check({ id: `${operation}-${iteration}`, tool, command, patch }, writable, expected, () => {
+                if (operation === "create") assert.equal(existsSync6(join7(workspace, "created.txt")), writable);
+                if (operation === "update") assert.equal(readFileSync6(join7(workspace, "existing.txt"), "utf8"), writable ? "changed\n" : "original\n");
+                if (operation === "delete") assert.equal(existsSync6(join7(workspace, "existing.txt")), !writable);
+              });
+            }
+          }
+        }
+        const symlinkPatch = "*** Begin Patch\n*** Update File: symlink.txt\n@@\n-backend-original\n+changed\n*** End Patch";
+        for (let iteration = 1; iteration <= 3; iteration++) {
+          const control = writable ? await check({ id: `symlink-positive-control-${iteration}`, tool: "apply_patch", patch: symlinkPatch, controlRoot: backend }, writable, "allowed", () => {
+            assert.equal(readFileSync6(foreign, "utf8"), "changed\n");
+          }) : void 0;
+          await check({ id: `symlink-patch-${iteration}`, tool: "apply_patch", patch: symlinkPatch, matchedControl: control }, writable, "denied");
+          await check({ id: `symlink-shell-${iteration}`, tool: "exec_command", command: '/bin/sh -c "echo changed > symlink.txt"' }, writable, "denied");
+        }
+        for (const destination of [workspace, scratch]) {
+          for (const [name, target] of [["readonly", foreign], ["denied", join7(protectedDir, "marker.txt")]]) {
+            const newLink = join7(destination, `new-link-${name}`);
+            await check({ id: `create-hardlink-${name}-${destination === workspace ? "workspace" : "scratch"}`, tool: "exec_command", command: `/bin/ln '${target}' '${newLink}'` }, writable, "denied", () => assert.equal(existsSync6(newLink), false));
+            rmSync4(newLink, { force: true });
+          }
+        }
+        await check({ id: "backend-write", tool: "exec_command", command: `/bin/sh -c "echo changed > '${foreign}'"` }, writable, "denied", () => {
+        });
+        const backendPatch = "*** Begin Patch\n*** Update File: " + foreign + "\n@@\n-backend-original\n+changed\n*** End Patch";
+        const backendControl = await check({ id: "backend-positive-control", tool: "apply_patch", patch: backendPatch, controlRoot: backend }, writable, "allowed", () => assert.equal(readFileSync6(foreign, "utf8"), "changed\n"));
+        await check({ id: "backend-patch", tool: "apply_patch", patch: backendPatch, matchedControl: backendControl }, writable, "denied");
+        for (const path of [join7(source, "existing.txt"), join7(sibling, "marker.txt"), ...["store.db", "registry.db", "config.toml", "credential.json"].map((name) => join7(protectedDir, name))]) {
+          await check({ id: `protected-read-${path.split("/").slice(-2).join("-")}`, tool: "exec_command", command: `/bin/cat '${path}'` }, writable, "denied");
+          await check({ id: `protected-write-${path.split("/").slice(-2).join("-")}`, tool: "exec_command", command: `/bin/sh -c "echo changed > '${path}'"` }, writable, "denied");
+          await check({ id: `protected-patch-${path.split("/").slice(-2).join("-")}`, tool: "apply_patch", patch: patchDelete(path) }, writable, "denied");
+        }
+        await check({ id: "rename-outside", tool: "exec_command", command: `/bin/mv existing.txt '${join7(backend, "renamed.txt")}'` }, writable, "denied", () => assert.equal(existsSync6(join7(backend, "renamed.txt")), false));
+        await check({ id: "patch-move-outside", tool: "apply_patch", patch: `*** Begin Patch
+*** Update File: existing.txt
+*** Move to: ${join7(protectedDir, "moved.txt")}
+@@
+-original
++changed
+*** End Patch` }, writable, "denied", () => assert.equal(existsSync6(join7(protectedDir, "moved.txt")), false));
+        await check({ id: "git-ref", tool: "exec_command", command: "/usr/bin/git update-ref refs/heads/forbidden HEAD" }, writable, "denied", () => {
+          assert.equal(git3(workspace, "for-each-ref", "refs/heads/forbidden"), "");
+        });
+        await check({ id: "git-object", tool: "exec_command", command: `/bin/sh -c "echo new-object | /usr/bin/git hash-object -w --stdin"` }, writable, "denied");
+        for (const [id2, path] of [["git-pointer", join7(workspace, ".git")], ["git-worktree-head", join7(gitDir, "HEAD")], ["git-common-config", join7(commonDir, "config")]]) {
+          await check({ id: id2, tool: "exec_command", command: `/bin/sh -c "echo changed > '${path}'"` }, writable, "denied");
+          await check({ id: `${id2}-patch`, tool: "apply_patch", patch: patchDelete(path) }, writable, "denied");
+        }
+        await check({ id: "scratch-write", tool: "exec_command", command: `/bin/sh -c "echo scratch > '${join7(scratch, "allowed.txt")}'"` }, writable, "allowed", () => assert.equal(readFileSync6(join7(scratch, "allowed.txt"), "utf8"), "scratch\n"));
+        await check({ id: "scratch-patch", tool: "apply_patch", patch: patchCreate(join7(scratch, "patch-allowed.txt")) }, writable, "allowed", () => assert.equal(readFileSync6(join7(scratch, "patch-allowed.txt"), "utf8"), "created\n"));
+        rmSync4(join7(scratch, "patch-allowed.txt"));
+        await check({ id: "fresh-resume-read", tool: "exec_command", command: "/bin/cat existing.txt", phase: "resume" }, writable, "allowed");
+        for (const testCase of networkCases) {
+          await check({ ...testCase, tool: "exec_command" }, writable, "denied", () => {
+            assert.equal(tcpRequests, tcpBaseline);
+            assert.equal(unixRequests, unixBaseline);
+          });
+        }
+      }
+      if (broker) {
+        for (const writable of [false, true]) {
+          for (const tool of ["list_mcp_resources", "list_mcp_resource_templates"]) {
+            await check({ id: `broker-${tool}-empty`, tool, payload: {} }, writable, "allowed");
+            await check({ id: `broker-${tool}-foreign`, tool, payload: { server: "foreign" } }, writable, "denied");
+          }
+          for (const server of ["kdd_run", "foreign"]) await check({ id: `broker-resource-read-${server}`, tool: "read_mcp_resource", payload: { server, uri: `file://${broker.configPath}` } }, writable, "denied");
+          for (const [operation, id2] of [["get_context", "context"], ["submit_report", "report"], ["request_question", "question"]]) {
+            const granted = operations2.includes(operation);
+            const before = brokerDb.prepare("SELECT COUNT(*) n FROM events").get();
+            await check({
+              id: `broker-${id2}`,
+              tool: operation,
+              unavailable: !granted,
+              payload: operation === "get_context" ? {} : { body: "native broker proof" }
+            }, writable, granted ? "allowed" : "denied", () => {
+              const writes = granted && operation !== "get_context";
+              assert.deepEqual(brokerDb.prepare("SELECT COUNT(*) n FROM events").get(), { n: before.n + (writes ? 1 : 0) });
+              if (writes) {
+                const event = brokerDb.prepare("SELECT actor_type,action,detail FROM events ORDER BY id DESC LIMIT 1").get();
+                assert.equal(event.actor_type, "ai");
+                assert.equal(event.action, operation === "submit_report" ? "run_report" : "run_question");
+                assert.equal(JSON.parse(event.detail).untrusted, true);
+              }
+            });
+          }
+          for (const path of [broker.configPath, broker.dbPath]) {
+            await check({ id: `broker-read-${path === broker.configPath ? "config" : "store"}`, tool: "exec_command", command: `/bin/cat '${path}'` }, writable, "denied");
+            await check({ id: `broker-patch-${path === broker.configPath ? "config" : "store"}`, tool: "apply_patch", patch: patchDelete(path) }, writable, "denied");
+          }
+          const cli = fileURLToPath(new URL("../../cli/dist/index.js", import.meta.url));
+          assert.ok(existsSync6(cli), "raw CLI fixture executable unavailable");
+          await check({ id: "broker-raw-cli-user", tool: "exec_command", command: `/bin/sh -c "KDD_DB='${broker.dbPath}' KDD_ACTOR=user '${broker.nodePath}' '${cli}' show 1 --json"` }, writable, "denied");
+        }
+        const eventsBeforeRevoke = brokerDb.prepare("SELECT COUNT(*) n FROM events").get();
+        await check({
+          id: "broker-live-revoke-operations",
+          tool: operations2[0],
+          revoke: true,
+          payload: operations2[0] === "get_context" ? {} : { body: "late proposal" }
+        }, true, "denied", () => {
+          assert.deepEqual(brokerDb.prepare("SELECT COUNT(*) n FROM events").get(), { n: eventsBeforeRevoke.n + 1 });
+        });
+      }
+    }
+  } catch (error) {
+    failures.push({ failure: error.message });
+  } finally {
+    brokerDb?.close();
+    tcpServer?.closeAllConnections();
+    if (tcpServer?.listening) await new Promise((resolve5) => tcpServer.close(() => resolve5()));
+    if (unixServer?.listening) await new Promise((resolve5) => unixServer.close(() => resolve5()));
+    rmSync4(root, { recursive: true, force: true });
+  }
+  return {
+    version,
+    model,
+    executableHash,
+    scriptHash,
+    guardHash,
+    applicable: failures.length === 0 && observations.length > 0,
+    rawDiagnostic,
+    preflight,
+    networkControls,
+    attempted: observations.length,
+    executed: observations.filter((o) => o.executed).length,
+    failures,
+    observations,
+    operations: operations2
+  };
+}
+
+// src/codex_permissions.ts
+function directory(path) {
+  try {
+    if (!isAbsolute4(path) || !lstatSync2(path).isDirectory()) throw new Error("not a real directory");
+    return realpathSync7(path);
+  } catch (error) {
+    throw new KddError(`native root unavailable: ${path}: ${error.message}`);
+  }
+}
+function assertWritableRoots(roots) {
+  if (!roots.length) throw new KddError("native writable roots are unknown");
+  const canonical2 = [...new Set(roots.map(directory))];
+  function scan(path) {
+    const before = lstatSync2(path);
+    if (!before.isDirectory()) {
+      if (before.nlink > 1) throw new KddError(`native hardlink in writable root: ${path}`);
+      return;
+    }
+    for (const name of readdirSync6(path)) scan(join8(path, name));
+    const after = lstatSync2(path);
+    if (!after.isDirectory() || before.dev !== after.dev || before.ino !== after.ino) {
+      throw new KddError(`native root changed during scan: ${path}`);
+    }
+  }
+  try {
+    for (const root of canonical2) scan(root);
+  } catch (error) {
+    if (error instanceof KddError) throw error;
+    throw new KddError(`native root scan incomplete: ${error.message}`);
+  }
+  return canonical2;
+}
+async function withNativeControllerLock(controlDir, action) {
+  const lock = join8(directory(controlDir), "native-launch.lock");
+  try {
+    mkdirSync6(lock, { mode: 448 });
+  } catch (error) {
+    if (error.code === "EEXIST") throw new KddError("native controller busy; stale locks require trusted recovery");
+    throw new KddError(`native controller lock unavailable: ${error.message}`);
+  }
+  const identity = lstatSync2(lock);
+  try {
+    return await action();
+  } finally {
+    const current = lstatSync2(lock);
+    if (identity.dev !== current.dev || identity.ino !== current.ino || !current.isDirectory()) {
+      throw new KddError("native controller lock replaced; trusted recovery required");
+    }
+    rmdirSync(lock);
+  }
+}
+function inside(parent, path) {
+  const suffix = relative(parent, path);
+  return suffix === "" || suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute4(suffix);
+}
+async function spawnCheckedNative(input) {
+  const { executable, cwd, phase, verified } = input;
+  const args = [...input.args];
+  const env = { ...input.env };
+  const roots = [...input.writableRoots];
+  if (phase !== "start" && phase !== "resume") throw new KddError("unknown native launch phase");
+  const controlDir = directory(input.controlDir);
+  const canonical2 = roots.map(directory);
+  if (canonical2.some((root) => inside(root, controlDir))) throw new KddError("native control directory is writable");
+  return withNativeControllerLock(controlDir, () => {
+    if (verified !== void 0) {
+      assertVerifiedCodexPackage(verified);
+      if (executable !== verified.executable || cwd !== verified.cwd || controlDir !== verified.controlDir || JSON.stringify(env) !== JSON.stringify(verified.env) || JSON.stringify(canonical2) !== JSON.stringify([verified.scratchDir, ...verified.writableRoot ? [verified.writableRoot] : []]) || args.length !== verified.argv.length + 1 || verified.argv.some((arg, i) => args[i] !== arg)) {
+        throw new KddError("native launch differs from verified package");
+      }
+    }
+    if (roots.some((root, index) => directory(root) !== canonical2[index])) throw new KddError("native root binding changed");
+    assertWritableRoots(canonical2);
+    const child = spawn2(executable, args, { cwd: resolve3(cwd), env, stdio: ["ignore", "pipe", "pipe"] });
+    return new Promise((resolveChild, reject) => {
+      child.once("error", reject);
+      child.once("spawn", () => {
+        child.removeListener("error", reject);
+        resolveChild(child);
+      });
+    });
+  });
+}
+function codexBrokerBinding(configPath, entryPath) {
+  try {
+    for (const path of [configPath, entryPath]) {
+      if (!isAbsolute4(path) || !lstatSync2(path).isFile() || lstatSync2(path).nlink !== 1) throw new KddError("native broker binding unavailable");
+    }
+    const config = JSON.parse(readFileSync7(configPath, "utf8"));
+    if ((lstatSync2(configPath).mode & 511) !== 384 || !config || Array.isArray(config) || Object.keys(config).sort().join(",") !== "dbPath,token" || typeof config.dbPath !== "string" || !isAbsolute4(config.dbPath) || realpathSync7(config.dbPath) !== config.dbPath || typeof config.token !== "string" || !/^[0-9a-f]{64}$/.test(config.token)) throw new KddError("native broker config denied");
+    for (const path of [config.dbPath, `${config.dbPath}-wal`, `${config.dbPath}-shm`]) {
+      try {
+        if (!lstatSync2(path).isFile() || lstatSync2(path).nlink !== 1) throw new KddError("native store alias denied");
+      } catch (error) {
+        if (error.code !== "ENOENT" || path === config.dbPath) throw error;
+      }
+    }
+    return { configPath: realpathSync7(configPath), entryPath: realpathSync7(entryPath), dbPath: config.dbPath, nodePath: realpathSync7(process.execPath) };
+  } catch (error) {
+    if (error instanceof KddError) throw error;
+    throw new KddError("native broker binding unavailable");
+  }
+}
+var digest2 = (value) => createHash7("sha256").update(value).digest("hex");
+var verifiedPackages = /* @__PURE__ */ new WeakMap();
+function closedCodexCatalog(model) {
+  return JSON.stringify({ models: [{
+    slug: model,
+    display_name: model,
+    description: "Managed coding tools",
+    base_instructions: "Follow the supplied task instructions.",
+    supported_reasoning_levels: [],
+    shell_type: "unified_exec",
+    visibility: "list",
+    supported_in_api: true,
+    priority: 0,
+    availability_nux: null,
+    upgrade: null,
+    support_verbosity: false,
+    default_verbosity: null,
+    apply_patch_tool_type: "freeform",
+    truncation_policy: { mode: "tokens", limit: 1e4 },
+    experimental_supported_tools: [],
+    tool_mode: "direct",
+    multi_agent_version: "disabled"
+  }] });
+}
+function fixedCodexConfig(filesystem, catalogPath, broker) {
+  const table = Object.entries(filesystem).map(([key, value]) => `${JSON.stringify(key)}=${JSON.stringify(value)}`).join(",");
+  return [
+    'model_provider="openai"',
+    `model_catalog_json=${JSON.stringify(catalogPath)}`,
+    'approval_policy="never"',
+    'default_permissions="kdd_probe"',
+    `permissions.kdd_probe.filesystem={${table}}`,
+    "permissions.kdd_probe.network.enabled=false",
+    'web_search="disabled"',
+    "project_doc_max_bytes=0",
+    "tools.experimental_request_user_input.enabled=false",
+    'shell_environment_policy.inherit="none"',
+    ...broker ? [`mcp_servers={kdd_run={command=${JSON.stringify(broker.nodePath)},args=${JSON.stringify([broker.entryPath, "--config", broker.configPath])},enabled=true,required=true,env_vars=[],default_tools_approval_mode="auto",startup_timeout_sec=10.0,tool_timeout_sec=10.0,enabled_tools=["get_context","submit_report","request_question"]}}`] : [],
+    "features={apply_patch_freeform=true,unified_exec=true,enable_request_compression=false,plugins=false,apps=false,connectors=false,enable_mcp_apps=false,codex_apps_mcp_2026_07_28=false,multi_agent=false,multi_agent_v2=false,multi_agent_mode=false,agent_message_board=false,computer_use=false,browser_use=false,browser_use_external=false,browser_use_full_cdp_access=false,in_app_browser=false,hooks=false,codex_hooks=false,plugin_hooks=false,shell_snapshot=false,shell_snapshot_v2=false,responses_websockets=false,responses_websockets_v2=false,skip_host_skill_discovery=true,skill_search=false,skill_mcp_dependency_install=false,goals=false,view_image=false,image_generation=false,imagegenext=false,js_repl=false,js_repl_tools_only=false,code_mode=false,code_mode_host=false,code_mode_only=false,memories=false,memory_tool=false,external_agent_memory_import=false,standalone_web_search=false,web_search=false,web_search_cached=false,web_search_request=false,search_tool=false,tool_search=false,tool_search_always_defer_mcp_tools=false,remote_models=false,remote_control=false,remote_plugin=false,daemon_auto_start=false,request_permissions=false,request_permissions_tool=false,request_rule=false,tool_call_mcp_elicitation=false,default_mode_request_user_input=false,api_key_model_discovery=false}"
+  ];
+}
+function fixedCodexArguments(cwd, model, config) {
+  const args = ["exec", "--ignore-user-config", "--ignore-rules", "--strict-config", "--ephemeral", "--skip-git-repo-check", "--json", "-C", cwd, "-m", model];
+  for (const override of config) args.push("-c", override);
+  return [...args, "--"];
+}
+function assertNoProjectConfig(roots) {
+  const ignoredUser = process.env.HOME ? resolve3(process.env.HOME, ".codex/config.toml") : void 0;
+  for (const root of roots) {
+    for (let dir = root; ; dir = dirname6(dir)) {
+      const config = join8(dir, ".codex/config.toml");
+      if (config !== ignoredUser) {
+        try {
+          lstatSync2(config);
+          throw new KddError("native project config overlay unsupported");
+        } catch (error) {
+          if (error.code !== "ENOENT") throw error;
+        }
+      }
+      if (dirname6(dir) === dir) break;
+    }
+  }
+}
+function assertVerifiedCodexPackage(packet) {
+  const binding = typeof packet === "object" && packet !== null ? verifiedPackages.get(packet) : void 0;
+  if (!binding) throw new KddError("unverified native package");
+  try {
+    if (binding.snapshot() !== binding.stamp) throw new KddError("native package binding changed");
+  } catch {
+    throw new KddError("native package binding changed or unavailable");
+  }
+}
+async function preflightCodex(input) {
+  const cwd = directory(input.cwd);
+  const scratchDir = directory(input.scratchDir);
+  const controlDir = directory(input.controlDir);
+  const executable = realpathSync7(input.executable);
+  const runtimeDir = realpathSync7(dirname6(fileURLToPath2(import.meta.url)));
+  const readableRoots = [...new Set(input.readableRoots.map(directory))];
+  const writableRoot = input.writableRoot ? directory(input.writableRoot) : void 0;
+  if (input.brokerConfigPath === void 0 !== (input.brokerEntryPath === void 0)) throw new KddError("incomplete native broker binding");
+  const broker = input.brokerConfigPath === void 0 ? void 0 : codexBrokerBinding(input.brokerConfigPath, input.brokerEntryPath);
+  const protectedPaths = [...new Set([
+    ...input.protectedPaths,
+    controlDir,
+    ...broker ? [broker.configPath, broker.entryPath, dirname6(broker.dbPath)] : []
+  ].map((path) => {
+    if (!isAbsolute4(path)) throw new KddError("native protected path must be absolute");
+    return realpathSync7(path);
+  }))];
+  const model = input.model;
+  if (typeof model !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_.:-]*$/.test(model)) throw new KddError("unsupported Codex model identifier");
+  if (!readableRoots.includes(cwd) || writableRoot && writableRoot !== cwd) throw new KddError("unsupported Codex workspace scope");
+  const writableRoots = [scratchDir, ...writableRoot ? [writableRoot] : []];
+  const overlaps = (a, b) => inside(a, b) || inside(b, a);
+  if (readableRoots.some((root) => overlaps(root, scratchDir)) || writableRoots.some((root) => [...protectedPaths, runtimeDir, executable].some((path) => overlaps(root, path)))) throw new KddError("native root/control/runtime overlap");
+  assertNoProjectConfig([cwd]);
+  if (process.platform !== "darwin") throw new KddError("unsupported Codex host");
+  const version = execFileSync6(executable, ["--version"], { encoding: "utf8" }).trim();
+  if (version !== "codex-cli 0.157.0") throw new KddError("unsupported Codex version");
+  const resolveGitMetadata = () => [...new Set(readableRoots.flatMap((root) => [join8(root, ".git"), ...["--absolute-git-dir", "--git-common-dir"].map((flag) => realpathSync7(execFileSync6("/usr/bin/git", ["-C", root, "rev-parse", "--path-format=absolute", flag], { encoding: "utf8" }).trim()))]))];
+  const gitMetadata = resolveGitMetadata();
+  const filesystem = { ":minimal": "read" };
+  for (const path of readableRoots) filesystem[path] = "read";
+  for (const path of writableRoots) filesystem[path] = "write";
+  for (const path of protectedPaths) filesystem[path] = "deny";
+  for (const path of [...gitMetadata, join8(cwd, ".codex")]) filesystem[path] = "read";
+  const catalog = closedCodexCatalog(model);
+  const catalogPath = join8(controlDir, `codex-catalog-${digest2(catalog)}.json`);
+  filesystem[catalogPath] = "deny";
+  const argv = Object.freeze(fixedCodexArguments(cwd, model, fixedCodexConfig(filesystem, catalogPath, broker)));
+  if (!process.env.HOME) throw new KddError("Codex home unavailable");
+  const env = Object.freeze({ HOME: process.env.HOME, PATH: "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin", TMPDIR: scratchDir, LANG: "en_US.UTF-8" });
+  return withNativeControllerLock(controlDir, async () => {
+    assertWritableRoots(writableRoots);
+    if (existsSync7(catalogPath)) {
+      if (lstatSync2(catalogPath).isSymbolicLink() || readFileSync7(catalogPath, "utf8") !== catalog) throw new KddError("native catalog binding changed");
+    } else writeFileSync5(catalogPath, catalog, { mode: 384, flag: "wx" });
+    const snapshot2 = () => {
+      assertNoProjectConfig([cwd]);
+      assertWritableRoots(writableRoots);
+      if (JSON.stringify(resolveGitMetadata()) !== JSON.stringify(gitMetadata)) throw new KddError("native Git binding changed");
+      const catalogStat = lstatSync2(catalogPath);
+      if (!catalogStat.isFile() || catalogStat.nlink !== 1) throw new KddError("native catalog binding alias");
+      const currentBroker = broker ? codexBrokerBinding(broker.configPath, broker.entryPath) : void 0;
+      const identities = [.../* @__PURE__ */ new Set([
+        cwd,
+        controlDir,
+        ...readableRoots,
+        ...writableRoots,
+        ...protectedPaths,
+        ...gitMetadata,
+        ...broker ? [broker.dbPath, broker.nodePath] : []
+      ])].map((path) => {
+        const stat = lstatSync2(path);
+        if (stat.isSymbolicLink()) throw new KddError("native binding alias");
+        return [path, stat.dev, stat.ino];
+      });
+      return digest2(JSON.stringify({
+        identities,
+        argv,
+        env,
+        executable,
+        version,
+        gitPointers: gitMetadata.filter((path) => lstatSync2(path).isFile()).map((path) => [path, digest2(readFileSync7(path))]),
+        executableHash: digest2(readFileSync7(executable)),
+        catalogHash: digest2(readFileSync7(catalogPath)),
+        broker: currentBroker,
+        brokerEntryHash: broker ? digest2(readFileSync7(broker.entryPath)) : void 0,
+        nodeHash: broker ? digest2(readFileSync7(broker.nodePath)) : void 0,
+        runtimeHash: digest2(readFileSync7(fileURLToPath2(import.meta.url)))
+      }));
+    };
+    const stamp = snapshot2();
+    const evidence2 = await observeCodexNative(executable, false, model, broker);
+    if (!evidence2.applicable || evidence2.rawDiagnostic || evidence2.observations.length !== (broker ? 158 : 129) || evidence2.executed !== evidence2.observations.length) throw new KddError("Codex native enforcement unverified", { cause: {
+      expected: broker ? 158 : 129,
+      attempted: evidence2.attempted,
+      executed: evidence2.executed,
+      applicable: evidence2.applicable,
+      observations: evidence2.observations.filter((o) => o.failure).map((o) => ({
+        caseId: o.caseId,
+        mode: o.mode,
+        outcome: o.outcome,
+        executed: o.executed,
+        timedOut: o.timedOut,
+        providerError: !!o.providerError
+      })),
+      failedGuards: evidence2.failures.filter((f) => f.caseId).map((f) => f.caseId)
+    } });
+    if (snapshot2() !== stamp) throw new KddError("native package binding changed during preflight");
+    const results = Object.freeze(evidence2.observations.filter((result2) => !result2.control).map((result2) => Object.freeze({
+      caseId: `${result2.mode}:${result2.caseId}`,
+      tool: result2.tool,
+      outcome: result2.outcome,
+      executed: result2.executed,
+      unchangedProtectedBytes: result2.unchangedProtectedBytes
+    })));
+    const packet = Object.freeze({
+      executable,
+      version,
+      cwd,
+      controlDir,
+      readableRoots: Object.freeze(readableRoots),
+      writableRoot,
+      scratchDir,
+      protectedPaths: Object.freeze(protectedPaths),
+      argv,
+      env,
+      configHash: stamp,
+      results
+    });
+    verifiedPackages.set(packet, { stamp, snapshot: snapshot2 });
+    return packet;
+  });
+}
+
+// src/run_inputs.ts
+var denied = () => new KddError("run input snapshot denied");
+function runInputHash(snapshot2) {
+  return digest({ ...snapshot2, inputHash: void 0, response: {
+    ...snapshot2.response,
+    inputs: { ...snapshot2.response.inputs, inputHash: void 0 }
+  } });
+}
+function readRunInputSnapshotDb(db, authorityId) {
+  if (!db.inTransaction || typeof authorityId !== "string" || !/^[0-9a-f]{32}$/.test(authorityId)) throw denied();
+  try {
+    const row = db.prepare("SELECT * FROM run_input_snapshots WHERE authority_id=?").get(authorityId);
+    const authority = db.prepare("SELECT * FROM run_authorities WHERE authority_id=?").get(authorityId);
+    if (!row || !authority) throw denied();
+    const snapshot2 = JSON.parse(row.payload_json), grant = JSON.parse(authority.grant_json);
+    shape(snapshot2, ["authorityId", "inputHash", "createdAt", "response", "validation"]);
+    const { response: r, validation: v } = snapshot2, inputs = r.inputs;
+    shape(v, ["repositories", "ownership", "inputResults", "artifacts"]);
+    shape(inputs, [
+      "schemaVersion",
+      "authorityId",
+      "inputHash",
+      "createdAt",
+      "budget",
+      "requirements",
+      "rules",
+      "knowledge",
+      "workItem",
+      "dependencies",
+      "repositories",
+      "operations",
+      "nativeConfigHash"
+    ]);
+    integer(snapshot2.createdAt, 0);
+    if (snapshot2.authorityId !== authorityId || inputs.authorityId !== authorityId || inputs.schemaVersion !== 1 || row.created_at !== snapshot2.createdAt || inputs.createdAt !== snapshot2.createdAt || snapshot2.inputHash !== row.input_hash || inputs.inputHash !== row.input_hash || runInputHash(snapshot2) !== row.input_hash || r.projectId !== projectOf(db).project_id || grant.projectId !== r.projectId || r.taskId !== authority.task_id || grant.taskId !== r.taskId || r.workItemId !== authority.work_item_id || grant.workItemId !== r.workItemId || r.runId !== authority.run_id || grant.runId !== r.runId || r.generation !== authority.generation || grant.generation !== r.generation || digest(inputs.operations) !== digest(grant.operations) || inputs.nativeConfigHash !== grant.native.configHash || ![
+      inputs.requirements,
+      inputs.rules,
+      inputs.knowledge,
+      inputs.dependencies,
+      inputs.repositories,
+      v.repositories,
+      v.inputResults,
+      v.artifacts
+    ].every(Array.isArray)) throw denied();
+    return snapshot2;
+  } catch {
+    throw denied();
+  }
+}
+function persistRunInputSnapshotDb(db, snapshot2) {
+  if (!db.inTransaction) throw denied();
+  db.prepare("INSERT INTO run_input_snapshots VALUES(?,?,?,?)").run(snapshot2.authorityId, snapshot2.inputHash, JSON.stringify(snapshot2), snapshot2.createdAt);
+  readRunInputSnapshotDb(db, snapshot2.authorityId);
+}
+function runInputSnapshot(handle, ref) {
+  const db = controllerDb(handle);
+  return db.transaction(() => {
+    shape(ref, ["projectId", "authorityId"]);
+    if (ref.projectId !== projectOf(db).project_id) throw denied();
+    return readRunInputSnapshotDb(db, ref.authorityId);
+  })();
+}
+function runContextWireBytes(response) {
+  return Buffer.byteLength(JSON.stringify({ content: [{ type: "text", text: JSON.stringify(response) }] }), "utf8");
+}
+function safeContext(value) {
+  const encoded = JSON.stringify(value);
+  if (redact(encoded) !== encoded || Buffer.from(encoded).toString("utf8") !== encoded) throw new KddError("private or malformed run input");
+}
+function readRunArtifact(db, path, hash, maxBytes, privateRoots, checkouts) {
+  try {
+    if (!isAbsolute5(path) || resolve4(path) !== path || realpathSync8(path) !== path || !/^[0-9a-f]{64}$/.test(hash)) throw denied();
+    for (let ancestor = path; ; ancestor = dirname7(ancestor)) {
+      if (lstatSync3(ancestor).isSymbolicLink()) throw denied();
+      if (dirname7(ancestor) === ancestor) break;
+    }
+    const fileRoot = filesDir(db.name), stored = existsSync8(fileRoot) && realpathSync8(fileRoot) === fileRoot && inside(fileRoot, path);
+    if (memoryPrivatePath(stored ? relative2(fileRoot, path) : path) || privateRoots.some((root) => inside(root, path) && !(stored && root !== fileRoot && inside(root, fileRoot)) && !checkouts.some((checkout) => root !== checkout && inside(root, checkout) && inside(checkout, path) && !memoryPrivatePath(relative2(checkout, path))))) throw denied();
+    const before = lstatSync3(path);
+    if (!before.isFile() || before.nlink !== 1 || before.size > maxBytes) throw denied();
+    for (const privatePath of [db.name, db.name + "-wal", db.name + "-shm"]) {
+      if (path === privatePath) throw denied();
+      if (existsSync8(privatePath)) {
+        const s = lstatSync3(privatePath);
+        if (s.dev === before.dev && s.ino === before.ino) throw denied();
+      }
+    }
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const file = fstatSync(fd);
+      if (file.dev !== before.dev || file.ino !== before.ino || !file.isFile() || file.nlink !== 1 || file.size > maxBytes) throw denied();
+      const bytes2 = readFileSync8(fd), after = fstatSync(fd), current = lstatSync3(path);
+      if (bytes2.length !== file.size || after.dev !== file.dev || after.ino !== file.ino || after.nlink !== 1 || after.size !== file.size || after.mtimeMs !== file.mtimeMs || after.ctimeMs !== file.ctimeMs || current.dev !== file.dev || current.ino !== file.ino || current.isSymbolicLink() || createHash8("sha256").update(bytes2).digest("hex") !== hash) throw denied();
+      const body = new TextDecoder("utf-8", { fatal: true }).decode(bytes2);
+      safeContext(body);
+      return body;
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    throw new KddError("unsafe or changed run input artifact");
+  }
+}
+function runInputRequirements(db, grant) {
+  const task = scopedTask(db, { projectId: grant.projectId, taskId: grant.taskId });
+  const ids = [...task.parent_id === null ? [] : [task.parent_id], task.id];
+  if (db.prepare("SELECT 1 FROM work_items WHERE id=?").get(grant.workItemId)) {
+    const item = scopedWorkItem(db, { projectId: grant.projectId, workItemId: grant.workItemId });
+    for (const input of item.inputs) if (!ids.includes(input.task.taskId)) ids.push(input.task.taskId);
+  }
+  return ids.map((taskId) => {
+    const ref = { projectId: grant.projectId, taskId }, t = scopedTask(db, ref);
+    return {
+      task: ref,
+      parentId: t.parent_id,
+      hash: contractHash(db, ref),
+      title: t.title,
+      body: t.body,
+      criteria: db.prepare("SELECT id,text FROM criteria WHERE task_id=? ORDER BY id").all(taskId)
+    };
+  });
+}
+function buildRunInputSnapshot(db, original, authorityId, options = {}, observers = {}, privateRoots = []) {
+  if (!db.inTransaction || !/^[0-9a-f]{32}$/.test(authorityId)) throw denied();
+  const grant = structuredClone(original);
+  shape(options, [], ["maxBytes", "query", "k"]);
+  const maxBytes = options.maxBytes ?? CAPS.agentDetailBytes;
+  integer(maxBytes);
+  if (maxBytes > CAPS.agentDetailBytes) throw new KddError("run input budget exceeds limit");
+  if (options.k !== void 0) {
+    integer(options.k);
+    if (options.k > CAPS.recallKMax) throw denied();
+  }
+  const task = scopedTask(db, { projectId: grant.projectId, taskId: grant.taskId });
+  const repositories = grant.repositories.map((repo) => {
+    const checkoutPath = memoryCheckout(db, repo.repoId, repo.checkoutPath);
+    if (canonicalCommonDir(checkoutPath) !== repo.commonDir) throw denied();
+    const commit = execFileSync7(
+      "/usr/bin/git",
+      ["--no-replace-objects", "rev-parse", "--verify", "HEAD^{commit}"],
+      { cwd: checkoutPath, encoding: "utf8", stdio: "pipe", maxBuffer: 4096 }
+    ).trim();
+    memoryCommit(db, repo.repoId, commit, checkoutPath);
+    return { repoId: repo.repoId, checkoutPath, commit };
+  });
+  const view = { scope: { projectId: grant.projectId, taskId: grant.taskId }, repositories };
+  const requirements = runInputRequirements(db, grant), eligible = selectMemory(db, view), rules = eligible.filter((r) => r.kind === "rule");
+  const modeled = !!db.prepare("SELECT 1 FROM work_items WHERE id=?").get(grant.workItemId);
+  const item = modeled ? scopedWorkItem(db, { projectId: grant.projectId, workItemId: grant.workItemId }) : null;
+  let inputResults = [];
+  if (item) {
+    if (!grant.ownership) throw new KddError("modeled work requires ownership");
+    checkOwnershipRef(db, grant.ownership);
+    const o = db.prepare("SELECT * FROM work_item_owners WHERE work_item_id=? AND fence=? AND owner_id=? AND revision=? AND released_at IS NULL").get(item.ref.workItemId, grant.ownership.fence, grant.ownership.ownerId, grant.ownership.revision);
+    if (!o || item.task.taskId !== task.id || item.revision !== grant.ownership.revision || item.fence !== grant.ownership.fence || !inputsCurrent(db, item)) throw denied();
+    const pins = JSON.parse(o.inputs_json);
+    if (pins.projectId !== grant.projectId || pins.inputsHash !== item.inputsHash || !pinnedInputsCurrent(db, item, pins.inputResults)) throw denied();
+    if (grant.repositories.some((r) => r.write && (!o.write_access || item.definition.repoId !== r.repoId))) throw denied();
+    inputResults = pins.inputResults;
+    for (const dep of item.dependencies) if (dep.binding.kind === "code" || dep.binding.kind === "merged") {
+      const binding = dep.binding;
+      if (!repositories.some((r) => r.repoId === binding.repoId && r.commit === binding.baseHead)) throw new KddError("dependency base differs from run input");
+    }
+    if (!dependencyProjection(db, item, observers).ready) throw new KddError("run input dependencies not verified");
+  } else if (grant.ownership) throw denied();
+  const artifacts = [];
+  const dependencies = inputResults.map((pin2) => {
+    const record = rowResult(db, pin2.resultId), payload = record.payload;
+    if (payload.kind === "contract") {
+      const body = readRunArtifact(db, payload.artifact.path, payload.artifact.sha256, maxBytes, privateRoots, repositories.map((r) => r.checkoutPath));
+      artifacts.push({ resultId: record.id, ...payload.artifact });
+      return {
+        edgeKey: pin2.edgeKey,
+        resultId: record.id,
+        payloadHash: digest(payload),
+        binding: record.binding,
+        payload: { kind: payload.kind, repoId: payload.repoId, version: payload.version, checkRefs: [...payload.checkRefs], head: payload.head },
+        artifact: { sha256: payload.artifact.sha256, body }
+      };
+    }
+    return { edgeKey: pin2.edgeKey, resultId: record.id, payloadHash: digest(payload), binding: record.binding, payload };
+  });
+  const query = options.query ?? task.title;
+  if (typeof query !== "string" || query.length > CAPS.bodyChars) throw denied();
+  safeContext(query);
+  let match = "";
+  try {
+    match = sanitizeQuery(query);
+  } catch (error) {
+    if (!(error instanceof KddError) || error.message !== "empty query") throw error;
+  }
+  const hits = match ? queryMemoryDb(db, view, query, { k: options.k }, ["fact", "decision"]) : [];
+  const optional = hits.filter((h) => h.kind === "fact" || h.kind === "decision").map((h) => memoryRecordDb(db, h.ref.entryId, h.ref.revision));
+  const createdAt = now(), snapshot2 = {
+    authorityId,
+    inputHash: "0".repeat(64),
+    createdAt,
+    response: {
+      projectId: grant.projectId,
+      taskId: grant.taskId,
+      workItemId: grant.workItemId,
+      runId: grant.runId,
+      generation: grant.generation,
+      task: { title: task.title, body: task.body, status: task.status },
+      criteria: listCriteria(db, task.id).map((c) => ({ id: c.id, text: c.text, checked: c.checked_at !== null })),
+      decisions: db.prepare(`SELECT d.slug,d.title FROM decisions d,json_each(d.source_tasks) s WHERE CAST(s.value AS INTEGER)=? ORDER BY d.slug`).all(task.id),
+      inputs: {
+        schemaVersion: 1,
+        authorityId,
+        inputHash: "0".repeat(64),
+        createdAt,
+        budget: { maxBytes, omittedRecords: optional.length },
+        requirements,
+        rules,
+        knowledge: [],
+        workItem: item ? { ref: item.ref, revision: item.revision, inputsHash: item.inputsHash, definition: item.definition } : null,
+        dependencies,
+        repositories: repositories.map((r, i) => ({ repoId: r.repoId, commit: r.commit, write: grant.repositories[i].write })),
+        operations: [...grant.operations],
+        nativeConfigHash: grant.native.configHash
+      }
+    },
+    validation: { repositories, ownership: grant.ownership ?? null, inputResults, artifacts }
+  };
+  safeContext(snapshot2.response);
+  const finalize = () => {
+    snapshot2.inputHash = runInputHash(snapshot2);
+    snapshot2.response.inputs.inputHash = snapshot2.inputHash;
+    return runContextWireBytes(snapshot2.response);
+  };
+  let requiredBytes = finalize();
+  if (requiredBytes > maxBytes) throw new KddError(`run input budget exceeded: requiredBytes=${requiredBytes} limit=${maxBytes}`);
+  for (const record of optional) {
+    safeContext(record);
+    snapshot2.response.inputs.knowledge.push(record);
+    snapshot2.response.inputs.budget.omittedRecords--;
+    if (finalize() > maxBytes) {
+      snapshot2.response.inputs.knowledge.pop();
+      snapshot2.response.inputs.budget.omittedRecords++;
+      finalize();
+    }
+  }
+  if (canonical(requirements) !== canonical(runInputRequirements(db, grant)) || digest(rules) !== digest(selectMemory(db, view).filter((r) => r.kind === "rule")) || item && (!inputsCurrent(db, item) || !pinnedInputsCurrent(db, scopedWorkItem(db, item.ref), inputResults))) throw new KddError("run inputs changed during assembly");
+  for (const repo of repositories) {
+    const head = execFileSync7("/usr/bin/git", ["--no-replace-objects", "rev-parse", "--verify", "HEAD^{commit}"], { cwd: repo.checkoutPath, encoding: "utf8", stdio: "pipe" }).trim();
+    if (head !== repo.commit) throw new KddError("run repository changed during assembly");
+  }
+  return snapshot2;
+}
+
+// src/run_inputs_current.ts
+function runInputChangesDb(db, snapshot2) {
+  if (!db.inTransaction) throw new KddError("run input check requires transaction");
+  const { response, validation } = snapshot2, inputs = response.inputs, changes = [];
+  const memoryRef = (record) => ({ revision: record.revision, hash: record.hash });
+  for (const required of inputs.requirements) {
+    try {
+      const current = scopedTask(db, required.task);
+      if (current.parent_id !== required.parentId) changes.push({ reason: "membership_changed", taskId: required.task.taskId });
+      if (contractHash(db, required.task) !== required.hash) changes.push({ reason: "requirements_changed", taskId: required.task.taskId });
+    } catch {
+      changes.push({ reason: "requirements_changed", taskId: required.task.taskId });
+    }
+  }
+  let reposCurrent = true;
+  for (const repo of validation.repositories) {
+    try {
+      memoryCommit(db, repo.repoId, repo.commit, repo.checkoutPath);
+    } catch {
+      reposCurrent = false;
+      changes.push({ reason: "repository_changed", repoId: repo.repoId });
+    }
+  }
+  if (inputs.workItem) {
+    try {
+      const saved = inputs.workItem, item = scopedWorkItem(db, saved.ref);
+      if (item.task.taskId !== response.taskId || item.revision !== saved.revision || item.inputsHash !== saved.inputsHash || !inputsCurrent(db, item) || canonical(item.definition) !== canonical(saved.definition)) changes.push({ reason: "work_item_changed" });
+      const o = validation.ownership;
+      const row = o ? db.prepare("SELECT * FROM work_item_owners WHERE work_item_id=? AND fence=? AND owner_id=? AND revision=? AND released_at IS NULL").get(o.workItemId, o.fence, o.ownerId, o.revision) : void 0;
+      if (!o || !row || item.fence !== o.fence || item.revision !== o.revision || JSON.parse(row.inputs_json).inputsHash !== saved.inputsHash || canonical(JSON.parse(row.inputs_json).inputResults) !== canonical(validation.inputResults)) changes.push({ reason: "ownership_changed" });
+      if (!pinnedInputsCurrent(db, item, validation.inputResults)) changes.push({ reason: "dependency_changed" });
+    } catch {
+      changes.push({ reason: "work_item_changed" });
+    }
+  }
+  for (const dependency of inputs.dependencies) {
+    try {
+      const r = rowResult(db, dependency.resultId);
+      if (r.invalidatedAt !== null || digest(r.payload) !== dependency.payloadHash || canonical(r.binding) !== canonical(dependency.binding))
+        changes.push({ reason: "dependency_changed", resultId: r.id });
+      if (r.payload.kind === "readiness" && r.payload.expiresAt !== null && r.payload.expiresAt <= now()) changes.push({ reason: "readiness_expired", resultId: r.id });
+    } catch {
+      changes.push({ reason: "dependency_changed", resultId: dependency.resultId });
+    }
+  }
+  for (const artifact of validation.artifacts) {
+    try {
+      readRunArtifact(db, artifact.path, artifact.sha256, inputs.budget.maxBytes, [], validation.repositories.map((r) => r.checkoutPath));
+    } catch {
+      changes.push({ reason: "dependency_changed", resultId: artifact.resultId });
+    }
+  }
+  for (const memory of [...inputs.rules, ...inputs.knowledge]) {
+    try {
+      const current = memoryRecordDb(db, memory.entryId);
+      if (current.revision !== memory.revision || current.hash !== memory.hash || current.status !== "active")
+        changes.push({ reason: "memory_changed", entryId: memory.entryId, previous: memoryRef(memory), current: memoryRef(current) });
+    } catch {
+      changes.push({ reason: "memory_changed", entryId: memory.entryId, previous: memoryRef(memory), current: null });
+    }
+  }
+  if (reposCurrent) {
+    try {
+      const view = { scope: { projectId: response.projectId, taskId: response.taskId }, repositories: validation.repositories };
+      const saved = new Map(inputs.rules.map((r) => [r.entryId, memoryRef(r)]));
+      const current = new Map(selectMemory(db, view).filter((r) => r.kind === "rule").map((r) => [r.entryId, memoryRef(r)]));
+      for (const entryId of /* @__PURE__ */ new Set([...saved.keys(), ...current.keys()])) {
+        const previous = saved.get(entryId) ?? null, next = current.get(entryId) ?? null;
+        if (canonical(previous) !== canonical(next)) changes.push({ reason: "rules_changed", entryId, previous, current: next });
+      }
+    } catch {
+      changes.push({ reason: "rules_changed" });
+    }
+  }
+  return [...new Map(changes.map((c) => [canonical(c), c])).values()].sort((a, b) => canonical(a).localeCompare(canonical(b)));
+}
+function assertRunInputsCurrentDb(db, authorityId) {
+  const snapshot2 = readRunInputSnapshotDb(db, authorityId);
+  if (runInputChangesDb(db, snapshot2).length) throw new KddError("run inputs stale; explicit update required");
+}
+function assertOwnedRunInputsCurrentDb(db, owner) {
+  const rows = db.prepare("SELECT authority_id,grant_json FROM run_authorities WHERE work_item_id=? ORDER BY generation DESC").all(owner.workItemId);
+  for (const row of rows) {
+    let grant;
+    try {
+      grant = JSON.parse(row.grant_json);
+    } catch {
+      throw new KddError("owned run inputs denied");
+    }
+    if (!grant.ownership) throw new KddError("owned run inputs missing");
+    if (canonical(grant.ownership) === canonical(owner)) {
+      assertRunInputsCurrentDb(db, row.authority_id);
+      return;
+    }
+  }
+}
+function checkRunInputs(handle, ref) {
+  const db = controllerDb(handle);
+  return db.transaction(() => {
+    shape(ref, ["projectId", "authorityId"]);
+    if (ref.projectId !== projectOf(db).project_id || typeof ref.authorityId !== "string" || !/^[0-9a-f]{32}$/.test(ref.authorityId)) throw new KddError("run input reference denied");
+    const row = db.prepare("SELECT task_id,grant_json FROM run_authorities WHERE authority_id=?").get(ref.authorityId);
+    if (!row || JSON.parse(row.grant_json).projectId !== ref.projectId) throw new KddError("run input reference denied");
+    let inputHash = null, changes;
+    try {
+      const snapshot2 = readRunInputSnapshotDb(db, ref.authorityId);
+      inputHash = snapshot2.inputHash;
+      changes = runInputChangesDb(db, snapshot2);
+    } catch {
+      changes = [{ reason: "snapshot_missing" }];
+    }
+    if (!changes.length) return { status: "current", authorityId: ref.authorityId, inputHash };
+    const changeHash = digest(changes);
+    const existing = db.prepare(`SELECT id FROM events WHERE action='run_inputs_changed' AND task_id=?
+      AND json_extract(detail,'$.authorityId')=? AND json_extract(detail,'$.inputHash') IS ? AND json_extract(detail,'$.changeHash')=? ORDER BY id LIMIT 1`).get(row.task_id, ref.authorityId, inputHash, changeHash);
+    const eventId = existing?.id ?? appendEvent(db, row.task_id, controllerActor, "run_inputs_changed", { authorityId: ref.authorityId, inputHash, changeHash, changes });
+    return { status: "update_required", authorityId: ref.authorityId, inputHash, changeHash, changes, eventId };
+  }).immediate();
+}
+
+// src/execution.ts
+var controllerActor = { type: "ai", id: "controller" };
+function shape(value, required, optional = []) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((k) => !required.includes(k) && !optional.includes(k)) || required.some((k) => !Object.hasOwn(value, k))) throw new KddError("invalid input shape");
+}
+function text(value) {
+  if (typeof value !== "string" || !value.trim()) throw new KddError("invalid nonempty string");
+}
+function integer(value, min = 1) {
+  if (!Number.isSafeInteger(value) || value < min) throw new KddError("invalid safe integer");
+}
+function mode(value) {
+  if (value !== "manual" && value !== "orchestrated") throw new KddError("invalid execution mode");
+}
+function scopedTask(db, ref) {
+  shape(ref, ["projectId", "taskId"]);
+  text(ref.projectId);
+  integer(ref.taskId);
+  if (ref.projectId !== projectOf(db).project_id) throw new KddError("foreign project reference");
+  return mustGetTask(db, ref.taskId);
+}
+function contractHash(db, ref) {
+  const task = scopedTask(db, ref);
+  const criteria = db.prepare("SELECT id,text FROM criteria WHERE task_id=? ORDER BY id").all(task.id);
+  return createHash9("sha256").update(JSON.stringify({
+    projectId: ref.projectId,
+    taskId: task.id,
+    title: task.title,
+    body: task.body,
+    criteria
+  })).digest("hex");
+}
+function taskContractHash(handle, ref) {
+  const db = controllerDb(handle);
+  return db.transaction(() => contractHash(db, ref))();
+}
+function checkAuthority(db, task, binding) {
+  scopedTask(db, task);
+  shape(binding, ["authorityId", "workItemId", "runId", "generation"]);
+  text(binding.authorityId);
+  text(binding.workItemId);
+  text(binding.runId);
+  integer(binding.generation);
+  assertRunAuthorityBinding(db, task.taskId, binding);
+}
+function validateCreationSource(db, source) {
+  shape(source, source.kind === "manual" ? ["kind", "sourceTask", "instructionRef"] : ["kind", "sourceTask", "authority", "proposalEventId"]);
+  scopedTask(db, source.sourceTask);
+  if (source.kind === "manual") {
+    text(source.instructionRef);
+    return { source_task_id: source.sourceTask.taskId, instruction_ref: source.instructionRef };
+  }
+  if (source.kind !== "run") throw new KddError("invalid source kind");
+  checkAuthority(db, source.sourceTask, source.authority);
+  integer(source.proposalEventId);
+  const event = db.prepare("SELECT detail FROM events WHERE id=? AND task_id=? AND action='run_report'").get(source.proposalEventId, source.sourceTask.taskId);
+  const detail = event?.detail ? JSON.parse(event.detail) : null;
+  if (!detail || detail.work_item_id !== source.authority.workItemId || detail.run_id !== source.authority.runId || detail.generation !== source.authority.generation || detail.untrusted !== true) throw new KddError("invalid proposal event");
+  return {
+    source_task_id: source.sourceTask.taskId,
+    source_work_item_id: source.authority.workItemId,
+    source_run_id: source.authority.runId,
+    generation: source.authority.generation,
+    proposal_event_id: source.proposalEventId
+  };
+}
+function createSubtasks(handle, input) {
+  const db = controllerDb(handle);
+  return db.transaction(() => {
+    shape(input, ["parent", "expectedParentHash", "source", "children"]);
+    const parent = scopedTask(db, input.parent);
+    if (parent.parent_id !== null) throw new KddError("parent must be a root task");
+    text(input.expectedParentHash);
+    if (contractHash(db, input.parent) !== input.expectedParentHash) throw new KddError("stale parent contract");
+    const provenance = validateCreationSource(db, input.source);
+    if (!Array.isArray(input.children) || !input.children.length) throw new KddError("empty children");
+    const keys = /* @__PURE__ */ new Set();
+    for (const child of input.children) {
+      shape(child, ["key", "title", "criteria"], ["body", "kind", "priority", "area", "trackId", "executionMode"]);
+      text(child.key);
+      text(child.title);
+      if (keys.has(child.key)) throw new KddError("duplicate child key");
+      keys.add(child.key);
+      if (!Array.isArray(child.criteria) || !child.criteria.length) throw new KddError("empty criteria");
+      child.criteria.forEach(text);
+      if (child.body !== void 0 && typeof child.body !== "string") throw new KddError("invalid body");
+      if (child.area !== void 0) text(child.area);
+      if (child.trackId !== void 0) integer(child.trackId);
+      if (child.kind !== void 0 && !KINDS.includes(child.kind)) throw new KddError("invalid kind");
+      if (child.priority !== void 0 && !PRIORITIES.includes(child.priority)) throw new KddError("invalid priority");
+      if (child.executionMode !== void 0) mode(child.executionMode);
+    }
+    const children = /* @__PURE__ */ Object.create(null);
+    for (const child of input.children) {
+      const row = addTask(db, {
+        title: child.title,
+        body: child.body,
+        criteria: [...child.criteria],
+        kind: child.kind,
+        priority: child.priority,
+        area: child.area,
+        track_id: child.trackId
+      }, controllerActor);
+      db.prepare("UPDATE tasks SET parent_id=?,execution_mode=? WHERE id=?").run(parent.id, child.executionMode ?? parent.execution_mode, row.id);
+      appendEvent(db, row.id, controllerActor, "subtask_created", { parent_task_id: parent.id, ...provenance });
+      children[child.key] = mustGetTask(db, row.id);
+    }
+    return children;
+  }).immediate();
+}
+function listSubtasks(handle, parent) {
+  const db = controllerDb(handle);
+  scopedTask(db, parent);
+  return db.prepare("SELECT * FROM tasks WHERE parent_id=? ORDER BY id").all(parent.taskId);
+}
+var newId = () => randomBytes2(16).toString("hex");
+function canonical(value) {
+  const sort = (v) => Array.isArray(v) ? v.map(sort) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sort(v[k])])) : v;
+  return JSON.stringify(sort(value));
+}
+var digest = (value) => createHash9("sha256").update(canonical(value)).digest("hex");
+function strings(value) {
+  if (!Array.isArray(value)) throw new KddError("invalid strings");
+  value.forEach(text);
+  if (new Set(value).size !== value.length) throw new KddError("duplicate strings");
+}
+function dependencyKind(value) {
+  if (!["contract", "code", "merged", "readiness"].includes(value)) throw new KddError("invalid dependency kind");
+}
+function checkRepo(db, repoId) {
+  if (repoId === null) return;
+  text(repoId);
+  if (!db.prepare("SELECT 1 FROM repositories WHERE repo_id=?").get(repoId)) throw new KddError("unknown repository");
+}
+function assertNoHandoff(db, taskId) {
+  if (db.prepare("SELECT 1 FROM execution_handoffs WHERE task_id=? AND completed_at IS NULL").get(taskId)) {
+    throw new KddError("task handoff pending");
+  }
+}
+function scopedWorkItem(db, ref, revision) {
+  shape(ref, ["projectId", "workItemId"]);
+  text(ref.projectId);
+  text(ref.workItemId);
+  if (ref.projectId !== projectOf(db).project_id) throw new KddError("foreign project reference");
+  const row = db.prepare("SELECT * FROM work_items WHERE id=?").get(ref.workItemId);
+  if (!row) throw new KddError("work item not found");
+  if (revision !== void 0) integer(revision);
+  const rev = revision ?? row.current_revision;
+  const contract = db.prepare("SELECT * FROM work_item_revisions WHERE work_item_id=? AND revision=?").get(row.id, rev);
+  if (!contract) throw new KddError("work item revision not found");
+  const dependencies = db.prepare(`SELECT * FROM work_item_dependencies WHERE consumer_id=? AND consumer_revision=? ORDER BY edge_key`).all(row.id, rev).map((d) => ({
+    key: d.edge_key,
+    producer: { projectId: ref.projectId, workItemId: d.producer_id },
+    producerRevision: d.producer_revision,
+    outputKey: d.output_key,
+    binding: JSON.parse(d.binding_json),
+    ...d.pinned_result_id === null ? {} : { resultId: d.pinned_result_id }
+  }));
+  return {
+    ref: { ...ref },
+    task: { projectId: ref.projectId, taskId: row.task_id },
+    revision: rev,
+    state: row.state,
+    fence: row.fence,
+    definition: JSON.parse(contract.definition_json),
+    inputs: JSON.parse(contract.inputs_json),
+    inputsHash: contract.inputs_hash,
+    dependencies
+  };
+}
+function inputsCurrent(db, item) {
+  return item.inputs.every((input) => contractHash(db, input.task) === input.hash);
+}
+function checkDefinition(db, definition) {
+  shape(definition, ["kind", "repoId", "sourceTasks", "outputs"]);
+  if (!["analysis", "architecture", "implementation", "check", "integration", "human_action", "curation"].includes(definition.kind)) {
+    throw new KddError("invalid work item kind");
+  }
+  checkRepo(db, definition.repoId);
+  if (!Array.isArray(definition.sourceTasks) || !Array.isArray(definition.outputs)) throw new KddError("invalid definition arrays");
+  const sources = /* @__PURE__ */ new Set(), outputs = /* @__PURE__ */ new Set();
+  for (const ref of definition.sourceTasks) {
+    scopedTask(db, ref);
+    if (sources.has(ref.taskId)) throw new KddError("duplicate source task");
+    sources.add(ref.taskId);
+  }
+  for (const output of definition.outputs) {
+    shape(output, ["key", "kind", "required", "version", "checkRefs"]);
+    text(output.key);
+    text(output.version);
+    dependencyKind(output.kind);
+    strings(output.checkRefs);
+    if (typeof output.required !== "boolean") throw new KddError("invalid output requirement");
+    if (outputs.has(output.key)) throw new KddError("duplicate output key");
+    outputs.add(output.key);
+    if ((output.kind === "code" || output.kind === "merged") && definition.repoId === null) throw new KddError("output requires repository");
+  }
+}
+function checkBinding(db, binding) {
+  dependencyKind(binding?.kind);
+  const extra = {
+    contract: [],
+    code: ["baseHead"],
+    merged: ["target", "baseHead"],
+    readiness: ["resourceId", "configHash", "consumerScope", "capabilities"]
+  }[binding.kind];
+  shape(binding, ["kind", "repoId", "version", ...extra]);
+  checkRepo(db, binding.repoId);
+  text(binding.version);
+  if (binding.kind === "code" || binding.kind === "merged") {
+    if (binding.repoId === null) throw new KddError("dependency requires repository");
+    text(binding.baseHead);
+    if (binding.kind === "merged") text(binding.target);
+  }
+  if (binding.kind === "readiness") {
+    text(binding.resourceId);
+    text(binding.configHash);
+    text(binding.consumerScope);
+    strings(binding.capabilities);
+  }
+}
+function insertRevision(db, id2, task, revision, definition) {
+  checkDefinition(db, definition);
+  const card = scopedTask(db, task), ids = /* @__PURE__ */ new Set([card.id, ...definition.sourceTasks.map((t) => t.taskId)]);
+  if (card.parent_id !== null) ids.add(card.parent_id);
+  const inputs = [...ids].sort((a, b) => a - b).map((taskId) => {
+    const ref = { projectId: task.projectId, taskId };
+    return { task: ref, hash: contractHash(db, ref) };
+  });
+  db.prepare("INSERT INTO work_item_revisions VALUES(?,?,?,?,?,?)").run(id2, revision, canonical(definition), canonical(inputs), digest(inputs), now());
+}
+function insertEdges(db, item, dependencies) {
+  if (!Array.isArray(dependencies)) throw new KddError("invalid dependencies");
+  const keys = /* @__PURE__ */ new Set();
+  for (const dep of dependencies) {
+    shape(dep, ["key", "producer", "producerRevision", "outputKey", "binding"], ["resultId"]);
+    text(dep.key);
+    text(dep.outputKey);
+    integer(dep.producerRevision);
+    checkBinding(db, dep.binding);
+    if (keys.has(dep.key)) throw new KddError("duplicate edge key");
+    keys.add(dep.key);
+    const producer = scopedWorkItem(db, dep.producer, dep.producerRevision);
+    if (item.ref.workItemId === producer.ref.workItemId) throw new KddError("self dependency cycle");
+    const output = producer.definition.outputs.find((o) => o.key === dep.outputKey);
+    if (!output || output.kind !== dep.binding.kind || output.version !== dep.binding.version || producer.definition.repoId !== dep.binding.repoId) throw new KddError("incompatible dependency output or scope");
+    if (dep.binding.kind === "code" && (item.definition.repoId === null || item.definition.repoId !== producer.definition.repoId)) {
+      throw new KddError("cross repository code dependency denied");
+    }
+    if (dep.resultId !== void 0) {
+      text(dep.resultId);
+      const result2 = db.prepare("SELECT payload_json FROM work_item_results WHERE id=? AND producer_id=? AND producer_revision=? AND output_key=? AND kind=?").get(dep.resultId, producer.ref.workItemId, producer.revision, dep.outputKey, dep.binding.kind);
+      const payload = result2 ? JSON.parse(result2.payload_json) : null;
+      if (!payload || payload.version !== dep.binding.version || payload.repoId !== dep.binding.repoId) throw new KddError("result binding mismatch");
+    }
+    db.prepare("INSERT INTO work_item_dependencies VALUES(?,?,?,?,?,?,?,?,?)").run(
+      item.ref.workItemId,
+      item.revision,
+      dep.key,
+      producer.ref.workItemId,
+      producer.revision,
+      dep.binding.kind,
+      dep.outputKey,
+      canonical(dep.binding),
+      dep.resultId ?? null
+    );
+  }
+}
+function assertDag(db, refs) {
+  const cycle = db.prepare(`WITH RECURSIVE active(consumer,producer) AS (
+    SELECT d.consumer_id,d.producer_id FROM work_item_dependencies d
+    JOIN work_items w ON w.id=d.consumer_id AND w.current_revision=d.consumer_revision
+  ), reachable(id) AS (SELECT producer FROM active WHERE consumer=?
+    UNION SELECT a.producer FROM active a JOIN reachable r ON a.consumer=r.id)
+    SELECT 1 FROM reachable WHERE id=? LIMIT 1`);
+  for (const ref of refs) if (cycle.get(ref.workItemId, ref.workItemId)) throw new KddError("dependency cycle");
+}
+function createWorkItem(handle, input) {
+  const db = controllerDb(handle);
+  return db.transaction(() => {
+    shape(input, ["task", "definition", "dependencies"]);
+    const task = scopedTask(db, input.task);
+    assertNoHandoff(db, task.id);
+    const ref = { projectId: input.task.projectId, workItemId: newId() };
+    db.prepare("INSERT INTO work_items(id,task_id,current_revision,created_at) VALUES(?,?,1,?)").run(ref.workItemId, task.id, now());
+    insertRevision(db, ref.workItemId, input.task, 1, input.definition);
+    insertEdges(db, scopedWorkItem(db, ref), input.dependencies);
+    assertDag(db, [ref]);
+    appendEvent(db, task.id, controllerActor, "work_item_created", { work_item_id: ref.workItemId, revision: 1 });
+    return scopedWorkItem(db, ref);
+  }).immediate();
+}
+function reviseWorkItem(handle, input) {
+  const db = controllerDb(handle);
+  return db.transaction(() => {
+    shape(input, ["ref", "expectedRevision", "definition", "dependencies"]);
+    integer(input.expectedRevision);
+    const item = scopedWorkItem(db, input.ref);
+    assertNoHandoff(db, item.task.taskId);
+    if (item.revision !== input.expectedRevision || item.revision === Number.MAX_SAFE_INTEGER) throw new KddError("revision conflict or overflow");
+    if (["completed", "failed", "cancelled"].includes(item.state)) throw new KddError("terminal work item requires new work");
+    if (db.prepare("SELECT 1 FROM work_item_owners WHERE work_item_id=? AND released_at IS NULL").get(item.ref.workItemId)) {
+      throw new KddError("owned work item cannot change revision");
+    }
+    const revision = item.revision + 1;
+    insertRevision(db, item.ref.workItemId, item.task, revision, input.definition);
+    db.prepare("UPDATE work_items SET current_revision=?,state='pending' WHERE id=? AND current_revision=?").run(revision, item.ref.workItemId, input.expectedRevision);
+    insertEdges(db, scopedWorkItem(db, item.ref), input.dependencies);
+    assertDag(db, [item.ref]);
+    appendEvent(db, item.task.taskId, controllerActor, "work_item_revised", { work_item_id: item.ref.workItemId, revision });
+    return scopedWorkItem(db, item.ref);
+  }).immediate();
+}
+function workItem(handle, ref) {
+  const db = controllerDb(handle);
+  return db.transaction(() => scopedWorkItem(db, ref))();
+}
+function taskWorkItems(handle, task) {
+  const db = controllerDb(handle);
+  return db.transaction(() => {
+    scopedTask(db, task);
+    return db.prepare("SELECT id FROM work_items WHERE task_id=? ORDER BY id").all(task.taskId).map((row) => scopedWorkItem(db, { projectId: task.projectId, workItemId: row.id }));
+  })();
+}
+function createSubtaskPlan(handle, input) {
+  const db = controllerDb(handle);
+  return db.transaction(() => {
+    shape(input, ["parent", "expectedParentHash", "source", "children", "workItems", "dependencies"]);
+    if (!Array.isArray(input.workItems) || !Array.isArray(input.dependencies)) throw new KddError("invalid plan arrays");
+    const tasks = createSubtasks(handle, {
+      parent: input.parent,
+      expectedParentHash: input.expectedParentHash,
+      source: input.source,
+      children: input.children
+    });
+    const refs = /* @__PURE__ */ Object.create(null);
+    for (const draft of input.workItems) {
+      shape(draft, ["key", "childKey", "definition"]);
+      text(draft.key);
+      text(draft.childKey);
+      if (Object.hasOwn(refs, draft.key) || !Object.hasOwn(tasks, draft.childKey)) throw new KddError("invalid plan work item key");
+      const ref = { projectId: input.parent.projectId, workItemId: newId() };
+      refs[draft.key] = ref;
+      db.prepare("INSERT INTO work_items(id,task_id,current_revision,created_at) VALUES(?,?,1,?)").run(ref.workItemId, tasks[draft.childKey].id, now());
+      insertRevision(db, ref.workItemId, { projectId: ref.projectId, taskId: tasks[draft.childKey].id }, 1, draft.definition);
+    }
+    const dependencies = Object.fromEntries(Object.keys(refs).map((k) => [k, []]));
+    for (const dep of input.dependencies) {
+      shape(dep, ["consumerKey", "key", "producer", "outputKey", "binding"], ["resultId"]);
+      text(dep.consumerKey);
+      if (!Object.hasOwn(refs, dep.consumerKey)) throw new KddError("missing consumer key");
+      shape(dep.producer, Object.hasOwn(dep.producer, "localKey") ? ["localKey"] : ["ref", "revision"]);
+      let producer, producerRevision;
+      if ("localKey" in dep.producer) {
+        text(dep.producer.localKey);
+        if (!Object.hasOwn(refs, dep.producer.localKey)) throw new KddError("missing producer key");
+        producer = refs[dep.producer.localKey];
+        producerRevision = 1;
+      } else {
+        producer = dep.producer.ref;
+        producerRevision = dep.producer.revision;
+      }
+      dependencies[dep.consumerKey].push({
+        key: dep.key,
+        producer,
+        producerRevision,
+        outputKey: dep.outputKey,
+        binding: dep.binding,
+        ...dep.resultId === void 0 ? {} : { resultId: dep.resultId }
+      });
+    }
+    for (const key of Object.keys(refs)) insertEdges(db, scopedWorkItem(db, refs[key]), dependencies[key]);
+    assertDag(db, Object.values(refs));
+    const workItems = Object.fromEntries(Object.keys(refs).map((key) => [key, scopedWorkItem(db, refs[key])]));
+    appendEvent(db, input.parent.taskId, controllerActor, "subtask_plan_created", {
+      tasks: Object.fromEntries(Object.entries(tasks).map(([k, t]) => [k, t.id])),
+      work_items: refs
+    });
+    return { tasks, workItems };
+  }).immediate();
+}
+function checkOwnershipRef(db, ref) {
+  shape(ref, ["projectId", "workItemId", "revision", "ownerId", "fence"]);
+  text(ref.ownerId);
+  integer(ref.revision);
+  integer(ref.fence);
+  scopedWorkItem(db, { projectId: ref.projectId, workItemId: ref.workItemId }, ref.revision);
+}
+function liveOwner(db, ref) {
+  checkOwnershipRef(db, ref);
+  const item = scopedWorkItem(db, { projectId: ref.projectId, workItemId: ref.workItemId });
+  const row = db.prepare("SELECT * FROM work_item_owners WHERE work_item_id=? AND fence=? AND owner_id=? AND revision=? AND released_at IS NULL").get(ref.workItemId, ref.fence, ref.ownerId, ref.revision);
+  if (!row || item.revision !== ref.revision || item.fence !== ref.fence || !inputsCurrent(db, item) || JSON.parse(row.inputs_json).inputsHash !== item.inputsHash || !pinnedInputsCurrent(db, item, JSON.parse(row.inputs_json).inputResults)) throw new KddError("ownership fence or inputs stale");
+  assertOwnedRunInputsCurrentDb(db, ref);
+  return row;
+}
+var LEGACY_EXECUTION_SQL = `execution_mode='manual'
+  AND NOT EXISTS (SELECT 1 FROM managed_task_policy p WHERE p.task_id=tasks.id)
+  AND NOT EXISTS (SELECT 1 FROM execution_handoffs h WHERE h.task_id=tasks.id AND h.completed_at IS NULL)`;
+
 // src/authority.ts
+import { createHash as createHash10, randomBytes as randomBytes3 } from "crypto";
+import { lstatSync as lstatSync4, realpathSync as realpathSync9 } from "fs";
+import { isAbsolute as isAbsolute6 } from "path";
 var operations = ["get_context", "submit_report", "request_question"];
 var contexts = /* @__PURE__ */ new WeakMap();
-var denied = () => new KddError("run authority denied");
-var tokenHash = (token) => createHash8("sha256").update(token).digest("hex");
+var denied2 = () => new KddError("run authority denied");
+var tokenHash = (token) => createHash10("sha256").update(token).digest("hex");
 var controllerActor2 = { type: "ai", id: "controller" };
 function assertLegacyTaskMutation(db, taskIds) {
   const ids = [...new Set(taskIds)];
@@ -3759,7 +4267,7 @@ function assertLegacyTaskMutation(db, taskIds) {
   }
 }
 function mark(db, taskId) {
-  if (!Number.isSafeInteger(taskId) || taskId < 1) throw denied();
+  if (!Number.isSafeInteger(taskId) || taskId < 1) throw denied2();
   const task = mustGetTask(db, taskId);
   if (task.claimed_by !== null) throw new KddError("claimed legacy writer must stop before controller protection");
   if (db.prepare("INSERT OR IGNORE INTO managed_task_policy(task_id,created_at,source) VALUES(?,?,'controller')").run(taskId, now()).changes) {
@@ -3773,20 +4281,20 @@ function protectTask(handle, taskId) {
 function modeledOwnership(db, input, scope) {
   const modeled = db.prepare("SELECT 1 FROM work_items WHERE id=?").get(input.workItemId);
   if (!modeled) {
-    if (input.ownership !== void 0) throw denied();
+    if (input.ownership !== void 0) throw denied2();
     return;
   }
   if (!input.ownership) throw new KddError("modeled work requires ownership");
   const owner = liveOwner(db, input.ownership);
   const item = scopedWorkItem(db, { projectId: input.ownership.projectId, workItemId: input.workItemId });
-  if (owner.work_item_id !== input.workItemId || item.task.taskId !== input.taskId) throw denied();
+  if (owner.work_item_id !== input.workItemId || item.task.taskId !== input.taskId) throw denied2();
   if (scope.some((repo) => repo.write && (!owner.write_access || item.definition.repoId === null || item.definition.repoId !== repo.repoId))) {
     throw new KddError("ownership writable repository mismatch");
   }
 }
 function canonicalCheckout(path) {
-  if (typeof path !== "string" || !isAbsolute5(path) || !lstatSync3(path).isDirectory()) throw new KddError("invalid repository scope");
-  return realpathSync8(path);
+  if (typeof path !== "string" || !isAbsolute6(path) || !lstatSync4(path).isDirectory()) throw new KddError("invalid repository scope");
+  return realpathSync9(path);
 }
 function repositoryScope(db, input, native) {
   if (!Array.isArray(input) || !input.length) throw new KddError("empty repository scope");
@@ -3804,23 +4312,27 @@ function repositoryScope(db, input, native) {
 }
 function privateStore(db, scope, native) {
   if (db.memory) return;
-  const path = realpathSync8(db.name);
+  const path = realpathSync9(db.name);
   if (db.name !== path) throw new KddError("project store alias denied");
   if (scope.some((resource) => inside(resource.checkoutPath, path) || inside(resource.commonDir, path))) throw new KddError("native repository scope exposes project store");
   const writableRoots = [canonicalCheckout(native.scratchDir), ...native.writableRoot ? [canonicalCheckout(native.writableRoot)] : []];
   for (const file of [path, `${path}-wal`, `${path}-shm`]) {
     if (writableRoots.some((root) => inside(root, file))) throw new KddError("native writable scope exposes project store");
     try {
-      if (!lstatSync3(file).isFile() || lstatSync3(file).nlink !== 1) throw new KddError("project store alias denied");
+      if (!lstatSync4(file).isFile() || lstatSync4(file).nlink !== 1) throw new KddError("project store alias denied");
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
   }
 }
-function issueRunAuthority(handle, input) {
+function issueRunAuthority(handle, supplied) {
   const db = controllerDb(handle);
+  shape(supplied, ["taskId", "workItemId", "runId", "expectedGeneration", "expiresAt", "operations", "repositories", "native"], ["ownership", "context", "contextObservers"]);
+  if (supplied.contextObservers !== void 0) shape(supplied.contextObservers, [], ["observe"]);
+  const { native, contextObservers, ...data } = supplied;
+  const input = { ...structuredClone(data), native, contextObservers: contextObservers ? { observe: contextObservers.observe } : void 0 };
   return db.transaction(() => {
-    if (!Number.isSafeInteger(input.taskId) || input.taskId < 1 || typeof input.workItemId !== "string" || !input.workItemId.trim() || typeof input.runId !== "string" || !input.runId.trim() || !Number.isSafeInteger(input.expectedGeneration) || input.expectedGeneration < 0 || input.expectedGeneration === Number.MAX_SAFE_INTEGER || !Number.isFinite(input.expiresAt) || input.expiresAt <= now() || !Array.isArray(input.operations) || !input.operations.length || new Set(input.operations).size !== input.operations.length || input.operations.some((operation) => !operations.includes(operation))) throw denied();
+    if (!Number.isSafeInteger(input.taskId) || input.taskId < 1 || typeof input.workItemId !== "string" || !input.workItemId.trim() || typeof input.runId !== "string" || !input.runId.trim() || !Number.isSafeInteger(input.expectedGeneration) || input.expectedGeneration < 0 || input.expectedGeneration === Number.MAX_SAFE_INTEGER || !Number.isFinite(input.expiresAt) || input.expiresAt <= now() || !Array.isArray(input.operations) || !input.operations.length || new Set(input.operations).size !== input.operations.length || input.operations.some((operation) => !operations.includes(operation))) throw denied2();
     assertNoHandoff(db, input.taskId);
     const generation = db.prepare("SELECT COALESCE(MAX(generation),0) generation FROM run_authorities WHERE task_id=? AND work_item_id=?").get(input.taskId, input.workItemId).generation;
     if (generation !== input.expectedGeneration) throw new KddError("run authority generation fence changed");
@@ -3828,7 +4340,6 @@ function issueRunAuthority(handle, input) {
     const repositories = repositoryScope(db, input.repositories, input.native);
     modeledOwnership(db, input, repositories);
     privateStore(db, repositories, input.native);
-    mark(db, input.taskId);
     const grant = {
       projectId: projectOf(db).project_id,
       taskId: input.taskId,
@@ -3841,8 +4352,16 @@ function issueRunAuthority(handle, input) {
       native: { readableRoots: [...input.native.readableRoots], writableRoot: input.native.writableRoot, scratchDir: input.native.scratchDir, configHash: input.native.configHash }
     };
     const token = randomBytes3(32).toString("hex"), authorityId = randomBytes3(16).toString("hex");
+    const snapshot2 = buildRunInputSnapshot(db, grant, authorityId, input.context, input.contextObservers, [native.controlDir, ...native.protectedPaths]);
+    assertVerifiedCodexPackage(native);
+    repositoryScope(db, input.repositories, native);
+    modeledOwnership(db, input, repositories);
+    privateStore(db, repositories, native);
+    mark(db, input.taskId);
     db.prepare("UPDATE run_authorities SET revoked_at=? WHERE task_id=? AND work_item_id=? AND revoked_at IS NULL").run(now(), input.taskId, input.workItemId);
     db.prepare("INSERT INTO run_authorities(authority_id,task_id,work_item_id,run_id,generation,expires_at,token_hash,grant_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)").run(authorityId, input.taskId, input.workItemId, input.runId, grant.generation, input.expiresAt, tokenHash(token), JSON.stringify(grant), now());
+    persistRunInputSnapshotDb(db, snapshot2);
+    appendEvent(db, input.taskId, controllerActor2, "run_inputs_snapshot", { authorityId, inputHash: snapshot2.inputHash, wireBytes: runContextWireBytes(snapshot2.response), limit: snapshot2.response.inputs.budget.maxBytes });
     appendEvent(db, input.taskId, controllerActor2, "authority_issued", { authorityId, workItemId: grant.workItemId, runId: grant.runId, generation: grant.generation });
     return { authorityId, generation: grant.generation, token };
   }).immediate();
@@ -3851,30 +4370,31 @@ function revokeRunAuthority(handle, authorityId) {
   const db = controllerDb(handle);
   db.transaction(() => {
     const row = db.prepare("SELECT task_id,generation FROM run_authorities WHERE authority_id=?").get(authorityId);
-    if (!row) throw denied();
+    if (!row) throw denied2();
     if (db.prepare("UPDATE run_authorities SET revoked_at=? WHERE authority_id=? AND revoked_at IS NULL").run(now(), authorityId).changes) {
       appendEvent(db, row.task_id, controllerActor2, "authority_revoked", { authorityId, generation: row.generation });
     }
   }).immediate();
 }
 function currentAuthority(db, row) {
-  if (!row || row.revoked_at !== null || !Number.isFinite(row.expires_at) || row.expires_at <= now()) throw denied();
+  if (!row || row.revoked_at !== null || !Number.isFinite(row.expires_at) || row.expires_at <= now()) throw denied2();
   let grant;
   try {
     grant = JSON.parse(row.grant_json);
   } catch {
-    throw denied();
+    throw denied2();
   }
   const latest = db.prepare("SELECT MAX(generation) generation FROM run_authorities WHERE task_id=? AND work_item_id=?").get(row.task_id, row.work_item_id).generation;
-  if (!grant || !Array.isArray(grant.operations) || !grant.operations.length || new Set(grant.operations).size !== grant.operations.length || grant.operations.some((operation) => !operations.includes(operation)) || grant.projectId !== projectOf(db).project_id || grant.taskId !== row.task_id || grant.workItemId !== row.work_item_id || grant.runId !== row.run_id || grant.generation !== row.generation || latest !== row.generation || !db.prepare("SELECT task_id FROM managed_task_policy WHERE task_id=?").get(row.task_id)) throw denied();
+  if (!grant || !Array.isArray(grant.operations) || !grant.operations.length || new Set(grant.operations).size !== grant.operations.length || grant.operations.some((operation) => !operations.includes(operation)) || grant.projectId !== projectOf(db).project_id || grant.taskId !== row.task_id || grant.workItemId !== row.work_item_id || grant.runId !== row.run_id || grant.generation !== row.generation || latest !== row.generation || !db.prepare("SELECT task_id FROM managed_task_policy WHERE task_id=?").get(row.task_id)) throw denied2();
   mustGetTask(db, row.task_id);
   try {
     const repositories = repositoryScope(db, grant.repositories, grant.native);
-    if (JSON.stringify(repositories) !== JSON.stringify(grant.repositories)) throw denied();
+    if (JSON.stringify(repositories) !== JSON.stringify(grant.repositories)) throw denied2();
     modeledOwnership(db, grant, repositories);
     privateStore(db, repositories, grant.native);
+    assertRunInputsCurrentDb(db, row.authority_id);
   } catch {
-    throw denied();
+    throw denied2();
   }
   return { row, grant };
 }
@@ -3902,18 +4422,18 @@ function assertRunMemorySource(db, scope, applicability, source, author) {
     binding.generation
   );
   const { grant } = currentAuthority(db, row);
-  if (!grant.operations.includes("submit_report") || scope.projectId !== grant.projectId || scope.taskId !== grant.taskId || author.type !== "ai" || author.id !== grant.runId || applicability.repoId !== null && !grant.repositories.some((repo) => repo.repoId === applicability.repoId)) throw denied();
+  if (!grant.operations.includes("submit_report") || scope.projectId !== grant.projectId || scope.taskId !== grant.taskId || author.type !== "ai" || author.id !== grant.runId || applicability.repoId !== null && !grant.repositories.some((repo) => repo.repoId === applicability.repoId)) throw denied2();
   const event = db.prepare("SELECT detail,actor_type,actor_id FROM events WHERE id=? AND task_id=? AND action='run_report'").get(source.reportEventId, grant.taskId);
   let detail;
   try {
     detail = event?.detail ? JSON.parse(event.detail) : null;
   } catch {
-    throw denied();
+    throw denied2();
   }
-  if (!detail || event?.actor_type !== "ai" || event.actor_id !== grant.runId || detail.work_item_id !== grant.workItemId || detail.run_id !== grant.runId || detail.generation !== grant.generation || detail.untrusted !== true) throw denied();
+  if (!detail || event?.actor_type !== "ai" || event.actor_id !== grant.runId || detail.work_item_id !== grant.workItemId || detail.run_id !== grant.runId || detail.generation !== grant.generation || detail.untrusted !== true) throw denied2();
 }
 function lookup(db, token) {
-  if (typeof token !== "string" || !/^[0-9a-f]{64}$/.test(token)) throw denied();
+  if (typeof token !== "string" || !/^[0-9a-f]{64}$/.test(token)) throw denied2();
   const row = db.prepare("SELECT * FROM run_authorities WHERE token_hash=?").get(tokenHash(token));
   return currentAuthority(db, row);
 }
@@ -3927,12 +4447,12 @@ function openRunContext(db, token) {
 }
 function registered(context) {
   const stored = typeof context === "object" && context !== null ? contexts.get(context) : void 0;
-  if (!stored?.db.open) throw denied();
+  if (!stored?.db.open) throw denied2();
   return stored;
 }
 function live(context, operation) {
   const stored = registered(context), { row, grant } = lookup(stored.db, stored.token);
-  if (row.authority_id !== stored.authorityId || JSON.stringify(grant) !== JSON.stringify(stored.grant) || operation && !grant.operations.includes(operation)) throw denied();
+  if (row.authority_id !== stored.authorityId || JSON.stringify(grant) !== JSON.stringify(stored.grant) || operation && !grant.operations.includes(operation)) throw denied2();
   return { ...stored, grant };
 }
 function runOperations(context) {
@@ -3940,40 +4460,22 @@ function runOperations(context) {
 }
 function readRunContext(context) {
   return registered(context).db.transaction(() => {
-    const { db, grant } = live(context, "get_context"), task = mustGetTask(db, grant.taskId);
-    return {
-      projectId: grant.projectId,
-      taskId: grant.taskId,
-      workItemId: grant.workItemId,
-      runId: grant.runId,
-      generation: grant.generation,
-      task: { title: task.title, body: task.body, status: task.status },
-      criteria: listCriteria(db, task.id).map((c) => ({ id: c.id, text: c.text, checked: c.checked_at !== null })),
-      decisions: db.prepare(`SELECT d.slug,d.title FROM decisions d,json_each(d.source_tasks) s
-        WHERE CAST(s.value AS INTEGER)=? ORDER BY d.slug`).all(task.id)
-    };
+    const { db, authorityId } = live(context, "get_context");
+    return readRunInputSnapshotDb(db, authorityId).response;
   }).immediate();
 }
-function runMemoryView(grant) {
-  return { scope: { projectId: grant.projectId, taskId: grant.taskId }, repositories: grant.repositories.map((repo) => ({
-    repoId: repo.repoId,
-    checkoutPath: repo.checkoutPath,
-    commit: execFileSync7(
-      "/usr/bin/git",
-      ["--no-replace-objects", "rev-parse", "--verify", "HEAD^{commit}"],
-      { cwd: repo.checkoutPath, encoding: "utf8", stdio: "pipe", maxBuffer: 4096 }
-    ).trim()
-  })) };
+function runMemoryView(db, authorityId, grant) {
+  return { scope: { projectId: grant.projectId, taskId: grant.taskId }, repositories: readRunInputSnapshotDb(db, authorityId).validation.repositories };
 }
 function readRunMemory(context, input = {}) {
   return registered(context).db.transaction(() => {
-    const { db, grant } = live(context, "get_context");
+    const { db, grant, authorityId } = live(context, "get_context");
     shape(input, [], ["entryId", "revision", "candidates", "withdrawn"]);
     if (input.revision !== void 0) integer(input.revision);
     if (input.revision !== void 0 && input.entryId === void 0) throw new KddError("memory revision requires entry");
     return selectMemory(
       db,
-      runMemoryView(grant),
+      runMemoryView(db, authorityId, grant),
       { candidates: input.candidates, withdrawn: input.withdrawn },
       input.entryId,
       input.entryId === void 0 ? void 0 : input.revision ?? null
@@ -3982,14 +4484,14 @@ function readRunMemory(context, input = {}) {
 }
 function recallRunMemory(context, query, options = {}) {
   return registered(context).db.transaction(() => {
-    const { db, grant } = live(context, "get_context");
-    return queryMemoryDb(db, runMemoryView(grant), query, options);
+    const { db, grant, authorityId } = live(context, "get_context");
+    return queryMemoryDb(db, runMemoryView(db, authorityId, grant), query, options);
   }).immediate();
 }
 function runMemoryRules(context) {
   return registered(context).db.transaction(() => {
-    const { db, grant } = live(context, "get_context");
-    return selectMemory(db, runMemoryView(grant)).filter((record) => record.kind === "rule");
+    const { db, grant, authorityId } = live(context, "get_context");
+    return selectMemory(db, runMemoryView(db, authorityId, grant)).filter((record) => record.kind === "rule");
   }).immediate();
 }
 function runEvent(context, operation, body) {
@@ -4325,130 +4827,9 @@ function unarchiveTask(db, id2, actor) {
   }).immediate();
 }
 
-// src/files.ts
-import { createHash as createHash9 } from "crypto";
-import {
-  existsSync as existsSync7,
-  mkdirSync as mkdirSync6,
-  readFileSync as readFileSync7,
-  renameSync as renameSync3,
-  rmSync as rmSync4,
-  statSync as statSync2,
-  writeFileSync as writeFileSync5
-} from "fs";
-import { basename as basename3, dirname as dirname6, extname, join as join8 } from "path";
-var MIME = {
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  gif: "image/gif",
-  webp: "image/webp",
-  bmp: "image/bmp",
-  ico: "image/x-icon",
-  tif: "image/tiff",
-  tiff: "image/tiff",
-  svg: "image/svg+xml",
-  pdf: "application/pdf",
-  zip: "application/zip",
-  json: "application/json",
-  csv: "text/csv",
-  md: "text/markdown",
-  txt: "text/plain",
-  log: "text/plain"
-};
-var INLINE = /* @__PURE__ */ new Set([
-  "image/png",
-  "image/jpeg",
-  "image/gif",
-  "image/webp",
-  "image/bmp",
-  "image/x-icon",
-  "image/tiff"
-]);
-var isInlineMime = (m) => m !== null && INLINE.has(m);
-var filesDir = (dbPath) => {
-  if (dbPath === ":memory:") throw new KddError("attachments need a real board file, not :memory:");
-  return join8(dirname6(dbPath), "files");
-};
-var filePath = (dbPath, f) => join8(filesDir(dbPath), `${f.sha256}.${f.ext}`);
-function listFiles(db, taskId) {
-  return db.prepare(`SELECT * FROM files WHERE task_id = ? ORDER BY id`).all(taskId);
-}
-function getFile(db, id2) {
-  return db.prepare(`SELECT * FROM files WHERE id = ?`).get(id2);
-}
-function attachFile(db, dbPath, taskId, srcPath, opts, actor) {
-  return db.transaction(() => {
-    assertLegacyTaskMutation(db, [taskId]);
-    let data;
-    try {
-      const stat = statSync2(srcPath);
-      if (stat.isDirectory()) throw new KddError(`${srcPath} is a directory`);
-      if (stat.size > CAPS.fileBytes) {
-        throw new KddError(`file is ${stat.size} bytes, the limit is ${CAPS.fileBytes}`);
-      }
-      data = readFileSync7(srcPath);
-    } catch (e) {
-      if (e instanceof KddError) throw e;
-      throw new KddError(`cannot read ${srcPath}: ${e.message}`);
-    }
-    mustGetTask(db, taskId);
-    const sha256 = createHash9("sha256").update(data).digest("hex");
-    const ext = (extname(srcPath).slice(1) || "bin").toLowerCase();
-    const target = join8(filesDir(dbPath), `${sha256}.${ext}`);
-    if (!existsSync7(target)) {
-      mkdirSync6(filesDir(dbPath), { recursive: true });
-      const tmp = `${target}.${process.pid}.tmp`;
-      writeFileSync5(tmp, data);
-      renameSync3(tmp, target);
-    }
-    const name = capText(basename3(srcPath), CAPS.fileNameChars);
-    const r = db.prepare(
-      `INSERT INTO files (task_id, sha256, ext, original_name, mime_type, size_bytes,
-                          description, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(task_id, sha256) DO NOTHING`
-    ).run(
-      taskId,
-      sha256,
-      ext,
-      name,
-      MIME[ext] ?? null,
-      data.length,
-      opts.description ?? null,
-      now()
-    );
-    const row = db.prepare(`SELECT * FROM files WHERE task_id = ? AND sha256 = ?`).get(taskId, sha256);
-    if (r.changes === 0) {
-      if (opts.description && opts.description !== row.description) {
-        db.prepare(`UPDATE files SET description = ? WHERE id = ?`).run(opts.description, row.id);
-        appendTaskMutationEvent(db, taskId, actor, "file_attached", { id: row.id, name, described: true });
-        db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
-        return { ...row, description: opts.description };
-      }
-      return row;
-    }
-    appendTaskMutationEvent(db, taskId, actor, "file_attached", { id: row.id, name });
-    db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
-    return row;
-  }).immediate();
-}
-function detachFile(db, dbPath, fileId, actor) {
-  db.transaction(() => {
-    const f = getFile(db, fileId);
-    if (!f) throw new KddError(`file #${fileId} not found`);
-    assertLegacyTaskMutation(db, [f.task_id]);
-    db.prepare(`DELETE FROM files WHERE id = ?`).run(fileId);
-    appendTaskMutationEvent(db, f.task_id, actor, "file_detached", { id: fileId, name: f.original_name });
-    db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), f.task_id);
-    const left = db.prepare(`SELECT COUNT(*) AS c FROM files WHERE sha256 = ? AND ext = ?`).get(f.sha256, f.ext).c;
-    if (left === 0) rmSync4(filePath(dbPath, f), { force: true });
-  }).immediate();
-}
-
 // src/queries.ts
-import { existsSync as existsSync8, readFileSync as readFileSync8, realpathSync as realpathSync9 } from "fs";
-import { dirname as dirname7 } from "path";
+import { existsSync as existsSync9, readFileSync as readFileSync9, realpathSync as realpathSync10 } from "fs";
+import { dirname as dirname8 } from "path";
 var PRIORITY_ORDER = `CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
 function manualEvent(event) {
   if (event.actor_type !== "ai" || !event.detail) return void 0;
@@ -4601,10 +4982,10 @@ function decisionDetail(db, decisionsDir, slug) {
     `SELECT slug, title, path, created, superseded_by, source_tasks FROM decisions WHERE slug = ?`
   ).get(slug);
   if (!row) throw new KddError(`decision '${slug}' not found`);
-  const trusted = canSyncLegacyDecisions(db, decisionsDir) && existsSync8(row.path) && canSyncLegacyDecisions(db, dirname7(realpathSync9(row.path)));
+  const trusted = canSyncLegacyDecisions(db, decisionsDir) && existsSync9(row.path) && canSyncLegacyDecisions(db, dirname8(realpathSync10(row.path)));
   const cached = trusted ? void 0 : db.prepare("SELECT body FROM search_index WHERE kind='decision' AND ref=?").get(slug);
   if (!trusted && !cached) throw new KddError(`decision '${slug}' has no indexed body`);
-  const doc = trusted ? parseDecisionMd(readFileSync8(row.path, "utf8")) : {
+  const doc = trusted ? parseDecisionMd(readFileSync9(row.path, "utf8")) : {
     status: row.superseded_by ? "superseded" : "active",
     indexBody: cached.body,
     sourceTasks: JSON.parse(row.source_tasks)
@@ -5100,8 +5481,8 @@ function tick(db, opts) {
 
 // src/worktree.ts
 import { execFileSync as execFileSync9 } from "child_process";
-import { existsSync as existsSync9, realpathSync as realpathSync10, rmSync as rmSync5 } from "fs";
-import { dirname as dirname8, join as join9 } from "path";
+import { existsSync as existsSync10, realpathSync as realpathSync11, rmSync as rmSync5 } from "fs";
+import { dirname as dirname9, join as join9 } from "path";
 var branchName = (taskId) => `kdd/task-${taskId}`;
 var BRANCH_RE = /^refs\/heads\/kdd\/task-(\d+)$/;
 function git2(repoRoot, args) {
@@ -5124,8 +5505,8 @@ function gitTry(repoRoot, args) {
   }
 }
 function worktreePath(dbPath, taskId, title) {
-  const root = dirname8(dbPath);
-  const realRoot = existsSync9(root) ? realpathSync10(root) : root;
+  const root = dirname9(dbPath);
+  const realRoot = existsSync10(root) ? realpathSync11(root) : root;
   return join9(realRoot, "worktrees", `task-${taskId}-${slugify(title)}`);
 }
 function headCommit(repoRoot) {
@@ -5165,7 +5546,7 @@ function ensureWorktree(repoRoot, dbPath, taskId, title) {
   const branch = branchName(taskId);
   const ref = `refs/heads/${branch}`;
   const existing = listWorktrees(repoRoot).find((e) => e.branch === ref);
-  if (existing && existsSync9(existing.path)) return existing.path;
+  if (existing && existsSync10(existing.path)) return existing.path;
   if (existing) gitTry(repoRoot, ["worktree", "remove", "--force", existing.path]);
   const path = worktreePath(dbPath, taskId, title);
   gitTry(repoRoot, ["worktree", "prune"]);
@@ -5192,14 +5573,14 @@ function sweepWorktrees(db, repoRoot, isBusy) {
 }
 
 // src/release.ts
-import { readFileSync as readFileSync9 } from "fs";
+import { readFileSync as readFileSync10 } from "fs";
 import { join as join10 } from "path";
 var pkgCache = null;
 function pkg() {
   if (pkgCache) return pkgCache;
   try {
     pkgCache = JSON.parse(
-      readFileSync9(join10(import.meta.dirname, "../package.json"), "utf8")
+      readFileSync10(join10(import.meta.dirname, "../package.json"), "utf8")
     );
   } catch {
     pkgCache = {};
@@ -5446,8 +5827,8 @@ function readReminded(db) {
 }
 
 // src/brief.ts
-import { existsSync as existsSync10, readFileSync as readFileSync10, readdirSync as readdirSync7, realpathSync as realpathSync11 } from "fs";
-import { dirname as dirname9, join as join11 } from "path";
+import { existsSync as existsSync11, readFileSync as readFileSync11, readdirSync as readdirSync7, realpathSync as realpathSync12 } from "fs";
+import { dirname as dirname10, join as join11 } from "path";
 var lexical = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 function detailObject(detail) {
   if (!detail) return {};
@@ -5509,11 +5890,11 @@ function readTaskDecisions(db, decisionsDir, taskId) {
   if (!canSyncLegacyDecisions(db, decisionsDir)) {
     return db.prepare("SELECT slug,title,created,superseded_by,source_tasks FROM decisions ORDER BY slug").all().filter((row) => JSON.parse(row.source_tasks).includes(taskId)).map(({ source_tasks, ...row }) => ({ ...row, title: capText(row.title, CAPS.titleChars) }));
   }
-  if (!existsSync10(decisionsDir)) return [];
+  if (!existsSync11(decisionsDir)) return [];
   return readdirSync7(decisionsDir).filter((file) => file.endsWith(".md")).flatMap((file) => {
     const slug = file.slice(0, -3);
-    if (!canSyncLegacyDecisions(db, dirname9(realpathSync11(join11(decisionsDir, file))))) return [];
-    const decision = parseDecisionMd(readFileSync10(join11(decisionsDir, file), "utf8"));
+    if (!canSyncLegacyDecisions(db, dirname10(realpathSync12(join11(decisionsDir, file))))) return [];
+    const decision = parseDecisionMd(readFileSync11(join11(decisionsDir, file), "utf8"));
     if (!decision.sourceTasks.includes(taskId)) return [];
     return [{
       slug,
@@ -5999,6 +6380,7 @@ export {
   capDetail,
   capText,
   checkMove,
+  checkRunInputs,
   checkpointWal,
   claimNext,
   claimTask,
@@ -6106,6 +6488,7 @@ export {
   result,
   reviseWorkItem,
   revokeRunAuthority,
+  runInputSnapshot,
   runMemoryRules,
   runOperations,
   runProduced,

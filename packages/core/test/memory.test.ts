@@ -50,7 +50,7 @@ it('upgrades a populated v15 WAL store without rewriting any old rows', () => {
     const before = snapshot(raw);
     expect(statSync(path + '-wal').size).toBeGreaterThan(0);
     upgraded = core.openDb(path, core.canonicalCommonDir(f.repo), f.repo);
-    expect(upgraded.pragma('user_version', { simple: true })).toBe(16);
+    expect(upgraded.pragma('user_version', { simple: true })).toBe(core.MIGRATIONS.length);
     expect(snapshot(upgraded)).toEqual(before);
     expect(upgraded.prepare('SELECT count(*) n FROM memory_entries').get()).toEqual({ n: 0 });
     backup = new Database(path + '.v15.bak', { readonly: true });

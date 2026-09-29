@@ -77,7 +77,7 @@ try {
   const baseline=resolve('.superpowers/sdd/2026-09-29-scoped-memory/baseline/packages/core/dist/index.js');
   const oldBinary=spawnSync(process.execPath,['--input-type=module','-e',
     "const core=await import(process.argv[1]);core.openDb(process.argv[2]);",pathToFileURL(baseline).href,oldPath],{encoding:'utf8',timeout:10000});
-  assert.notEqual(oldBinary.status,0);assert.match(oldBinary.stderr,/has schema v16, this kdd only knows v15/);
+  assert.notEqual(oldBinary.status,0);assert.match(oldBinary.stderr,/has schema v17, this kdd only knows v15/);
   assert.equal(readFileSync(join(core.filesDir(oldPath),sha(blob)+'.txt'),'utf8'),blob);
   record('M01',{oldTables:oldTables.length,walBytes,backupVersion:15,newVersion:reopened.pragma('user_version',{simple:true}),oldBinaryExit:oldBinary.status,emptyMemory:true});
 
@@ -271,7 +271,7 @@ try {
   assert.deepEqual(db.pragma('foreign_key_check'),[]);assert.equal('assertRunMemorySource' in core,false);
   record('M14',{publicFunctions:required,actualRevision:persisted.revision,hash:persisted.hash,transportRegression:authorityRegression.checks.length,newTools:0});
   // Recorded only after fresh production preflight; absence/stale hashes fail this scenario.
-  const natives=['full','context'].map(name=>JSON.parse(readFileSync(resolve(`.superpowers/sdd/2026-09-29-scoped-memory/native-${name}.json`),'utf8')));
+  const natives=['full','context'].map(name=>JSON.parse(readFileSync(resolve(`.superpowers/sdd/2026-09-29-run-context/native-${name}.json`),'utf8')));
   for(const native of natives){
     assert.equal(native.final.applicable,true);assert.deepEqual(native.final.failures,[]);
     assert.equal(native.final.scriptHash,runtimeHash);assert.equal(native.final.guardHash,runtimeHash);

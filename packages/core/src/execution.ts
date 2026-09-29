@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import { createHash, randomBytes } from 'node:crypto';
 import { assertRunAuthorityBinding } from './authority.js';
 import { pinnedInputsCurrent } from './execution_results.js';
+import { assertOwnedRunInputsCurrentDb } from './run_inputs_current.js';
 import { controllerDb, type ControllerHandle } from './controller.js';
 import { now } from './db.js';
 import { KddError } from './errors.js';
@@ -381,6 +382,7 @@ export function liveOwner(db: Database.Database, ref: OwnershipRef): OwnerRow {
   if (!row || item.revision !== ref.revision || item.fence !== ref.fence || !inputsCurrent(db,item)
     || JSON.parse(row.inputs_json).inputsHash !== item.inputsHash
     || !pinnedInputsCurrent(db,item,JSON.parse(row.inputs_json).inputResults)) throw new KddError('ownership fence or inputs stale');
+  assertOwnedRunInputsCurrentDb(db,ref);
   return row;
 }
 

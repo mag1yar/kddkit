@@ -21115,25 +21115,25 @@ import { homedir as homedir2 } from "os";
 import { join as join3, resolve as resolve2 } from "path";
 import Database3 from "better-sqlite3";
 import { realpathSync as realpathSync2 } from "fs";
+import { createHash as createHash3 } from "crypto";
 import Database4 from "better-sqlite3";
-import { createHash as createHash6 } from "crypto";
-import Database5 from "better-sqlite3";
-import { existsSync as existsSync6, readFileSync as readFileSync6, readdirSync as readdirSync6, realpathSync as realpathSync7 } from "fs";
-import { dirname as dirname5, join as join7 } from "path";
-import { execFileSync as execFileSync8 } from "child_process";
-import { createHash as createHash9 } from "crypto";
+import { existsSync as existsSync4, readFileSync as readFileSync4, readdirSync as readdirSync4, realpathSync as realpathSync5 } from "fs";
+import { dirname as dirname4, join as join5 } from "path";
+import { createHash as createHash5 } from "crypto";
 import {
-  existsSync as existsSync7,
-  mkdirSync as mkdirSync6,
-  readFileSync as readFileSync7,
+  existsSync as existsSync5,
+  mkdirSync as mkdirSync4,
+  readFileSync as readFileSync5,
   renameSync as renameSync3,
-  rmSync as rmSync4,
+  rmSync as rmSync3,
   statSync as statSync2,
-  writeFileSync as writeFileSync5
+  writeFileSync as writeFileSync3
 } from "fs";
-import { basename as basename3, dirname as dirname6, extname, join as join8 } from "path";
-import { existsSync as existsSync10, readFileSync as readFileSync10, readdirSync as readdirSync7, realpathSync as realpathSync11 } from "fs";
-import { dirname as dirname9, join as join11 } from "path";
+import { basename as basename3, dirname as dirname5, extname, join as join6 } from "path";
+import Database5 from "better-sqlite3";
+import { execFileSync as execFileSync8 } from "child_process";
+import { existsSync as existsSync11, readFileSync as readFileSync11, readdirSync as readdirSync7, realpathSync as realpathSync12 } from "fs";
+import { dirname as dirname10, join as join11 } from "path";
 var CAPS = {
   briefBytes: 4096,
   // JSON/MCP payload для детерминированного resume-пакета
@@ -21578,6 +21578,19 @@ BEGIN SELECT RAISE(ABORT,'immutable memory identity'); END;
 CREATE TRIGGER memory_entries_current BEFORE UPDATE OF current_revision ON memory_entries
 WHEN NEW.current_revision<>OLD.current_revision+1
 BEGIN SELECT RAISE(ABORT,'memory revision must advance once'); END;
+  `,
+  // v17: immutable inputs belonging to one authority generation.
+  `
+CREATE TABLE run_input_snapshots (
+  authority_id TEXT PRIMARY KEY REFERENCES run_authorities(authority_id),
+  input_hash TEXT NOT NULL CHECK(length(input_hash)=64 AND input_hash NOT GLOB '*[^0-9a-f]*'),
+  payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+  created_at INTEGER NOT NULL
+);
+CREATE TRIGGER run_input_snapshots_immutable_update BEFORE UPDATE ON run_input_snapshots
+BEGIN SELECT RAISE(ABORT,'immutable run input snapshot'); END;
+CREATE TRIGGER run_input_snapshots_immutable_delete BEFORE DELETE ON run_input_snapshots
+BEGIN SELECT RAISE(ABORT,'immutable run input snapshot'); END;
   `
 ];
 function projectOf(db) {
@@ -21981,9 +21994,6 @@ function checkMove(from, to, actor, reason, openCriteria2 = 0, claimedBy = null,
   }
   return { ok: true };
 }
-var LEGACY_EXECUTION_SQL = `execution_mode='manual'
-  AND NOT EXISTS (SELECT 1 FROM managed_task_policy p WHERE p.task_id=tasks.id)
-  AND NOT EXISTS (SELECT 1 FROM execution_handoffs h WHERE h.task_id=tasks.id AND h.completed_at IS NULL)`;
 var SECRETS = [
   [/-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----/g, "[redacted key]"],
   [/\bsk-[A-Za-z0-9_-]{16,}/g, "[redacted]"],
@@ -22013,14 +22023,9 @@ function redact(s) {
   for (const [re, to] of SECRETS) out = out.replace(re, to);
   return out;
 }
-function listCriteria(db, taskId) {
-  return db.prepare(
-    `SELECT * FROM criteria WHERE task_id = ? ORDER BY position, id`
-  ).all(taskId);
-}
 var normalize = (s) => s.replace(/\r\n/g, "\n").trim();
 function contentHash(title, body) {
-  return createHash6("sha256").update(`${normalize(title)}
+  return createHash3("sha256").update(`${normalize(title)}
 ${normalize(body)}`).digest("hex");
 }
 function normalizeSourceTasks(ids = []) {
@@ -22074,7 +22079,7 @@ function parseDecisionMd(raw) {
 function syncIndex(db, decisionsDir) {
   db.transaction(() => {
     if (canSyncLegacyDecisions(db, decisionsDir)) {
-      const files = existsSync6(decisionsDir) ? readdirSync6(decisionsDir).filter((f) => f.endsWith(".md")) : [];
+      const files = existsSync4(decisionsDir) ? readdirSync4(decisionsDir).filter((f) => f.endsWith(".md")) : [];
       const inDb = new Map(
         db.prepare(
           `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`
@@ -22084,9 +22089,9 @@ function syncIndex(db, decisionsDir) {
       for (const f of files) {
         const slug = f.slice(0, -3);
         seen.add(slug);
-        const path = join7(decisionsDir, f);
-        if (!canSyncLegacyDecisions(db, dirname5(realpathSync7(path)))) continue;
-        const doc = parseDecisionMd(readFileSync6(path, "utf8"));
+        const path = join5(decisionsDir, f);
+        if (!canSyncLegacyDecisions(db, dirname4(realpathSync5(path)))) continue;
+        const doc = parseDecisionMd(readFileSync4(path, "utf8"));
         const title = doc.title || slug;
         const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
         const sourceTasks = JSON.stringify(doc.sourceTasks);
@@ -22173,6 +22178,112 @@ function recall(db, decisionsDir, query, opts = {}) {
     k
   });
 }
+function listCriteria(db, taskId) {
+  return db.prepare(
+    `SELECT * FROM criteria WHERE task_id = ? ORDER BY position, id`
+  ).all(taskId);
+}
+var MIME = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  bmp: "image/bmp",
+  ico: "image/x-icon",
+  tif: "image/tiff",
+  tiff: "image/tiff",
+  svg: "image/svg+xml",
+  pdf: "application/pdf",
+  zip: "application/zip",
+  json: "application/json",
+  csv: "text/csv",
+  md: "text/markdown",
+  txt: "text/plain",
+  log: "text/plain"
+};
+var filesDir = (dbPath) => {
+  if (dbPath === ":memory:") throw new KddError("attachments need a real board file, not :memory:");
+  return join6(dirname5(dbPath), "files");
+};
+var filePath = (dbPath, f) => join6(filesDir(dbPath), `${f.sha256}.${f.ext}`);
+function listFiles(db, taskId) {
+  return db.prepare(`SELECT * FROM files WHERE task_id = ? ORDER BY id`).all(taskId);
+}
+function getFile(db, id2) {
+  return db.prepare(`SELECT * FROM files WHERE id = ?`).get(id2);
+}
+function attachFile(db, dbPath, taskId, srcPath, opts, actor) {
+  return db.transaction(() => {
+    assertLegacyTaskMutation(db, [taskId]);
+    let data;
+    try {
+      const stat = statSync2(srcPath);
+      if (stat.isDirectory()) throw new KddError(`${srcPath} is a directory`);
+      if (stat.size > CAPS.fileBytes) {
+        throw new KddError(`file is ${stat.size} bytes, the limit is ${CAPS.fileBytes}`);
+      }
+      data = readFileSync5(srcPath);
+    } catch (e) {
+      if (e instanceof KddError) throw e;
+      throw new KddError(`cannot read ${srcPath}: ${e.message}`);
+    }
+    mustGetTask(db, taskId);
+    const sha256 = createHash5("sha256").update(data).digest("hex");
+    const ext = (extname(srcPath).slice(1) || "bin").toLowerCase();
+    const target = join6(filesDir(dbPath), `${sha256}.${ext}`);
+    if (!existsSync5(target)) {
+      mkdirSync4(filesDir(dbPath), { recursive: true });
+      const tmp = `${target}.${process.pid}.tmp`;
+      writeFileSync3(tmp, data);
+      renameSync3(tmp, target);
+    }
+    const name = capText(basename3(srcPath), CAPS.fileNameChars);
+    const r = db.prepare(
+      `INSERT INTO files (task_id, sha256, ext, original_name, mime_type, size_bytes,
+                          description, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(task_id, sha256) DO NOTHING`
+    ).run(
+      taskId,
+      sha256,
+      ext,
+      name,
+      MIME[ext] ?? null,
+      data.length,
+      opts.description ?? null,
+      now()
+    );
+    const row = db.prepare(`SELECT * FROM files WHERE task_id = ? AND sha256 = ?`).get(taskId, sha256);
+    if (r.changes === 0) {
+      if (opts.description && opts.description !== row.description) {
+        db.prepare(`UPDATE files SET description = ? WHERE id = ?`).run(opts.description, row.id);
+        appendTaskMutationEvent(db, taskId, actor, "file_attached", { id: row.id, name, described: true });
+        db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
+        return { ...row, description: opts.description };
+      }
+      return row;
+    }
+    appendTaskMutationEvent(db, taskId, actor, "file_attached", { id: row.id, name });
+    db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
+    return row;
+  }).immediate();
+}
+function detachFile(db, dbPath, fileId, actor) {
+  db.transaction(() => {
+    const f = getFile(db, fileId);
+    if (!f) throw new KddError(`file #${fileId} not found`);
+    assertLegacyTaskMutation(db, [f.task_id]);
+    db.prepare(`DELETE FROM files WHERE id = ?`).run(fileId);
+    appendTaskMutationEvent(db, f.task_id, actor, "file_detached", { id: fileId, name: f.original_name });
+    db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), f.task_id);
+    const left = db.prepare(`SELECT COUNT(*) AS c FROM files WHERE sha256 = ? AND ext = ?`).get(f.sha256, f.ext).c;
+    if (left === 0) rmSync3(filePath(dbPath, f), { force: true });
+  }).immediate();
+}
+var LEGACY_EXECUTION_SQL = `execution_mode='manual'
+  AND NOT EXISTS (SELECT 1 FROM managed_task_policy p WHERE p.task_id=tasks.id)
+  AND NOT EXISTS (SELECT 1 FROM execution_handoffs h WHERE h.task_id=tasks.id AND h.completed_at IS NULL)`;
 function assertLegacyTaskMutation(db, taskIds) {
   const ids = [...new Set(taskIds)];
   if (ids.some((id2) => !Number.isSafeInteger(id2) || id2 < 1)) throw new KddError("invalid task ids");
@@ -22339,104 +22450,6 @@ function moveTask(db, id2, to, actor, reason) {
       ).run(id2, authorOf(actor), reason, now());
     }
     return mustGetTask(db, id2);
-  }).immediate();
-}
-var MIME = {
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  gif: "image/gif",
-  webp: "image/webp",
-  bmp: "image/bmp",
-  ico: "image/x-icon",
-  tif: "image/tiff",
-  tiff: "image/tiff",
-  svg: "image/svg+xml",
-  pdf: "application/pdf",
-  zip: "application/zip",
-  json: "application/json",
-  csv: "text/csv",
-  md: "text/markdown",
-  txt: "text/plain",
-  log: "text/plain"
-};
-var filesDir = (dbPath) => {
-  if (dbPath === ":memory:") throw new KddError("attachments need a real board file, not :memory:");
-  return join8(dirname6(dbPath), "files");
-};
-var filePath = (dbPath, f) => join8(filesDir(dbPath), `${f.sha256}.${f.ext}`);
-function listFiles(db, taskId) {
-  return db.prepare(`SELECT * FROM files WHERE task_id = ? ORDER BY id`).all(taskId);
-}
-function getFile(db, id2) {
-  return db.prepare(`SELECT * FROM files WHERE id = ?`).get(id2);
-}
-function attachFile(db, dbPath, taskId, srcPath, opts, actor) {
-  return db.transaction(() => {
-    assertLegacyTaskMutation(db, [taskId]);
-    let data;
-    try {
-      const stat = statSync2(srcPath);
-      if (stat.isDirectory()) throw new KddError(`${srcPath} is a directory`);
-      if (stat.size > CAPS.fileBytes) {
-        throw new KddError(`file is ${stat.size} bytes, the limit is ${CAPS.fileBytes}`);
-      }
-      data = readFileSync7(srcPath);
-    } catch (e) {
-      if (e instanceof KddError) throw e;
-      throw new KddError(`cannot read ${srcPath}: ${e.message}`);
-    }
-    mustGetTask(db, taskId);
-    const sha256 = createHash9("sha256").update(data).digest("hex");
-    const ext = (extname(srcPath).slice(1) || "bin").toLowerCase();
-    const target = join8(filesDir(dbPath), `${sha256}.${ext}`);
-    if (!existsSync7(target)) {
-      mkdirSync6(filesDir(dbPath), { recursive: true });
-      const tmp = `${target}.${process.pid}.tmp`;
-      writeFileSync5(tmp, data);
-      renameSync3(tmp, target);
-    }
-    const name = capText(basename3(srcPath), CAPS.fileNameChars);
-    const r = db.prepare(
-      `INSERT INTO files (task_id, sha256, ext, original_name, mime_type, size_bytes,
-                          description, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(task_id, sha256) DO NOTHING`
-    ).run(
-      taskId,
-      sha256,
-      ext,
-      name,
-      MIME[ext] ?? null,
-      data.length,
-      opts.description ?? null,
-      now()
-    );
-    const row = db.prepare(`SELECT * FROM files WHERE task_id = ? AND sha256 = ?`).get(taskId, sha256);
-    if (r.changes === 0) {
-      if (opts.description && opts.description !== row.description) {
-        db.prepare(`UPDATE files SET description = ? WHERE id = ?`).run(opts.description, row.id);
-        appendTaskMutationEvent(db, taskId, actor, "file_attached", { id: row.id, name, described: true });
-        db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
-        return { ...row, description: opts.description };
-      }
-      return row;
-    }
-    appendTaskMutationEvent(db, taskId, actor, "file_attached", { id: row.id, name });
-    db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
-    return row;
-  }).immediate();
-}
-function detachFile(db, dbPath, fileId, actor) {
-  db.transaction(() => {
-    const f = getFile(db, fileId);
-    if (!f) throw new KddError(`file #${fileId} not found`);
-    assertLegacyTaskMutation(db, [f.task_id]);
-    db.prepare(`DELETE FROM files WHERE id = ?`).run(fileId);
-    appendTaskMutationEvent(db, f.task_id, actor, "file_detached", { id: fileId, name: f.original_name });
-    db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), f.task_id);
-    const left = db.prepare(`SELECT COUNT(*) AS c FROM files WHERE sha256 = ? AND ext = ?`).get(f.sha256, f.ext).c;
-    if (left === 0) rmSync4(filePath(dbPath, f), { force: true });
   }).immediate();
 }
 var PRIORITY_ORDER = `CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
@@ -22653,11 +22666,11 @@ function readTaskDecisions(db, decisionsDir, taskId) {
   if (!canSyncLegacyDecisions(db, decisionsDir)) {
     return db.prepare("SELECT slug,title,created,superseded_by,source_tasks FROM decisions ORDER BY slug").all().filter((row) => JSON.parse(row.source_tasks).includes(taskId)).map(({ source_tasks, ...row }) => ({ ...row, title: capText(row.title, CAPS.titleChars) }));
   }
-  if (!existsSync10(decisionsDir)) return [];
+  if (!existsSync11(decisionsDir)) return [];
   return readdirSync7(decisionsDir).filter((file) => file.endsWith(".md")).flatMap((file) => {
     const slug = file.slice(0, -3);
-    if (!canSyncLegacyDecisions(db, dirname9(realpathSync11(join11(decisionsDir, file))))) return [];
-    const decision = parseDecisionMd(readFileSync10(join11(decisionsDir, file), "utf8"));
+    if (!canSyncLegacyDecisions(db, dirname10(realpathSync12(join11(decisionsDir, file))))) return [];
+    const decision = parseDecisionMd(readFileSync11(join11(decisionsDir, file), "utf8"));
     if (!decision.sourceTasks.includes(taskId)) return [];
     return [{
       slug,

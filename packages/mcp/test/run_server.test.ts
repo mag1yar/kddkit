@@ -133,3 +133,20 @@ it('keeps modeled ownership private from scoped MCP and reports untrusted',async
   expect(core.workItem(handle,item.ref).state).toBe('pending');
   expect(core.ownership(handle,owner.ref).releasedAt).toBeNull();
 });
+it('returns byte-identical saved inputs over MCP after reopen and refuses stale input reads',async()=>{
+  const {client,controller,issued}=await connect(['get_context']);
+  const first=await client.callTool({name:'get_context',arguments:{}}),content=first.content as {type:string;text:string}[];
+  const payload=JSON.parse(content[0].text),ref={projectId:core.projectOf(db).project_id,authorityId:issued.authorityId};
+  expect(payload.inputs.inputHash).toBe(core.runInputSnapshot(controller,ref).inputHash);
+  const other=core.openDb(db.name);
+  try{expect(core.readRunContext(core.openRunContext(other,issued.token))).toEqual(payload);}finally{other.close();}
+  db.prepare("UPDATE tasks SET status='in_progress' WHERE id=?").run(input.taskId);
+  db.prepare('UPDATE criteria SET checked_at=1 WHERE task_id=?').run(input.taskId);
+  expect(await client.callTool({name:'get_context',arguments:{}})).toEqual(first);
+  expect(JSON.stringify(first)).not.toContain(input.native.scratchDir);
+  expect(JSON.stringify(first)).not.toContain(issued.token);
+  db.prepare('UPDATE tasks SET body=? WHERE id=?').run('changed',input.taskId);
+  expect((await client.callTool({name:'get_context',arguments:{}})).isError).toBe(true);
+  expect(core.runInputSnapshot(controller,ref).response).toEqual(payload);
+  expect(core.checkRunInputs(controller,ref).status).toBe('update_required');
+});

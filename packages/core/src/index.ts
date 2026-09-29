@@ -49,3 +49,8 @@ export type { ResultSource, ResultPayload, ResultBinding, EvidenceRequest, Evide
 export { reserveWorkItem, ownership, recordLaunchIntent, beginHandoff, handoff, finishHandoff } from './execution_ownership.js';
 export type { LaunchIntent, OwnershipRecord, ReserveWorkItemInput, HandoffRecord, HandoffReceipt,
   StopObservation, StopObserver, HandoffOutcome } from './execution_ownership.js';
+
+export { runInputSnapshot } from './run_inputs.js';
+export type { RunInputRef, RunInputSnapshot, RunInputSections, RunInputOptions } from './run_inputs.js';
+export { checkRunInputs } from './run_inputs_current.js';
+export type { RunInputReason, RunInputChange, RunInputStatus } from './run_inputs_current.js';

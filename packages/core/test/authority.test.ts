@@ -114,7 +114,7 @@ it('binds run memory to the actual checkout HEAD and returns all active rules',(
   expect(core.runMemoryRules(context)).toHaveLength(12);
   expect(core.recallRunMemory(context,'policy',{k:1})).toHaveLength(1);
   git(workspace,'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--allow-empty','-qm','next');
-  expect(()=>core.readRunMemory(context,{entryId:entry.entryId,candidates:true})).toThrow(/unavailable/);
+  expect(core.readRunMemory(context,{entryId:entry.entryId,candidates:true})[0].applicability.commit).toBe(head);
   expect(core.runMemoryRules(context)).toHaveLength(12);
 });
 it.each(['revoke','expire','rotate','no context','scratch alias'] as const)('rechecks initialized run memory after %s',change=>{
@@ -488,7 +488,7 @@ it.each(['invalidation','upstream invalidation','artifact change','producer requ
   const parent=core.addTask(db,{title:'BA consumer',criteria:['deliver']},user);
   const consumer=core.createWorkItem(handle,{task:ref(parent.id),definition:{kind:'analysis',repoId:core.projectOf(db).primary_repo_id,sourceTasks:[],outputs:[]},dependencies:[edge(producer)]});
   const owner=core.reserveWorkItem(handle,{ref:consumer.ref,expectedRevision:1,expectedFence:0,expectedMode:'manual',ownerId:'BA',write:true},observed);
-  const input={...issueInput(parent.id),workItemId:consumer.ref.workItemId,ownership:owner.ref};
+  const input={...issueInput(parent.id),workItemId:consumer.ref.workItemId,ownership:owner.ref,contextObservers:observed};
   const issued=core.issueRunAuthority(handle,input), context=core.openRunContext(db,issued.token);
   const proposal:core.CreateSubtasksInput={parent:ref(parent.id),expectedParentHash:core.taskContractHash(handle,ref(parent.id)),
     source:{kind:'run',sourceTask:ref(parent.id),authority:{authorityId:issued.authorityId,workItemId:consumer.ref.workItemId,runId:'r1',generation:1},

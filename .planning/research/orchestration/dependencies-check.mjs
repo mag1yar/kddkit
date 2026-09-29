@@ -31,7 +31,7 @@ const waitUntil = async condition => {
 };
 const evidence = { observedAt: new Date().toISOString(), node: process.version, schema: core.MIGRATIONS.length,
   runtimeHash: sha(readFileSync(new URL('../../../packages/core/dist/index.js', import.meta.url))),
-  credentialFixtures: 'persisted scoped rows; no native proof fabricated', checks: [], raceRounds: { edges: 20, reservations: 20 } };
+  credentialFixtures: 'genuine preflight and actual issuer snapshots; fixed fixture host/user observations', checks: [], raceRounds: { edges: 20, reservations: 20 } };
 const record = (id, details) => evidence.checks.push({ id, outcome: 'pass', ...details });
 try {
   process.env.KDD_HOME = home; delete process.env.KDD_DB; delete process.env.KDD_DECISIONS_DIR;
@@ -107,7 +107,7 @@ try {
     const consumer = item(title + ':consumer', definition(), [edge(producer)]);
     return { producer, consumer, publication: publication(producer) };
   };
-  const tables = ['tasks','criteria','events','work_items','work_item_revisions','work_item_dependencies','work_item_results','work_item_owners','execution_handoffs','managed_task_policy','run_authorities'];
+  const tables = ['tasks','criteria','events','work_items','work_item_revisions','work_item_dependencies','work_item_results','work_item_owners','execution_handoffs','managed_task_policy','run_authorities','run_input_snapshots'];
   const snapshot = () => tables.map(t => db.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all());
   const noWrites = (action, reason) => { const before = snapshot(); assert.throws(action, reason); assert.deepEqual(snapshot(), before); };
   const reservation = (work, ownerId = 'host', write = false) => ({ ref: work.ref, expectedRevision: work.revision,
@@ -305,17 +305,16 @@ try {
   record('D08',{reservationProcessRounds:reservationRaces,independentItems:independent.map(w=>w.ref),independentOwners:2,
     stalePublicationWrites:0,oldFence:oldOwner.ref.fence,newFence:newOwner.ref.fence});
 
-  // Historical credential rows are fixtures, not an issueRunAuthority/native preflight bypass.
+  // Actual issuer snapshots: this fixture uses a genuine process-local native package.
+  const scratch=join(root,'scratch'),controlDir=join(home,'native');mkdirSync(scratch);mkdirSync(controlDir);
+  const packet=await core.preflightCodex({executable:process.env.KDD_CODEX_EXECUTABLE??fileURLToPath(new URL('../../../.superpowers/sdd/2026-09-28-subtasks-dependencies/codex-0.157.0/bin/codex',import.meta.url)),
+    model:'fixture-codex',cwd:source,readableRoots:[source],scratchDir:scratch,controlDir,protectedPaths:[home]});
   const seedCredential=(work,owner,operations=['get_context','submit_report','request_question'],expiresAt=core.now()+3600)=>{
-    core.protectTask(handle,work.task.taskId); const token=randomBytes(32).toString('hex'),authorityId=randomBytes(16).toString('hex');
-    const grant={projectId,taskId:work.task.taskId,workItemId:work.ref.workItemId,runId:'fixture:'+authorityId,generation:1,operations,
-      ownership:owner.ref,repositories:[{repoId,checkoutPath:source,commonDir:core.canonicalCommonDir(source),write:false}],
-      native:{readableRoots:[source],scratchDir:join(root,'scratch'),configHash:'persisted-fixture-no-native-proof'}};
-    db.prepare('INSERT INTO run_authorities(authority_id,task_id,work_item_id,run_id,generation,expires_at,token_hash,grant_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
-      .run(authorityId,work.task.taskId,work.ref.workItemId,grant.runId,1,expiresAt,sha(token),JSON.stringify(grant),core.now());
-    return {token,authorityId,context:core.openRunContext(db,token),expiresAt};
+    const issued=core.issueRunAuthority(handle,{taskId:work.task.taskId,workItemId:work.ref.workItemId,
+      runId:'fixture:'+randomBytes(16).toString('hex'),expectedGeneration:0,expiresAt,operations,ownership:owner.ref,
+      repositories:[{repoId,checkoutPath:source,write:false}],native:packet});
+    return {...issued,context:core.openRunContext(db,issued.token),expiresAt};
   };
-  mkdirSync(join(root,'scratch'));
   const holds=item('D09 held scope'), heldOwner=core.reserveWorkItem(handle,reservation(holds));
   const sameCard=core.createWorkItem(handle,{task:holds.task,definition:definition(),dependencies:[]});
   const otherOwner=core.reserveWorkItem(handle,reservation(sameCard,'other'));
