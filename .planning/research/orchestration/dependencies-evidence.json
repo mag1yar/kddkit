@@ -1,15 +1,15 @@
 {
-  "observedAt": "2026-09-28T12:04:18.172Z",
+  "observedAt": "2026-09-29T10:39:27.964Z",
   "node": "v24.15.0",
-  "schema": 15,
-  "runtimeHash": "98c1bf167fa524a2a459addbf9796ab774dbed8c1db53414ee5e6060abd65bfe",
+  "schema": 16,
+  "runtimeHash": "be239ec65a2a5a3c90f6f3cc8f4468ec98bae7a24c50515f329ef1028398bffa",
   "credentialFixtures": "persisted scoped rows; no native proof fabricated",
   "checks": [
     {
       "id": "D01",
       "outcome": "pass",
       "historicalTables": 17,
-      "projectId": "ac75f3cfbaf05944af43be9213d2dff2",
+      "projectId": "596d2c842f55c3f4ddce1437e2cfe12f",
       "backupVersion": 14,
       "oldTasks": [
         41,
@@ -45,19 +45,19 @@
       "outcome": "pass",
       "independent": [
         {
-          "projectId": "428652aec0c8469dc3b645592b34f943",
-          "workItemId": "f7b4360397a76730d126ea44668ec6a7"
+          "projectId": "ddc853385ea225219771a4e40e7d79aa",
+          "workItemId": "9401388bcf0007ac156a5049c76b992a"
         },
         {
-          "projectId": "428652aec0c8469dc3b645592b34f943",
-          "workItemId": "4b3cb31a5fc369f9c668939e45e08482"
+          "projectId": "ddc853385ea225219771a4e40e7d79aa",
+          "workItemId": "caea4932d2b8308c81bbbce85795efbf"
         }
       ],
       "dependent": {
-        "projectId": "428652aec0c8469dc3b645592b34f943",
-        "workItemId": "21a83d3e902836b76634d9a54b0f5b3d"
+        "projectId": "ddc853385ea225219771a4e40e7d79aa",
+        "workItemId": "23c5bb9bbb2c4d0a0b62459f46ec0d39"
       },
-      "pinnedResultId": "e2d4204421d1da32bf928ad23100f8b5",
+      "pinnedResultId": "87758cf6eda8ff76de02d946663c4fe0",
       "implicitParentAndLegacyEdges": 0
     },
     {
@@ -65,19 +65,19 @@
       "outcome": "pass",
       "crossMainTasks": [
         {
-          "projectId": "428652aec0c8469dc3b645592b34f943",
+          "projectId": "ddc853385ea225219771a4e40e7d79aa",
           "taskId": 7
         },
         {
-          "projectId": "428652aec0c8469dc3b645592b34f943",
+          "projectId": "ddc853385ea225219771a4e40e7d79aa",
           "taskId": 8
         }
       ],
       "opposingProcessRounds": [
         {
           "ids": [
-            "69334858591901847c44367d9eba1d0a",
-            "cb606b665d981a5dec3364d563ae0218"
+            "6cabc518252391d571b4971b66d6b143",
+            "ab12eca0126c459ab17b31f62ac2087c"
           ],
           "revisions": [
             1,
@@ -87,30 +87,8 @@
         },
         {
           "ids": [
-            "c42dfd7c69f0fcba46347f07cba486c9",
-            "ab15c4e7f069bee541590a1b570a75ba"
-          ],
-          "revisions": [
-            1,
-            2
-          ],
-          "commits": 1
-        },
-        {
-          "ids": [
-            "d2152c54505a262531ab69641777767e",
-            "29992dcfe0100e35feec1abd0055b5e4"
-          ],
-          "revisions": [
-            1,
-            2
-          ],
-          "commits": 1
-        },
-        {
-          "ids": [
-            "67b6df339c2c811e33e949b428d81280",
-            "074b97e87c2c3a94c749135a09161ddb"
+            "dbe4a1ff550dcc593626f6f77697e7a1",
+            "22293ddb9799c2432f96e2596c493d3c"
           ],
           "revisions": [
             2,
@@ -120,8 +98,19 @@
         },
         {
           "ids": [
-            "ddcc21418bfc6d51abc6a19e2851a79d",
-            "cf4cf367a0bd7e667d09d2b85b27f939"
+            "a4fdbba1d9be25de3ba5161534babff0",
+            "8380cd1ade555052b0ee09a1dbd7512a"
+          ],
+          "revisions": [
+            1,
+            2
+          ],
+          "commits": 1
+        },
+        {
+          "ids": [
+            "52ed2df7e2487ad726c03c09df2137c1",
+            "829f3ec78878f54f3eb36dc2531280ec"
           ],
           "revisions": [
             2,
@@ -131,8 +120,8 @@
         },
         {
           "ids": [
-            "11ed7d3f9b2128c9c95bc8a5b2b8e679",
-            "962de237be96b972986a0ac20d987bac"
+            "7cce03f9b5f8821a58fa1a046b62b6e9",
+            "74ea590bb4d5d774c06e3e25824e41b6"
           ],
           "revisions": [
             2,
@@ -142,63 +131,8 @@
         },
         {
           "ids": [
-            "6e2c23c2e75dfeda9e20a13afbb9918e",
-            "15b48f3c8c94d8c14372d5a668ba54dc"
-          ],
-          "revisions": [
-            1,
-            2
-          ],
-          "commits": 1
-        },
-        {
-          "ids": [
-            "45877ad86f3c64019cec74fa2a0367dd",
-            "a330581f4fc8db8fd9277c78d86cc743"
-          ],
-          "revisions": [
-            1,
-            2
-          ],
-          "commits": 1
-        },
-        {
-          "ids": [
-            "28390d210269acda95b7c736e10e099b",
-            "ab37616540242c1c23b2270bc7be7689"
-          ],
-          "revisions": [
-            1,
-            2
-          ],
-          "commits": 1
-        },
-        {
-          "ids": [
-            "27c0faae9b693084d33c7a2f6c3f547e",
-            "d8ec758f112d7e020d5533a9094049ac"
-          ],
-          "revisions": [
-            1,
-            2
-          ],
-          "commits": 1
-        },
-        {
-          "ids": [
-            "90c30817888b393ce60dab369fc72bcc",
-            "f19bc04f9e632d66e0563259d0e2ae16"
-          ],
-          "revisions": [
-            1,
-            2
-          ],
-          "commits": 1
-        },
-        {
-          "ids": [
-            "fe930e682ed24dc084e432a04ecef2fe",
-            "20b42911d33ea467cdf78e89c01248f0"
+            "473ab8bc688035e455fc353a07085b46",
+            "e4afcdf9bb02a25d295079605a3e26a4"
           ],
           "revisions": [
             2,
@@ -208,8 +142,8 @@
         },
         {
           "ids": [
-            "644f3fc72ae59391b8303e31db797fa7",
-            "df741e27ba251235a681610f880ecbe2"
+            "6ca5d8b6f4c81a1aeb9f01bf8fe445e7",
+            "5981766d1081d5abd156b93a60bd1611"
           ],
           "revisions": [
             1,
@@ -219,8 +153,8 @@
         },
         {
           "ids": [
-            "c8440619191cd2f17bf0e7686f9a761e",
-            "f574398296143c520f473ad9bcbb2ea8"
+            "128f92728a3f98e73f39e6d4686c2842",
+            "66b931450917adc70d0502ad4bad2a94"
           ],
           "revisions": [
             2,
@@ -230,8 +164,63 @@
         },
         {
           "ids": [
-            "3854981ab62c3f0e500835036dc7c2b6",
-            "d22956ac32f0401b0b5d68f0864d002e"
+            "e491f210be261496681860a33890b705",
+            "1cb3f47e23fe0cd965e2c29554740aa0"
+          ],
+          "revisions": [
+            2,
+            1
+          ],
+          "commits": 1
+        },
+        {
+          "ids": [
+            "8757b4330cc77122fc97f8ec31a66735",
+            "736c57bdf752e00640d44cce24b89696"
+          ],
+          "revisions": [
+            2,
+            1
+          ],
+          "commits": 1
+        },
+        {
+          "ids": [
+            "ca4d464a71261d8ef2b4edc3411787cc",
+            "72545e13a6d9d2fc44ba9a03aad9e0ff"
+          ],
+          "revisions": [
+            2,
+            1
+          ],
+          "commits": 1
+        },
+        {
+          "ids": [
+            "26649aa2ca513113c66889ef21e9e3ca",
+            "38e7c719bc6c963fb608a287b326500c"
+          ],
+          "revisions": [
+            2,
+            1
+          ],
+          "commits": 1
+        },
+        {
+          "ids": [
+            "9d1fa52204dff93ae9b5151eeff17098",
+            "b808a0db4071add570d133b7b1bb7169"
+          ],
+          "revisions": [
+            2,
+            1
+          ],
+          "commits": 1
+        },
+        {
+          "ids": [
+            "f4190ab68dca1da38b94be53c9155578",
+            "c68c3044b5e84195629aae90776fb594"
           ],
           "revisions": [
             1,
@@ -241,8 +230,8 @@
         },
         {
           "ids": [
-            "32f8b9a8cad26aa22ccf0689fb617350",
-            "aaaaa33a99946411ba218c0da02c959c"
+            "6d55377794bc4d82dc7f94cdfbb75447",
+            "004a0b6411c9d4807faf5c2e08b3f99a"
           ],
           "revisions": [
             2,
@@ -252,8 +241,8 @@
         },
         {
           "ids": [
-            "a00ac445b4207c518f0877389d11dfe8",
-            "f25080bdc597af403ac4f2f190800eac"
+            "4a71f503b4d10858657348a784748845",
+            "e05e32bb46ec817209a19e5fcc81c4e1"
           ],
           "revisions": [
             2,
@@ -263,8 +252,19 @@
         },
         {
           "ids": [
-            "0b52b5382ed020208845b8347913cec5",
-            "df6f58fd80eea985fc099439fd31dec2"
+            "1d47fc8c1d8e921c898dea9d4a0f42cf",
+            "a2cd33419e82000d7980fc96e16de701"
+          ],
+          "revisions": [
+            2,
+            1
+          ],
+          "commits": 1
+        },
+        {
+          "ids": [
+            "181b86ca6c0f176599bee2f023dc6e39",
+            "722a29c070439b847774b538df6499ee"
           ],
           "revisions": [
             1,
@@ -274,23 +274,23 @@
         },
         {
           "ids": [
-            "5c8a1dc04b0fdb1f1f33fa16ef854095",
-            "006b3cfdc3bb97d255dd92f005db8d38"
+            "e06bc2fc99898882a238fac4973ba2df",
+            "82cb1bf84ed3009e767b6aeacf49c974"
           ],
           "revisions": [
-            2,
-            1
+            1,
+            2
           ],
           "commits": 1
         },
         {
           "ids": [
-            "5ffff4415e20252a05a16470fe949981",
-            "cdfe66e817f8fe840bb4d477f962cc69"
+            "f0889f325f3268bb1b70c02f0d24ea4a",
+            "fd6a60bad05c7154315e0d20d0bab008"
           ],
           "revisions": [
-            1,
-            2
+            2,
+            1
           ],
           "commits": 1
         }
@@ -301,40 +301,40 @@
       "id": "D05",
       "outcome": "pass",
       "legacySignalsOpened": false,
-      "requiredResultId": "9ec61f2341f6febe7cc2a5e1274991ea",
+      "requiredResultId": "6c312e9893f4bc13ae3a5b728182b452",
       "closedStates": [
         "failed",
         "cancelled",
         "waiting_input"
       ],
-      "checkedResultId": "d635e07c4fcdf03ea44f89def2e50ea9",
+      "checkedResultId": "9b417f015b6a6b22202db3190449f101",
       "checks": "fresh local host artifact check"
     },
     {
       "id": "D06",
       "outcome": "pass",
-      "backendRepoId": "602f813867e0fc7b7a8d00ba6dff9475",
-      "apiResultId": "c614080d5e77fe5c5a7edc449891c68a",
+      "backendRepoId": "6e7facfd635e74cbc49ace0f1e7c2d25",
+      "apiResultId": "4fd365e6012909c2dc995a177f87e273",
       "apiHash": "fe57101ebfd219eaf1f078e7d252b13c24364845f63eb14af9da492d3e996a5d",
-      "frontendHeadUnchanged": "35b54f970fbeba74442606fa4255a3c2f85995e9",
+      "frontendHeadUnchanged": "6707fe744999690502de5827593b65e455915dac",
       "denied": [
         "cross-repo code",
         "missing consumer base",
         "missing merge acceptance/receipt",
         "missing scoped readiness proof"
       ],
-      "codeHead": "816fe103313e6febaf38bb8e8facde56e55e12ac",
-      "consumerBase": "35b54f970fbeba74442606fa4255a3c2f85995e9"
+      "codeHead": "6713982281dc4536e945e01db39609d5f063b8a7",
+      "consumerBase": "6707fe744999690502de5827593b65e455915dac"
     },
     {
       "id": "D07",
       "outcome": "pass",
       "resultHistory": [
-        "7a3203293addc33d5d52a35b42d26771",
-        "1231346ae3974e0f0b201efd1c049128",
-        "b0fe6216e1512c9d1eac1fa23505d05c"
+        "436f5f7155f9d8f29a1883c8c6249bfb",
+        "d01762f66a9246db89655613c728efe5",
+        "4cc167bdcb356d843ed5aeaf540c3d29"
       ],
-      "pinnedResultId": "1231346ae3974e0f0b201efd1c049128",
+      "pinnedResultId": "d01762f66a9246db89655613c728efe5",
       "ownerInputsFrozen": true,
       "requirementTasks": [
         68,
@@ -349,114 +349,114 @@
       "outcome": "pass",
       "reservationProcessRounds": [
         {
-          "workItemId": "8acc6ea678eb3905880f51f3c6524352",
+          "workItemId": "94aa753e293c76b7ff05b2ecfda11578",
           "liveOwners": 1,
           "fence": 1
         },
         {
-          "workItemId": "a0d6cb25d835a26007da7adfa93e647a",
+          "workItemId": "1f163b61132c5676225896a858c9e31a",
           "liveOwners": 1,
           "fence": 1
         },
         {
-          "workItemId": "7c170cf7473386f66c85f5f3b63033f8",
+          "workItemId": "204030ff4ebb7f7574eb4c325b178c26",
           "liveOwners": 1,
           "fence": 1
         },
         {
-          "workItemId": "5b66adc2d76c75b5b0e6323c5c7ed087",
+          "workItemId": "d2d6a96a4f7bb4f0eda66e4e6b8f930f",
           "liveOwners": 1,
           "fence": 1
         },
         {
-          "workItemId": "4dcd16f875636417c815f0ed01c077e1",
+          "workItemId": "87d37f03d173957811ec0634f8ab0bd2",
           "liveOwners": 1,
           "fence": 1
         },
         {
-          "workItemId": "7939456a2772a1ca2fa4c41c51c7735c",
+          "workItemId": "f16ff8872e05104b64c32ddfe57af99f",
           "liveOwners": 1,
           "fence": 1
         },
         {
-          "workItemId": "7dfc394c4ed9873a6b21e6cc3a050da8",
+          "workItemId": "9a9a846c18cbf55ac81253eb6215f9e6",
           "liveOwners": 1,
           "fence": 1
         },
         {
-          "workItemId": "f5dcc22606b9573a9e51ebc6e633bbf5",
+          "workItemId": "37d94cbb3a6672325e2b09771ff42ef5",
           "liveOwners": 1,
           "fence": 1
         },
         {
-          "workItemId": "edd67ab7b02bebc21b3fb2962e464897",
+          "workItemId": "7b4815f5e9c7c8f061765d11abc8c0db",
           "liveOwners": 1,
           "fence": 1
         },
         {
-          "workItemId": "f74589aff7334453a253e625c81264f6",
+          "workItemId": "ecbfbf6ac8e9aae654326b028ceb963d",
           "liveOwners": 1,
           "fence": 1
         },
         {
-          "workItemId": "5c9cd25b341c5800bfe9fb3e93dd0b78",
+          "workItemId": "f2cf9ac2d98c021c11293cdd305bb6a3",
           "liveOwners": 1,
           "fence": 1
         },
         {
-          "workItemId": "adb399a4ba880e1474ce44b47cef05be",
+          "workItemId": "43084e0f34a68e756d2607e5d2895761",
           "liveOwners": 1,
           "fence": 1
         },
         {
-          "workItemId": "73a7facf61e32862be3a5fd814414bbe",
+          "workItemId": "fba0232661cd1963da55766abb8017d7",
           "liveOwners": 1,
           "fence": 1
         },
         {
-          "workItemId": "b4a0aadfff0597cfffa2a3c02ed5584d",
+          "workItemId": "f22149fdab1663d44e0a8a6e42a27c93",
           "liveOwners": 1,
           "fence": 1
         },
         {
-          "workItemId": "6f7224cbd6a582038b64ebbfefaf73a8",
+          "workItemId": "8d35be4af45acc6635fb8d3eb03408ce",
           "liveOwners": 1,
           "fence": 1
         },
         {
-          "workItemId": "77492c87b27a5337a3f1d16a4b9858f4",
+          "workItemId": "2a25f729cbf1698217ba9da0ebb3c359",
           "liveOwners": 1,
           "fence": 1
         },
         {
-          "workItemId": "a2ed85e0e9aa24a1af64379b5682a0d7",
+          "workItemId": "024744fa94bfcd34522e9a2a6c15761f",
           "liveOwners": 1,
           "fence": 1
         },
         {
-          "workItemId": "fdcf0a038b512a0772692c0ec7a5f58a",
+          "workItemId": "d236bcdaac8cfe7801c3b59fab6022ba",
           "liveOwners": 1,
           "fence": 1
         },
         {
-          "workItemId": "4206bfedfd77d57b250a1a525b3026b8",
+          "workItemId": "81fff828467583f33c650d39b38760c5",
           "liveOwners": 1,
           "fence": 1
         },
         {
-          "workItemId": "c871f009857c5ca7b40a62814c0323a9",
+          "workItemId": "1d740efa7437270319b16f7a891af469",
           "liveOwners": 1,
           "fence": 1
         }
       ],
       "independentItems": [
         {
-          "projectId": "428652aec0c8469dc3b645592b34f943",
-          "workItemId": "11b9d61a087c1a98634da7e9a883504a"
+          "projectId": "ddc853385ea225219771a4e40e7d79aa",
+          "workItemId": "380ddc8f78925da3e0c9fbab0b1dff3d"
         },
         {
-          "projectId": "428652aec0c8469dc3b645592b34f943",
-          "workItemId": "aec905fa555cd4e2502442e22b44d4d4"
+          "projectId": "ddc853385ea225219771a4e40e7d79aa",
+          "workItemId": "cd68e5f159a2c6d9b8427cdb7e3b2379"
         }
       ],
       "independentOwners": 2,
@@ -467,7 +467,7 @@
     {
       "id": "D09",
       "outcome": "pass",
-      "heldHandoffId": "d564aeb9241c28a20e1e324b0e8536fa",
+      "heldHandoffId": "e9e9f71eba8d0adb5871ccdf1594b9ae",
       "heldReasons": [
         "missing_observer",
         "observer_error",
@@ -477,9 +477,9 @@
       "retainedOwners": 2,
       "revokeAndExpiryReleased": false,
       "neverStartedReceipt": {
-        "handoffId": "020bd7e1cd518a48549646963496a256",
+        "handoffId": "b6bedfb02f5bcd83b0cd9aaafa2663fd",
         "task": {
-          "projectId": "428652aec0c8469dc3b645592b34f943",
+          "projectId": "ddc853385ea225219771a4e40e7d79aa",
           "taskId": 96
         },
         "mode": "orchestrated",
@@ -487,22 +487,22 @@
           {
             "fence": 1,
             "ownerId": "host",
-            "projectId": "428652aec0c8469dc3b645592b34f943",
+            "projectId": "ddc853385ea225219771a4e40e7d79aa",
             "revision": 1,
-            "workItemId": "0de02b658ed3e7a5a88d2f166cb43183"
+            "workItemId": "683fcb8d671044e37353d4d9cb591bc5"
           }
         ],
         "revokedAuthorityIds": [
-          "4df2df533aeae8c7c66a89aecbfb3457"
+          "7e197480ec1a2ccb6d2e1412caccf584"
         ],
         "stops": [
           {
             "owner": {
               "fence": 1,
               "ownerId": "host",
-              "projectId": "428652aec0c8469dc3b645592b34f943",
+              "projectId": "ddc853385ea225219771a4e40e7d79aa",
               "revision": 1,
-              "workItemId": "0de02b658ed3e7a5a88d2f166cb43183"
+              "workItemId": "683fcb8d671044e37353d4d9cb591bc5"
             },
             "outcome": "never_started"
           }
@@ -513,14 +513,14 @@
     {
       "id": "D10",
       "outcome": "pass",
-      "fixtureScope": "d83e06c677afb3e7ce444545ccbd6920",
-      "parentPid": 27089,
-      "childPid": 27090,
+      "fixtureScope": "623bc5525c44fb8a5d1c70f9606ea69e",
+      "parentPid": 55189,
+      "childPid": 55207,
       "orphanContinuedWriting": true,
       "receipt": {
-        "handoffId": "3525a29f9a909e8fb8cede78c21ec905",
+        "handoffId": "485abde86a4137184f01ce454837f8f0",
         "task": {
-          "projectId": "428652aec0c8469dc3b645592b34f943",
+          "projectId": "ddc853385ea225219771a4e40e7d79aa",
           "taskId": 97
         },
         "mode": "manual",
@@ -528,9 +528,9 @@
           {
             "fence": 1,
             "ownerId": "tree",
-            "projectId": "428652aec0c8469dc3b645592b34f943",
+            "projectId": "ddc853385ea225219771a4e40e7d79aa",
             "revision": 1,
-            "workItemId": "2c37a87ab548496d13cbcb2f504b15ca"
+            "workItemId": "e1fa0743df87ac7cd6ba2921de16bc9b"
           }
         ],
         "revokedAuthorityIds": [],
@@ -539,14 +539,14 @@
             "owner": {
               "fence": 1,
               "ownerId": "tree",
-              "projectId": "428652aec0c8469dc3b645592b34f943",
+              "projectId": "ddc853385ea225219771a4e40e7d79aa",
               "revision": 1,
-              "workItemId": "2c37a87ab548496d13cbcb2f504b15ca"
+              "workItemId": "e1fa0743df87ac7cd6ba2921de16bc9b"
             },
             "outcome": "stopped",
-            "observationId": "d83e06c677afb3e7ce444545ccbd6920:observed",
-            "launchId": "fixture:d83e06c677afb3e7ce444545ccbd6920",
-            "writerScopeId": "d83e06c677afb3e7ce444545ccbd6920"
+            "observationId": "623bc5525c44fb8a5d1c70f9606ea69e:observed",
+            "launchId": "fixture:623bc5525c44fb8a5d1c70f9606ea69e",
+            "writerScopeId": "623bc5525c44fb8a5d1c70f9606ea69e"
           }
         ]
       },
@@ -577,7 +577,7 @@
       ],
       "legacyClaimOrchestrated": false,
       "authorityRegression": {
-        "schema": 15,
+        "schema": 16,
         "checks": [
           "core user/reason and hidden multirow target",
           "built CLI rejects forged user + acceptance reason",
@@ -591,8 +591,8 @@
         "blobPreserved": true
       },
       "storeRegression": {
-        "schema": 15,
-        "projectId": "000db0e43dc20beec92b224342e3ca4e",
+        "schema": 16,
+        "projectId": "88c132d967273105f3f877f787b6ab5a",
         "checks": [
           "v12 migration preserves 12 tables, WAL backup and files",
           "identity survives reopen with manual defaults",

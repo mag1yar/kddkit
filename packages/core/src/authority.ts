@@ -1,8 +1,9 @@
 import type Database from 'better-sqlite3';
 import { controllerDb, type ControllerHandle } from './controller.js';
-import { assertNoHandoff, liveOwner, scopedWorkItem, type AuthorityBinding, type OwnershipRef } from './execution.js';
+import { assertNoHandoff, liveOwner, scopedWorkItem, shape, integer, text, scopedTask, type AuthorityBinding, type OwnershipRef } from './execution.js';
 export { openController, type ControllerHandle } from './controller.js';
 import { createHash, randomBytes } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { lstatSync, realpathSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { now } from './db.js';
@@ -13,6 +14,9 @@ import { assertVerifiedCodexPackage, inside, type VerifiedCodexPackage } from '.
 import { CAPS } from './caps.js';
 import { redact } from './agent_events.js';
 import { listCriteria } from './criteria.js';
+import { selectMemory, type MemoryScope, type MemoryApplicability, type MemorySource, type MemoryAuthor,
+  type MemoryView, type MemoryRecord, type MemoryRecallOptions, type MemoryHit } from './memory.js';
+import { queryMemoryDb } from './memory_query.js';
 
 export type RunOperation = 'get_context' | 'submit_report' | 'request_question';
 const operations: readonly RunOperation[] = ['get_context', 'submit_report', 'request_question'];
@@ -175,6 +179,27 @@ export function assertRunAuthorityBinding(db: Database.Database, taskId: number,
     .get(binding.authorityId, taskId, binding.workItemId, binding.runId, binding.generation) as AuthorityRow | undefined;
   currentAuthority(db, row);
 }
+// Internal only: provenance never grants authority to a serialized run or report.
+export function assertRunMemorySource(db: Database.Database, scope: MemoryScope, applicability: MemoryApplicability,
+  source: Extract<MemorySource,{kind:'run'}>, author: MemoryAuthor): void {
+  shape(source,['kind','task','authority','reportEventId']); scopedTask(db,source.task);
+  shape(source.authority,['authorityId','workItemId','runId','generation']);
+  const binding=source.authority;
+  text(binding.authorityId); text(binding.workItemId); text(binding.runId); integer(binding.generation); integer(source.reportEventId);
+  const row=db.prepare(`SELECT * FROM run_authorities WHERE authority_id=? AND task_id=?
+    AND work_item_id=? AND run_id=? AND generation=?`).get(binding.authorityId,source.task.taskId,
+      binding.workItemId,binding.runId,binding.generation) as AuthorityRow | undefined;
+  const {grant}=currentAuthority(db,row);
+  if (!grant.operations.includes('submit_report') || scope.projectId!==grant.projectId || scope.taskId!==grant.taskId
+    || author.type!=='ai' || author.id!==grant.runId
+    || applicability.repoId!==null && !grant.repositories.some(repo=>repo.repoId===applicability.repoId)) throw denied();
+  const event=db.prepare("SELECT detail,actor_type,actor_id FROM events WHERE id=? AND task_id=? AND action='run_report'")
+    .get(source.reportEventId,grant.taskId) as {detail:string|null;actor_type:string;actor_id:string|null}|undefined;
+  let detail;
+  try { detail=event?.detail ? JSON.parse(event.detail) : null; } catch { throw denied(); }
+  if (!detail || event?.actor_type!=='ai' || event.actor_id!==grant.runId || detail.work_item_id!==grant.workItemId
+    || detail.run_id!==grant.runId || detail.generation!==grant.generation || detail.untrusted!==true) throw denied();
+}
 function lookup(db: Database.Database, token: string): { row: AuthorityRow; grant: Grant } {
   if (typeof token !== 'string' || !/^[0-9a-f]{64}$/.test(token)) throw denied();
   const row = db.prepare('SELECT * FROM run_authorities WHERE token_hash=?').get(tokenHash(token)) as AuthorityRow | undefined;
@@ -217,6 +242,36 @@ export function readRunContext(context: RunContext): RunContextSnapshot {
       criteria: listCriteria(db, task.id).map(c => ({ id: c.id, text: c.text, checked: c.checked_at !== null })),
       decisions: db.prepare(`SELECT d.slug,d.title FROM decisions d,json_each(d.source_tasks) s
         WHERE CAST(s.value AS INTEGER)=? ORDER BY d.slug`).all(task.id) as { slug: string; title: string }[] };
+  }).immediate();
+}
+export interface RunMemoryReadInput { entryId?: string; revision?: number; candidates?: boolean; withdrawn?: boolean }
+function runMemoryView(grant: Grant): MemoryView {
+  return {scope:{projectId:grant.projectId,taskId:grant.taskId},repositories:grant.repositories.map(repo=>({
+    repoId:repo.repoId,checkoutPath:repo.checkoutPath,
+    commit:execFileSync('/usr/bin/git',['--no-replace-objects','rev-parse','--verify','HEAD^{commit}'],
+      {cwd:repo.checkoutPath,encoding:'utf8',stdio:'pipe',maxBuffer:4096}).trim(),
+  }))};
+}
+export function readRunMemory(context: RunContext, input: RunMemoryReadInput = {}): MemoryRecord[] {
+  return registered(context).db.transaction(()=>{
+    const {db,grant}=live(context,'get_context');
+    shape(input,[],['entryId','revision','candidates','withdrawn']);
+    if (input.revision!==undefined) integer(input.revision);
+    if (input.revision!==undefined && input.entryId===undefined) throw new KddError('memory revision requires entry');
+    return selectMemory(db,runMemoryView(grant),{candidates:input.candidates,withdrawn:input.withdrawn},
+      input.entryId,input.entryId===undefined ? undefined : input.revision ?? null);
+  }).immediate();
+}
+export function recallRunMemory(context: RunContext, query: string, options: MemoryRecallOptions = {}): MemoryHit[] {
+  return registered(context).db.transaction(()=>{
+    const {db,grant}=live(context,'get_context');
+    return queryMemoryDb(db,runMemoryView(grant),query,options);
+  }).immediate();
+}
+export function runMemoryRules(context: RunContext): MemoryRecord[] {
+  return registered(context).db.transaction(()=>{
+    const {db,grant}=live(context,'get_context');
+    return selectMemory(db,runMemoryView(grant)).filter(record=>record.kind==='rule');
   }).immediate();
 }
 function runEvent(context: RunContext, operation: 'submit_report' | 'request_question', body: string): number {

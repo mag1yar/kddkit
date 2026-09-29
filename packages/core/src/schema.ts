@@ -329,4 +329,48 @@ CREATE TRIGGER work_item_results_no_revalidate BEFORE UPDATE OF invalidated_at,i
       OR NEW.successor_id IS NOT OLD.successor_id)
 BEGIN SELECT RAISE(ABORT,'result invalidation is final'); END;
   `,
+  // v16: operational memory is independent of the legacy decision index.
+  `
+CREATE TABLE memory_entries (
+  id TEXT PRIMARY KEY CHECK(length(id)=32 AND id NOT GLOB '*[^0-9a-f]*'),
+  task_id INTEGER REFERENCES tasks(id), repo_id TEXT REFERENCES repositories(repo_id),
+  applicable_commit TEXT CHECK(applicable_commit IS NULL OR
+    (length(applicable_commit) IN (40,64) AND applicable_commit NOT GLOB '*[^0-9a-f]*')),
+  import_key TEXT UNIQUE CHECK(import_key IS NULL OR (length(import_key)=64 AND import_key NOT GLOB '*[^0-9a-f]*')),
+  current_revision INTEGER NOT NULL CHECK(typeof(current_revision)='integer' AND current_revision BETWEEN 1 AND 9007199254740991),
+  created_at INTEGER NOT NULL, CHECK(applicable_commit IS NULL OR repo_id IS NOT NULL),
+  FOREIGN KEY(id,current_revision) REFERENCES memory_revisions(entry_id,revision) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE TABLE memory_revisions (
+  entry_id TEXT NOT NULL REFERENCES memory_entries(id),
+  revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision BETWEEN 1 AND 9007199254740991),
+  predecessor INTEGER,
+  kind TEXT NOT NULL CHECK(kind IN ('fact','decision','rule','candidate')),
+  status TEXT NOT NULL CHECK(status IN ('active','withdrawn')),
+  title TEXT NOT NULL, body TEXT NOT NULL,
+  source_json TEXT NOT NULL CHECK(json_valid(source_json)),
+  author_json TEXT NOT NULL CHECK(json_valid(author_json)),
+  evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json) AND json_type(evidence_json)='array'),
+  content_hash TEXT NOT NULL CHECK(length(content_hash)=64 AND content_hash NOT GLOB '*[^0-9a-f]*'),
+  command_id TEXT NOT NULL UNIQUE CHECK(length(trim(command_id))>0),
+  command_hash TEXT NOT NULL CHECK(length(command_hash)=64 AND command_hash NOT GLOB '*[^0-9a-f]*'),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(entry_id,revision),
+  CHECK((revision=1 AND predecessor IS NULL) OR (revision>1 AND predecessor=revision-1)),
+  FOREIGN KEY(entry_id,predecessor) REFERENCES memory_revisions(entry_id,revision) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX idx_memory_scope ON memory_entries(task_id,repo_id,applicable_commit);
+CREATE UNIQUE INDEX idx_memory_import_commands ON events(json_extract(detail,'$.commandId')) WHERE action='memory_import_replay';
+CREATE TRIGGER memory_revisions_immutable_update BEFORE UPDATE ON memory_revisions
+BEGIN SELECT RAISE(ABORT,'immutable memory revision'); END;
+CREATE TRIGGER memory_revisions_immutable_delete BEFORE DELETE ON memory_revisions
+BEGIN SELECT RAISE(ABORT,'immutable memory revision'); END;
+CREATE TRIGGER memory_entries_immutable BEFORE UPDATE OF id,task_id,repo_id,applicable_commit,import_key,created_at ON memory_entries
+BEGIN SELECT RAISE(ABORT,'immutable memory identity'); END;
+CREATE TRIGGER memory_entries_no_delete BEFORE DELETE ON memory_entries
+BEGIN SELECT RAISE(ABORT,'immutable memory identity'); END;
+CREATE TRIGGER memory_entries_current BEFORE UPDATE OF current_revision ON memory_entries
+WHEN NEW.current_revision<>OLD.current_revision+1
+BEGIN SELECT RAISE(ABORT,'memory revision must advance once'); END;
+  `,
 ];

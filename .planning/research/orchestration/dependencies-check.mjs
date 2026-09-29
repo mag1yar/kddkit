@@ -433,7 +433,7 @@ try {
   const authorityRegression=JSON.parse(execFileSync(process.execPath,[fileURLToPath(new URL('./authority-check.mjs',import.meta.url))],{encoding:'utf8',stdio:'pipe',timeout:30000}));
   const storeRegression=JSON.parse(execFileSync(process.execPath,[fileURLToPath(new URL('./project-store-check.mjs',import.meta.url))],{encoding:'utf8',stdio:'pipe',timeout:30000}));
   assert.equal(authorityRegression.checks.length,7); assert.equal(authorityRegression.refusedChanges,0); assert.equal(authorityRegression.blobPreserved,true);
-  assert.equal(storeRegression.checks.length,8); assert.equal(authorityRegression.schema,15);
+  assert.equal(storeRegression.checks.length,8); assert.equal(authorityRegression.schema,core.MIGRATIONS.length);
   assert.deepEqual(db.pragma('foreign_key_check'),[]);
   record('D12',{scopedTools,legacyClaimOrchestrated:false,authorityRegression,storeRegression,productLaunches:0});
   assert.deepEqual(evidence.checks.map(c=>c.id),['D01','D02','D03','D04','D05','D06','D07','D08','D09','D10','D11','D12']);

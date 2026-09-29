@@ -6885,12 +6885,12 @@ var require_dist = __commonJS({
 });
 
 // src/run_main.ts
-import { isAbsolute as isAbsolute5 } from "path";
+import { isAbsolute as isAbsolute4 } from "path";
 
 // src/run_server.ts
-import Database5 from "better-sqlite3";
+import Database6 from "better-sqlite3";
 import { lstatSync, readFileSync as readFileSync3 } from "fs";
-import { isAbsolute as isAbsolute4 } from "path";
+import { isAbsolute as isAbsolute3 } from "path";
 
 // ../../node_modules/.pnpm/zod@3.25.76/node_modules/zod/v3/external.js
 var external_exports = {};
@@ -21114,11 +21114,12 @@ import { createHash as createHash3, randomBytes as randomBytes2 } from "crypto";
 import { createHash as createHash2 } from "crypto";
 import { readFileSync as readFileSync2, statSync } from "fs";
 import { isAbsolute } from "path";
-import { createHash as createHash6, randomBytes as randomBytes3 } from "crypto";
-import { lstatSync as lstatSync3, realpathSync as realpathSync5 } from "fs";
-import { isAbsolute as isAbsolute3 } from "path";
+import { createHash as createHash8, randomBytes as randomBytes3 } from "crypto";
+import { lstatSync as lstatSync3, realpathSync as realpathSync8 } from "fs";
+import { isAbsolute as isAbsolute5 } from "path";
 import { dirname as dirname3, isAbsolute as isAbsolute2, join as join5, relative, resolve as resolve3, sep } from "path";
 import Database4 from "better-sqlite3";
+import Database5 from "better-sqlite3";
 var CAPS = {
   briefBytes: 4096,
   // JSON/MCP payload для детерминированного resume-пакета
@@ -21511,6 +21512,50 @@ CREATE TRIGGER work_item_results_no_revalidate BEFORE UPDATE OF invalidated_at,i
     (NEW.invalidated_at IS NOT OLD.invalidated_at OR NEW.invalidation_reason IS NOT OLD.invalidation_reason
       OR NEW.successor_id IS NOT OLD.successor_id)
 BEGIN SELECT RAISE(ABORT,'result invalidation is final'); END;
+  `,
+  // v16: operational memory is independent of the legacy decision index.
+  `
+CREATE TABLE memory_entries (
+  id TEXT PRIMARY KEY CHECK(length(id)=32 AND id NOT GLOB '*[^0-9a-f]*'),
+  task_id INTEGER REFERENCES tasks(id), repo_id TEXT REFERENCES repositories(repo_id),
+  applicable_commit TEXT CHECK(applicable_commit IS NULL OR
+    (length(applicable_commit) IN (40,64) AND applicable_commit NOT GLOB '*[^0-9a-f]*')),
+  import_key TEXT UNIQUE CHECK(import_key IS NULL OR (length(import_key)=64 AND import_key NOT GLOB '*[^0-9a-f]*')),
+  current_revision INTEGER NOT NULL CHECK(typeof(current_revision)='integer' AND current_revision BETWEEN 1 AND 9007199254740991),
+  created_at INTEGER NOT NULL, CHECK(applicable_commit IS NULL OR repo_id IS NOT NULL),
+  FOREIGN KEY(id,current_revision) REFERENCES memory_revisions(entry_id,revision) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE TABLE memory_revisions (
+  entry_id TEXT NOT NULL REFERENCES memory_entries(id),
+  revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision BETWEEN 1 AND 9007199254740991),
+  predecessor INTEGER,
+  kind TEXT NOT NULL CHECK(kind IN ('fact','decision','rule','candidate')),
+  status TEXT NOT NULL CHECK(status IN ('active','withdrawn')),
+  title TEXT NOT NULL, body TEXT NOT NULL,
+  source_json TEXT NOT NULL CHECK(json_valid(source_json)),
+  author_json TEXT NOT NULL CHECK(json_valid(author_json)),
+  evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json) AND json_type(evidence_json)='array'),
+  content_hash TEXT NOT NULL CHECK(length(content_hash)=64 AND content_hash NOT GLOB '*[^0-9a-f]*'),
+  command_id TEXT NOT NULL UNIQUE CHECK(length(trim(command_id))>0),
+  command_hash TEXT NOT NULL CHECK(length(command_hash)=64 AND command_hash NOT GLOB '*[^0-9a-f]*'),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(entry_id,revision),
+  CHECK((revision=1 AND predecessor IS NULL) OR (revision>1 AND predecessor=revision-1)),
+  FOREIGN KEY(entry_id,predecessor) REFERENCES memory_revisions(entry_id,revision) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX idx_memory_scope ON memory_entries(task_id,repo_id,applicable_commit);
+CREATE UNIQUE INDEX idx_memory_import_commands ON events(json_extract(detail,'$.commandId')) WHERE action='memory_import_replay';
+CREATE TRIGGER memory_revisions_immutable_update BEFORE UPDATE ON memory_revisions
+BEGIN SELECT RAISE(ABORT,'immutable memory revision'); END;
+CREATE TRIGGER memory_revisions_immutable_delete BEFORE DELETE ON memory_revisions
+BEGIN SELECT RAISE(ABORT,'immutable memory revision'); END;
+CREATE TRIGGER memory_entries_immutable BEFORE UPDATE OF id,task_id,repo_id,applicable_commit,import_key,created_at ON memory_entries
+BEGIN SELECT RAISE(ABORT,'immutable memory identity'); END;
+CREATE TRIGGER memory_entries_no_delete BEFORE DELETE ON memory_entries
+BEGIN SELECT RAISE(ABORT,'immutable memory identity'); END;
+CREATE TRIGGER memory_entries_current BEFORE UPDATE OF current_revision ON memory_entries
+WHEN NEW.current_revision<>OLD.current_revision+1
+BEGIN SELECT RAISE(ABORT,'memory revision must advance once'); END;
   `
 ];
 function projectOf(db) {
@@ -21830,7 +21875,7 @@ function listCriteria(db, taskId) {
 var operations = ["get_context", "submit_report", "request_question"];
 var contexts = /* @__PURE__ */ new WeakMap();
 var denied = () => new KddError("run authority denied");
-var tokenHash = (token) => createHash6("sha256").update(token).digest("hex");
+var tokenHash = (token) => createHash8("sha256").update(token).digest("hex");
 function modeledOwnership(db, input, scope) {
   const modeled = db.prepare("SELECT 1 FROM work_items WHERE id=?").get(input.workItemId);
   if (!modeled) {
@@ -21846,8 +21891,8 @@ function modeledOwnership(db, input, scope) {
   }
 }
 function canonicalCheckout(path) {
-  if (typeof path !== "string" || !isAbsolute3(path) || !lstatSync3(path).isDirectory()) throw new KddError("invalid repository scope");
-  return realpathSync5(path);
+  if (typeof path !== "string" || !isAbsolute5(path) || !lstatSync3(path).isDirectory()) throw new KddError("invalid repository scope");
+  return realpathSync8(path);
 }
 function repositoryScope(db, input, native) {
   if (!Array.isArray(input) || !input.length) throw new KddError("empty repository scope");
@@ -21865,7 +21910,7 @@ function repositoryScope(db, input, native) {
 }
 function privateStore(db, scope, native) {
   if (db.memory) return;
-  const path = realpathSync5(db.name);
+  const path = realpathSync8(db.name);
   if (db.name !== path) throw new KddError("project store alias denied");
   if (scope.some((resource) => inside(resource.checkoutPath, path) || inside(resource.commonDir, path))) throw new KddError("native repository scope exposes project store");
   const writableRoots = [canonicalCheckout(native.scratchDir), ...native.writableRoot ? [canonicalCheckout(native.writableRoot)] : []];
@@ -22022,11 +22067,11 @@ function createRunServer(context) {
 async function startRunServer(configPath) {
   let db;
   try {
-    if (!isAbsolute4(configPath)) throw new Error();
+    if (!isAbsolute3(configPath)) throw new Error();
     const stat = lstatSync(configPath);
     if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 511) !== 384) throw new Error();
-    const config2 = external_exports.object({ dbPath: external_exports.string().refine(isAbsolute4), token: external_exports.string().regex(/^[0-9a-f]{64}$/) }).strict().parse(JSON.parse(readFileSync3(configPath, "utf8")));
-    db = new Database5(config2.dbPath, { fileMustExist: true });
+    const config2 = external_exports.object({ dbPath: external_exports.string().refine(isAbsolute3), token: external_exports.string().regex(/^[0-9a-f]{64}$/) }).strict().parse(JSON.parse(readFileSync3(configPath, "utf8")));
+    db = new Database6(config2.dbPath, { fileMustExist: true });
     if (db.pragma("user_version", { simple: true }) !== MIGRATIONS.length) throw new Error();
     db.pragma("foreign_keys=ON");
     db.pragma("busy_timeout=5000");
@@ -22044,7 +22089,7 @@ async function startRunServer(configPath) {
 
 // src/run_main.ts
 var args = process.argv.slice(2);
-if (args.length !== 2 || args[0] !== "--config" || !isAbsolute5(args[1])) {
+if (args.length !== 2 || args[0] !== "--config" || !isAbsolute4(args[1])) {
   console.error("run broker startup denied");
   process.exit(1);
 }

@@ -1,0 +1,280 @@
+{
+  "observedAt": "2026-09-29T11:22:57.354Z",
+  "node": "v24.15.0",
+  "schema": 16,
+  "runtimeHash": "be239ec65a2a5a3c90f6f3cc8f4468ec98bae7a24c50515f329ef1028398bffa",
+  "checks": [
+    {
+      "id": "M01",
+      "passed": true,
+      "observations": {
+        "oldTables": 23,
+        "walBytes": 1190712,
+        "backupVersion": 15,
+        "newVersion": 16,
+        "oldBinaryExit": 1,
+        "emptyMemory": true
+      }
+    },
+    {
+      "id": "M02",
+      "passed": true,
+      "observations": {
+        "views": [
+          [
+            "project"
+          ],
+          [
+            "parent",
+            "project"
+          ],
+          [
+            "child A",
+            "parent",
+            "project"
+          ]
+        ],
+        "foreignNumericCollision": 1,
+        "byIdAndHistoryDenied": true
+      }
+    },
+    {
+      "id": "M03",
+      "passed": true,
+      "observations": {
+        "foreignHits": 200,
+        "k": 1,
+        "eligibleHit": "c22a42a946c3a84bbb4e0eac2118349e",
+        "unchangedHitAndSnippet": true,
+        "rankedPermittedHits": [
+          "c22a42a946c3a84bbb4e0eac2118349e",
+          "efd45d6749d15dffafd148a4f883472e"
+        ],
+        "unchangedOrderAcrossCorpusStatistics": true
+      }
+    },
+    {
+      "id": "M04",
+      "passed": true,
+      "observations": {
+        "repoId": "4da8dfdc8bf75757d134482edcde2405",
+        "a": "685188fe100e0377f25b9368732fedd463f2229f",
+        "b": "a8e8f990193e6c84cf7801a5ff0ce85740bd3e64",
+        "ancestorDoesNotBroaden": true,
+        "foreignBindingDenied": true
+      }
+    },
+    {
+      "id": "M05",
+      "passed": true,
+      "observations": {
+        "entryId": "42fb889b46946ad9425758dada5176c6",
+        "revisions": 4,
+        "originalHash": "180feb3335095d7189b4c9d686e19c092f609005a7b8fa8ec2661cfc297d22b5",
+        "originalBytesAndProofPreserved": true
+      }
+    },
+    {
+      "id": "M06",
+      "passed": true,
+      "observations": {
+        "rounds": 20,
+        "singleWinners": 20,
+        "duplicateRevisions": 0,
+        "crash": "pending write then SIGKILL",
+        "rollback": true,
+        "commandReplay": true
+      }
+    },
+    {
+      "id": "M07",
+      "passed": true,
+      "observations": {
+        "negativeEvidence": [
+          "missing",
+          "fail",
+          "inconclusive",
+          "hash",
+          "origin",
+          "scope",
+          "operation",
+          "expiry",
+          "future",
+          "throw"
+        ],
+        "actorAndReasonNotAuthority": true,
+        "fixtureReceipts": true,
+        "dualOrigins": [
+          "user",
+          "host"
+        ],
+        "mutableCallerCannotChangeVerifiedPayload": true
+      }
+    },
+    {
+      "id": "M08",
+      "passed": true,
+      "observations": {
+        "genuineNativeCredentials": true,
+        "matrices": [
+          {
+            "operations": [
+              "get_context",
+              "submit_report",
+              "request_question"
+            ],
+            "verifiedPackageResults": 153,
+            "attempted": 29,
+            "executed": 29,
+            "failures": 0,
+            "protectedObservations": 29,
+            "checks": [
+              "memory-own-scope",
+              "memory-sibling-refused",
+              "memory-run-candidate",
+              "memory-run-policy-refused",
+              "memory-expired-refused",
+              "memory-current-inputs-refused",
+              "memory-live-revoke-refused"
+            ]
+          },
+          {
+            "operations": [
+              "get_context"
+            ],
+            "verifiedPackageResults": 153,
+            "attempted": 29,
+            "executed": 29,
+            "failures": 0,
+            "protectedObservations": 29,
+            "checks": [
+              "memory-own-scope",
+              "memory-sibling-refused",
+              "memory-report-operation-refused",
+              "memory-expired-refused",
+              "memory-current-inputs-refused",
+              "memory-live-revoke-refused"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "M09",
+      "passed": true,
+      "observations": {
+        "entryId": "9524548829404de20cf108bfe77a7a40",
+        "commit": "08e4f2ce311f9dde6d6f4ac03738b41a0f9398c6",
+        "blobHash": "47a30137e6accae9f4c153d889cfdfe5bb4f121529c5947def5ff005b49b5a92",
+        "rawBOMAndCRLFPreserved": true,
+        "refusedInputs": 16,
+        "deduplicated": true,
+        "separateScopeAndVersion": true,
+        "commitAndBlobReplaceIgnored": true,
+        "inactiveStatuses": [
+          "unknown",
+          "superseded"
+        ]
+      }
+    },
+    {
+      "id": "M10",
+      "passed": true,
+      "observations": {
+        "importedRowsPreserved": true,
+        "legacyBranches": [
+          "primary removed document",
+          "backend empty",
+          "backend conflicting"
+        ],
+        "sourceMissingReplay": true
+      }
+    },
+    {
+      "id": "M11",
+      "passed": true,
+      "observations": {
+        "defaultCandidatesExcluded": true,
+        "withdrawnExcluded": true,
+        "history": [
+          {
+            "revision": 1,
+            "effectiveStatus": "superseded"
+          },
+          {
+            "revision": 2,
+            "effectiveStatus": "superseded"
+          },
+          {
+            "revision": 3,
+            "effectiveStatus": "superseded"
+          },
+          {
+            "revision": 4,
+            "effectiveStatus": "withdrawn"
+          }
+        ],
+        "replayDoesNotRevive": true
+      }
+    },
+    {
+      "id": "M12",
+      "passed": true,
+      "observations": {
+        "activeRules": 5,
+        "inheritedRules": [
+          "project",
+          "parent",
+          "child A"
+        ],
+        "independentOfTopK": true,
+        "noNarrowerOverride": true
+      }
+    },
+    {
+      "id": "M13",
+      "passed": true,
+      "observations": {
+        "bodyCap": 8192,
+        "secretAndPrivateRefDenied": true,
+        "credentialFilesDenied": 3,
+        "noTruncation": true,
+        "noNewRefsOrExports": true,
+        "malformedObjectErrorsDoNotEchoPayload": true,
+        "malformedUnicodeDeniedBeforeHashPersistence": true
+      }
+    },
+    {
+      "id": "M14",
+      "passed": true,
+      "observations": {
+        "publicFunctions": [
+          "writeMemory",
+          "importMemory",
+          "memoryEntry",
+          "memoryHistory",
+          "listMemory",
+          "memoryRules",
+          "recallMemory",
+          "readRunMemory",
+          "recallRunMemory",
+          "runMemoryRules"
+        ],
+        "actualRevision": 1,
+        "hash": "959ac5008bbbdaf296f94d7b868b0a0b92d3f1e107c228f13f9319b1dbc71e16",
+        "transportRegression": 7,
+        "newTools": 0
+      }
+    }
+  ],
+  "races": {
+    "rounds": 20,
+    "singleWinners": 20,
+    "duplicateRevisions": 0
+  },
+  "limitations": [
+    "User/host callbacks verify fixed fixture receipts; not a product human acceptance receipt.",
+    "M08 consumes fresh real Codex native gates; new reads are core library calls, not new MCP tools.",
+    "Recall constructs an O(n) eligible in-memory corpus; no performance claim."
+  ]
+}

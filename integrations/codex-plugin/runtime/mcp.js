@@ -21116,22 +21116,23 @@ import { join as join3, resolve as resolve2 } from "path";
 import Database3 from "better-sqlite3";
 import { realpathSync as realpathSync2 } from "fs";
 import Database4 from "better-sqlite3";
-import { execFileSync as execFileSync5 } from "child_process";
-import { createHash as createHash7 } from "crypto";
+import { createHash as createHash6 } from "crypto";
+import Database5 from "better-sqlite3";
+import { existsSync as existsSync6, readFileSync as readFileSync6, readdirSync as readdirSync6, realpathSync as realpathSync7 } from "fs";
+import { dirname as dirname5, join as join7 } from "path";
+import { execFileSync as execFileSync8 } from "child_process";
+import { createHash as createHash9 } from "crypto";
 import {
-  existsSync as existsSync5,
-  mkdirSync as mkdirSync5,
-  readFileSync as readFileSync5,
+  existsSync as existsSync7,
+  mkdirSync as mkdirSync6,
+  readFileSync as readFileSync7,
   renameSync as renameSync3,
   rmSync as rmSync4,
   statSync as statSync2,
-  writeFileSync as writeFileSync4
+  writeFileSync as writeFileSync5
 } from "fs";
-import { basename as basename2, dirname as dirname4, extname, join as join6 } from "path";
-import { createHash as createHash8 } from "crypto";
-import { existsSync as existsSync7, readFileSync as readFileSync7, readdirSync as readdirSync6, realpathSync as realpathSync7 } from "fs";
-import { dirname as dirname6, join as join8 } from "path";
-import { existsSync as existsSync10, readFileSync as readFileSync10, readdirSync as readdirSync7, realpathSync as realpathSync10 } from "fs";
+import { basename as basename3, dirname as dirname6, extname, join as join8 } from "path";
+import { existsSync as existsSync10, readFileSync as readFileSync10, readdirSync as readdirSync7, realpathSync as realpathSync11 } from "fs";
 import { dirname as dirname9, join as join11 } from "path";
 var CAPS = {
   briefBytes: 4096,
@@ -21533,6 +21534,50 @@ CREATE TRIGGER work_item_results_no_revalidate BEFORE UPDATE OF invalidated_at,i
     (NEW.invalidated_at IS NOT OLD.invalidated_at OR NEW.invalidation_reason IS NOT OLD.invalidation_reason
       OR NEW.successor_id IS NOT OLD.successor_id)
 BEGIN SELECT RAISE(ABORT,'result invalidation is final'); END;
+  `,
+  // v16: operational memory is independent of the legacy decision index.
+  `
+CREATE TABLE memory_entries (
+  id TEXT PRIMARY KEY CHECK(length(id)=32 AND id NOT GLOB '*[^0-9a-f]*'),
+  task_id INTEGER REFERENCES tasks(id), repo_id TEXT REFERENCES repositories(repo_id),
+  applicable_commit TEXT CHECK(applicable_commit IS NULL OR
+    (length(applicable_commit) IN (40,64) AND applicable_commit NOT GLOB '*[^0-9a-f]*')),
+  import_key TEXT UNIQUE CHECK(import_key IS NULL OR (length(import_key)=64 AND import_key NOT GLOB '*[^0-9a-f]*')),
+  current_revision INTEGER NOT NULL CHECK(typeof(current_revision)='integer' AND current_revision BETWEEN 1 AND 9007199254740991),
+  created_at INTEGER NOT NULL, CHECK(applicable_commit IS NULL OR repo_id IS NOT NULL),
+  FOREIGN KEY(id,current_revision) REFERENCES memory_revisions(entry_id,revision) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE TABLE memory_revisions (
+  entry_id TEXT NOT NULL REFERENCES memory_entries(id),
+  revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision BETWEEN 1 AND 9007199254740991),
+  predecessor INTEGER,
+  kind TEXT NOT NULL CHECK(kind IN ('fact','decision','rule','candidate')),
+  status TEXT NOT NULL CHECK(status IN ('active','withdrawn')),
+  title TEXT NOT NULL, body TEXT NOT NULL,
+  source_json TEXT NOT NULL CHECK(json_valid(source_json)),
+  author_json TEXT NOT NULL CHECK(json_valid(author_json)),
+  evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json) AND json_type(evidence_json)='array'),
+  content_hash TEXT NOT NULL CHECK(length(content_hash)=64 AND content_hash NOT GLOB '*[^0-9a-f]*'),
+  command_id TEXT NOT NULL UNIQUE CHECK(length(trim(command_id))>0),
+  command_hash TEXT NOT NULL CHECK(length(command_hash)=64 AND command_hash NOT GLOB '*[^0-9a-f]*'),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(entry_id,revision),
+  CHECK((revision=1 AND predecessor IS NULL) OR (revision>1 AND predecessor=revision-1)),
+  FOREIGN KEY(entry_id,predecessor) REFERENCES memory_revisions(entry_id,revision) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX idx_memory_scope ON memory_entries(task_id,repo_id,applicable_commit);
+CREATE UNIQUE INDEX idx_memory_import_commands ON events(json_extract(detail,'$.commandId')) WHERE action='memory_import_replay';
+CREATE TRIGGER memory_revisions_immutable_update BEFORE UPDATE ON memory_revisions
+BEGIN SELECT RAISE(ABORT,'immutable memory revision'); END;
+CREATE TRIGGER memory_revisions_immutable_delete BEFORE DELETE ON memory_revisions
+BEGIN SELECT RAISE(ABORT,'immutable memory revision'); END;
+CREATE TRIGGER memory_entries_immutable BEFORE UPDATE OF id,task_id,repo_id,applicable_commit,import_key,created_at ON memory_entries
+BEGIN SELECT RAISE(ABORT,'immutable memory identity'); END;
+CREATE TRIGGER memory_entries_no_delete BEFORE DELETE ON memory_entries
+BEGIN SELECT RAISE(ABORT,'immutable memory identity'); END;
+CREATE TRIGGER memory_entries_current BEFORE UPDATE OF current_revision ON memory_entries
+WHEN NEW.current_revision<>OLD.current_revision+1
+BEGIN SELECT RAISE(ABORT,'memory revision must advance once'); END;
   `
 ];
 function projectOf(db) {
@@ -21973,6 +22018,161 @@ function listCriteria(db, taskId) {
     `SELECT * FROM criteria WHERE task_id = ? ORDER BY position, id`
   ).all(taskId);
 }
+var normalize = (s) => s.replace(/\r\n/g, "\n").trim();
+function contentHash(title, body) {
+  return createHash6("sha256").update(`${normalize(title)}
+${normalize(body)}`).digest("hex");
+}
+function normalizeSourceTasks(ids = []) {
+  for (const id2 of ids) {
+    if (!Number.isInteger(id2) || id2 < 1) throw new KddError(`invalid source task id '${id2}'`);
+  }
+  return [...new Set(ids)].sort((a, b) => a - b);
+}
+function parseSourceTasks(value) {
+  if (value === void 0) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new KddError("invalid source_tasks frontmatter");
+  }
+  if (!Array.isArray(parsed)) throw new KddError("invalid source_tasks frontmatter");
+  try {
+    return normalizeSourceTasks(parsed);
+  } catch {
+    throw new KddError("invalid source_tasks frontmatter");
+  }
+}
+function parseDecisionMd(raw) {
+  const text2 = raw.replace(/\r\n/g, "\n");
+  const fm = {};
+  let rest = text2;
+  if (text2.startsWith("---\n")) {
+    const end = text2.indexOf("\n---\n", 4);
+    if (end !== -1) {
+      for (const line of text2.slice(4, end).split("\n")) {
+        const m = line.match(/^(\w+):\s*(.*)$/);
+        if (m) fm[m[1]] = m[2].trim();
+      }
+      rest = text2.slice(end + 5);
+    }
+  }
+  const tm = rest.match(/^# (.+)$/m);
+  const title = tm ? tm[1].trim() : "";
+  const indexBody = tm ? rest.slice(rest.indexOf(tm[0]) + tm[0].length).trim() : rest.trim();
+  return {
+    title,
+    created: fm.created ?? "",
+    status: fm.status || "active",
+    supersededBy: fm.superseded_by ?? "",
+    indexBody,
+    hash: contentHash(title, indexBody),
+    sourceTasks: parseSourceTasks(fm.source_tasks)
+  };
+}
+function syncIndex(db, decisionsDir) {
+  db.transaction(() => {
+    if (canSyncLegacyDecisions(db, decisionsDir)) {
+      const files = existsSync6(decisionsDir) ? readdirSync6(decisionsDir).filter((f) => f.endsWith(".md")) : [];
+      const inDb = new Map(
+        db.prepare(
+          `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`
+        ).all().map((r) => [r.slug, r])
+      );
+      const seen = /* @__PURE__ */ new Set();
+      for (const f of files) {
+        const slug = f.slice(0, -3);
+        seen.add(slug);
+        const path = join7(decisionsDir, f);
+        if (!canSyncLegacyDecisions(db, dirname5(realpathSync7(path)))) continue;
+        const doc = parseDecisionMd(readFileSync6(path, "utf8"));
+        const title = doc.title || slug;
+        const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
+        const sourceTasks = JSON.stringify(doc.sourceTasks);
+        const row = inDb.get(slug);
+        if (row && row.content_hash === doc.hash && (row.superseded_by ?? null) === (supersededBy ?? null)) {
+          if (row.path !== path || row.source_tasks !== sourceTasks || row.created !== (doc.created || null)) {
+            db.prepare(`UPDATE decisions SET path = ?, source_tasks = ?, created = ? WHERE slug = ?`).run(path, sourceTasks, doc.created || null, slug);
+          }
+          continue;
+        }
+        db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
+        db.prepare(
+          `INSERT OR REPLACE INTO decisions
+             (slug, title, path, content_hash, created, superseded_by, source_tasks)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        ).run(slug, title, path, doc.hash, doc.created || null, supersededBy, sourceTasks);
+        db.prepare(
+          `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`
+        ).run(slug, title, doc.indexBody);
+      }
+      for (const slug of inDb.keys()) {
+        if (seen.has(slug)) continue;
+        db.prepare(`DELETE FROM decisions WHERE slug = ?`).run(slug);
+        db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
+      }
+    }
+    const last = Number(
+      db.prepare(`SELECT value FROM meta WHERE key='fts_last_event_id'`).get()?.value ?? "0"
+    );
+    const max = db.prepare(`SELECT MAX(id) AS m FROM events`).get().m ?? 0;
+    if (max <= last) return;
+    const ids = db.prepare(
+      `SELECT DISTINCT task_id AS id FROM events WHERE id > ? AND task_id IS NOT NULL`
+    ).all(last);
+    const getTask = db.prepare(`SELECT * FROM tasks WHERE id = ?`);
+    const getComments = db.prepare(`SELECT body FROM comments WHERE task_id = ? ORDER BY id`);
+    for (const { id: id2 } of ids) {
+      db.prepare(`DELETE FROM search_index WHERE kind='task' AND ref = ?`).run(String(id2));
+      const t = getTask.get(id2);
+      if (!t || t.archived_at) continue;
+      const body = [t.body ?? "", ...getComments.all(id2).map((c) => c.body)].filter(Boolean).join("\n");
+      db.prepare(
+        `INSERT INTO search_index (kind, ref, title, body) VALUES ('task', ?, ?, ?)`
+      ).run(String(id2), t.title, body);
+    }
+    db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_last_event_id', ?)`).run(String(max));
+  })();
+}
+function sanitizeQuery(q) {
+  const parts = [];
+  for (const m of q.matchAll(/"([^"]+)"|[\p{L}\p{N}_][\p{L}\p{N}_.-]*/gu)) {
+    const raw = m[1] !== void 0 ? m[1].trim() : m[0].replace(/^[._-]+|[._-]+$/g, "");
+    if (raw) parts.push(`"${raw.replace(/"/g, '""')}"`);
+  }
+  if (parts.length === 0) throw new KddError("empty query");
+  return parts.join(" ");
+}
+function recall(db, decisionsDir, query, opts = {}) {
+  if (opts.kind && opts.kind !== "decision" && opts.kind !== "task") {
+    throw new KddError(`invalid kind '${opts.kind}'; allowed: decision, task`);
+  }
+  const k = opts.k ?? CAPS.recallK;
+  if (!Number.isInteger(k) || k < 1 || k > CAPS.recallKMax) {
+    throw new KddError(`k must be 1..${CAPS.recallKMax}`);
+  }
+  syncIndex(db, decisionsDir);
+  return db.prepare(`
+    SELECT search_index.kind AS kind, search_index.ref AS ref,
+      search_index.title AS title,
+      snippet(search_index, 3, '', '', '...', ${CAPS.recallSnippetTokens}) AS snippet,
+      COALESCE(d.superseded_by, '') AS superseded_by,
+      t.status AS status
+    FROM search_index
+    LEFT JOIN decisions d ON search_index.kind = 'decision' AND d.slug = search_index.ref
+    LEFT JOIN tasks t ON search_index.kind = 'task' AND t.id = CAST(search_index.ref AS INTEGER)
+    WHERE search_index MATCH @q
+      AND (@kind IS NULL OR search_index.kind = @kind)
+    ORDER BY (COALESCE(d.superseded_by, '') <> ''),
+      bm25(search_index, 0, 0, 3.0, 1.0)
+    LIMIT @k
+  `).all({
+    q: sanitizeQuery(query),
+    kind: opts.kind ?? null,
+    k
+  });
+}
 function assertLegacyTaskMutation(db, taskIds) {
   const ids = [...new Set(taskIds)];
   if (ids.some((id2) => !Number.isSafeInteger(id2) || id2 < 1)) throw new KddError("invalid task ids");
@@ -22021,7 +22221,7 @@ function appendTaskMutationEvent(db, taskId, actor, action, detail, opts) {
   if (!session) return appendEvent(db, taskId, actor, action, detail, opts);
   const git3 = (args) => {
     try {
-      return execFileSync5("git", args, {
+      return execFileSync8("git", args, {
         cwd: session.cwd,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"]
@@ -22162,9 +22362,9 @@ var MIME = {
 };
 var filesDir = (dbPath) => {
   if (dbPath === ":memory:") throw new KddError("attachments need a real board file, not :memory:");
-  return join6(dirname4(dbPath), "files");
+  return join8(dirname6(dbPath), "files");
 };
-var filePath = (dbPath, f) => join6(filesDir(dbPath), `${f.sha256}.${f.ext}`);
+var filePath = (dbPath, f) => join8(filesDir(dbPath), `${f.sha256}.${f.ext}`);
 function listFiles(db, taskId) {
   return db.prepare(`SELECT * FROM files WHERE task_id = ? ORDER BY id`).all(taskId);
 }
@@ -22181,22 +22381,22 @@ function attachFile(db, dbPath, taskId, srcPath, opts, actor) {
       if (stat.size > CAPS.fileBytes) {
         throw new KddError(`file is ${stat.size} bytes, the limit is ${CAPS.fileBytes}`);
       }
-      data = readFileSync5(srcPath);
+      data = readFileSync7(srcPath);
     } catch (e) {
       if (e instanceof KddError) throw e;
       throw new KddError(`cannot read ${srcPath}: ${e.message}`);
     }
     mustGetTask(db, taskId);
-    const sha256 = createHash7("sha256").update(data).digest("hex");
+    const sha256 = createHash9("sha256").update(data).digest("hex");
     const ext = (extname(srcPath).slice(1) || "bin").toLowerCase();
-    const target = join6(filesDir(dbPath), `${sha256}.${ext}`);
-    if (!existsSync5(target)) {
-      mkdirSync5(filesDir(dbPath), { recursive: true });
+    const target = join8(filesDir(dbPath), `${sha256}.${ext}`);
+    if (!existsSync7(target)) {
+      mkdirSync6(filesDir(dbPath), { recursive: true });
       const tmp = `${target}.${process.pid}.tmp`;
-      writeFileSync4(tmp, data);
+      writeFileSync5(tmp, data);
       renameSync3(tmp, target);
     }
-    const name = capText(basename2(srcPath), CAPS.fileNameChars);
+    const name = capText(basename3(srcPath), CAPS.fileNameChars);
     const r = db.prepare(
       `INSERT INTO files (task_id, sha256, ext, original_name, mime_type, size_bytes,
                           description, created_at)
@@ -22238,161 +22438,6 @@ function detachFile(db, dbPath, fileId, actor) {
     const left = db.prepare(`SELECT COUNT(*) AS c FROM files WHERE sha256 = ? AND ext = ?`).get(f.sha256, f.ext).c;
     if (left === 0) rmSync4(filePath(dbPath, f), { force: true });
   }).immediate();
-}
-var normalize = (s) => s.replace(/\r\n/g, "\n").trim();
-function contentHash(title, body) {
-  return createHash8("sha256").update(`${normalize(title)}
-${normalize(body)}`).digest("hex");
-}
-function normalizeSourceTasks(ids = []) {
-  for (const id2 of ids) {
-    if (!Number.isInteger(id2) || id2 < 1) throw new KddError(`invalid source task id '${id2}'`);
-  }
-  return [...new Set(ids)].sort((a, b) => a - b);
-}
-function parseSourceTasks(value) {
-  if (value === void 0) return [];
-  let parsed;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    throw new KddError("invalid source_tasks frontmatter");
-  }
-  if (!Array.isArray(parsed)) throw new KddError("invalid source_tasks frontmatter");
-  try {
-    return normalizeSourceTasks(parsed);
-  } catch {
-    throw new KddError("invalid source_tasks frontmatter");
-  }
-}
-function parseDecisionMd(raw) {
-  const text2 = raw.replace(/\r\n/g, "\n");
-  const fm = {};
-  let rest = text2;
-  if (text2.startsWith("---\n")) {
-    const end = text2.indexOf("\n---\n", 4);
-    if (end !== -1) {
-      for (const line of text2.slice(4, end).split("\n")) {
-        const m = line.match(/^(\w+):\s*(.*)$/);
-        if (m) fm[m[1]] = m[2].trim();
-      }
-      rest = text2.slice(end + 5);
-    }
-  }
-  const tm = rest.match(/^# (.+)$/m);
-  const title = tm ? tm[1].trim() : "";
-  const indexBody = tm ? rest.slice(rest.indexOf(tm[0]) + tm[0].length).trim() : rest.trim();
-  return {
-    title,
-    created: fm.created ?? "",
-    status: fm.status || "active",
-    supersededBy: fm.superseded_by ?? "",
-    indexBody,
-    hash: contentHash(title, indexBody),
-    sourceTasks: parseSourceTasks(fm.source_tasks)
-  };
-}
-function syncIndex(db, decisionsDir) {
-  db.transaction(() => {
-    if (canSyncLegacyDecisions(db, decisionsDir)) {
-      const files = existsSync7(decisionsDir) ? readdirSync6(decisionsDir).filter((f) => f.endsWith(".md")) : [];
-      const inDb = new Map(
-        db.prepare(
-          `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`
-        ).all().map((r) => [r.slug, r])
-      );
-      const seen = /* @__PURE__ */ new Set();
-      for (const f of files) {
-        const slug = f.slice(0, -3);
-        seen.add(slug);
-        const path = join8(decisionsDir, f);
-        if (!canSyncLegacyDecisions(db, dirname6(realpathSync7(path)))) continue;
-        const doc = parseDecisionMd(readFileSync7(path, "utf8"));
-        const title = doc.title || slug;
-        const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
-        const sourceTasks = JSON.stringify(doc.sourceTasks);
-        const row = inDb.get(slug);
-        if (row && row.content_hash === doc.hash && (row.superseded_by ?? null) === (supersededBy ?? null)) {
-          if (row.path !== path || row.source_tasks !== sourceTasks || row.created !== (doc.created || null)) {
-            db.prepare(`UPDATE decisions SET path = ?, source_tasks = ?, created = ? WHERE slug = ?`).run(path, sourceTasks, doc.created || null, slug);
-          }
-          continue;
-        }
-        db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
-        db.prepare(
-          `INSERT OR REPLACE INTO decisions
-             (slug, title, path, content_hash, created, superseded_by, source_tasks)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
-        ).run(slug, title, path, doc.hash, doc.created || null, supersededBy, sourceTasks);
-        db.prepare(
-          `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`
-        ).run(slug, title, doc.indexBody);
-      }
-      for (const slug of inDb.keys()) {
-        if (seen.has(slug)) continue;
-        db.prepare(`DELETE FROM decisions WHERE slug = ?`).run(slug);
-        db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
-      }
-    }
-    const last = Number(
-      db.prepare(`SELECT value FROM meta WHERE key='fts_last_event_id'`).get()?.value ?? "0"
-    );
-    const max = db.prepare(`SELECT MAX(id) AS m FROM events`).get().m ?? 0;
-    if (max <= last) return;
-    const ids = db.prepare(
-      `SELECT DISTINCT task_id AS id FROM events WHERE id > ? AND task_id IS NOT NULL`
-    ).all(last);
-    const getTask = db.prepare(`SELECT * FROM tasks WHERE id = ?`);
-    const getComments = db.prepare(`SELECT body FROM comments WHERE task_id = ? ORDER BY id`);
-    for (const { id: id2 } of ids) {
-      db.prepare(`DELETE FROM search_index WHERE kind='task' AND ref = ?`).run(String(id2));
-      const t = getTask.get(id2);
-      if (!t || t.archived_at) continue;
-      const body = [t.body ?? "", ...getComments.all(id2).map((c) => c.body)].filter(Boolean).join("\n");
-      db.prepare(
-        `INSERT INTO search_index (kind, ref, title, body) VALUES ('task', ?, ?, ?)`
-      ).run(String(id2), t.title, body);
-    }
-    db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_last_event_id', ?)`).run(String(max));
-  })();
-}
-function sanitizeQuery(q) {
-  const parts = [];
-  for (const m of q.matchAll(/"([^"]+)"|[\p{L}\p{N}_][\p{L}\p{N}_.-]*/gu)) {
-    const raw = m[1] !== void 0 ? m[1].trim() : m[0].replace(/^[._-]+|[._-]+$/g, "");
-    if (raw) parts.push(`"${raw.replace(/"/g, '""')}"`);
-  }
-  if (parts.length === 0) throw new KddError("empty query");
-  return parts.join(" ");
-}
-function recall(db, decisionsDir, query, opts = {}) {
-  if (opts.kind && opts.kind !== "decision" && opts.kind !== "task") {
-    throw new KddError(`invalid kind '${opts.kind}'; allowed: decision, task`);
-  }
-  const k = opts.k ?? CAPS.recallK;
-  if (!Number.isInteger(k) || k < 1 || k > CAPS.recallKMax) {
-    throw new KddError(`k must be 1..${CAPS.recallKMax}`);
-  }
-  syncIndex(db, decisionsDir);
-  return db.prepare(`
-    SELECT search_index.kind AS kind, search_index.ref AS ref,
-      search_index.title AS title,
-      snippet(search_index, 3, '', '', '...', ${CAPS.recallSnippetTokens}) AS snippet,
-      COALESCE(d.superseded_by, '') AS superseded_by,
-      t.status AS status
-    FROM search_index
-    LEFT JOIN decisions d ON search_index.kind = 'decision' AND d.slug = search_index.ref
-    LEFT JOIN tasks t ON search_index.kind = 'task' AND t.id = CAST(search_index.ref AS INTEGER)
-    WHERE search_index MATCH @q
-      AND (@kind IS NULL OR search_index.kind = @kind)
-    ORDER BY (COALESCE(d.superseded_by, '') <> ''),
-      bm25(search_index, 0, 0, 3.0, 1.0)
-    LIMIT @k
-  `).all({
-    q: sanitizeQuery(query),
-    kind: opts.kind ?? null,
-    k
-  });
 }
 var PRIORITY_ORDER = `CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
 function manualEvent(event) {
@@ -22611,7 +22656,7 @@ function readTaskDecisions(db, decisionsDir, taskId) {
   if (!existsSync10(decisionsDir)) return [];
   return readdirSync7(decisionsDir).filter((file) => file.endsWith(".md")).flatMap((file) => {
     const slug = file.slice(0, -3);
-    if (!canSyncLegacyDecisions(db, dirname9(realpathSync10(join11(decisionsDir, file))))) return [];
+    if (!canSyncLegacyDecisions(db, dirname9(realpathSync11(join11(decisionsDir, file))))) return [];
     const decision = parseDecisionMd(readFileSync10(join11(decisionsDir, file), "utf8"));
     if (!decision.sourceTasks.includes(taskId)) return [];
     return [{

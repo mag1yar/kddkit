@@ -415,6 +415,50 @@ CREATE TRIGGER work_item_results_no_revalidate BEFORE UPDATE OF invalidated_at,i
     (NEW.invalidated_at IS NOT OLD.invalidated_at OR NEW.invalidation_reason IS NOT OLD.invalidation_reason
       OR NEW.successor_id IS NOT OLD.successor_id)
 BEGIN SELECT RAISE(ABORT,'result invalidation is final'); END;
+  `,
+  // v16: operational memory is independent of the legacy decision index.
+  `
+CREATE TABLE memory_entries (
+  id TEXT PRIMARY KEY CHECK(length(id)=32 AND id NOT GLOB '*[^0-9a-f]*'),
+  task_id INTEGER REFERENCES tasks(id), repo_id TEXT REFERENCES repositories(repo_id),
+  applicable_commit TEXT CHECK(applicable_commit IS NULL OR
+    (length(applicable_commit) IN (40,64) AND applicable_commit NOT GLOB '*[^0-9a-f]*')),
+  import_key TEXT UNIQUE CHECK(import_key IS NULL OR (length(import_key)=64 AND import_key NOT GLOB '*[^0-9a-f]*')),
+  current_revision INTEGER NOT NULL CHECK(typeof(current_revision)='integer' AND current_revision BETWEEN 1 AND 9007199254740991),
+  created_at INTEGER NOT NULL, CHECK(applicable_commit IS NULL OR repo_id IS NOT NULL),
+  FOREIGN KEY(id,current_revision) REFERENCES memory_revisions(entry_id,revision) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE TABLE memory_revisions (
+  entry_id TEXT NOT NULL REFERENCES memory_entries(id),
+  revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision BETWEEN 1 AND 9007199254740991),
+  predecessor INTEGER,
+  kind TEXT NOT NULL CHECK(kind IN ('fact','decision','rule','candidate')),
+  status TEXT NOT NULL CHECK(status IN ('active','withdrawn')),
+  title TEXT NOT NULL, body TEXT NOT NULL,
+  source_json TEXT NOT NULL CHECK(json_valid(source_json)),
+  author_json TEXT NOT NULL CHECK(json_valid(author_json)),
+  evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json) AND json_type(evidence_json)='array'),
+  content_hash TEXT NOT NULL CHECK(length(content_hash)=64 AND content_hash NOT GLOB '*[^0-9a-f]*'),
+  command_id TEXT NOT NULL UNIQUE CHECK(length(trim(command_id))>0),
+  command_hash TEXT NOT NULL CHECK(length(command_hash)=64 AND command_hash NOT GLOB '*[^0-9a-f]*'),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(entry_id,revision),
+  CHECK((revision=1 AND predecessor IS NULL) OR (revision>1 AND predecessor=revision-1)),
+  FOREIGN KEY(entry_id,predecessor) REFERENCES memory_revisions(entry_id,revision) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX idx_memory_scope ON memory_entries(task_id,repo_id,applicable_commit);
+CREATE UNIQUE INDEX idx_memory_import_commands ON events(json_extract(detail,'$.commandId')) WHERE action='memory_import_replay';
+CREATE TRIGGER memory_revisions_immutable_update BEFORE UPDATE ON memory_revisions
+BEGIN SELECT RAISE(ABORT,'immutable memory revision'); END;
+CREATE TRIGGER memory_revisions_immutable_delete BEFORE DELETE ON memory_revisions
+BEGIN SELECT RAISE(ABORT,'immutable memory revision'); END;
+CREATE TRIGGER memory_entries_immutable BEFORE UPDATE OF id,task_id,repo_id,applicable_commit,import_key,created_at ON memory_entries
+BEGIN SELECT RAISE(ABORT,'immutable memory identity'); END;
+CREATE TRIGGER memory_entries_no_delete BEFORE DELETE ON memory_entries
+BEGIN SELECT RAISE(ABORT,'immutable memory identity'); END;
+CREATE TRIGGER memory_entries_current BEFORE UPDATE OF current_revision ON memory_entries
+WHEN NEW.current_revision<>OLD.current_revision+1
+BEGIN SELECT RAISE(ABORT,'memory revision must advance once'); END;
   `
 ];
 
@@ -1820,9 +1864,10 @@ var LEGACY_EXECUTION_SQL = `execution_mode='manual'
   AND NOT EXISTS (SELECT 1 FROM execution_handoffs h WHERE h.task_id=tasks.id AND h.completed_at IS NULL)`;
 
 // src/authority.ts
-import { createHash as createHash6, randomBytes as randomBytes3 } from "crypto";
-import { lstatSync as lstatSync3, realpathSync as realpathSync5 } from "fs";
-import { isAbsolute as isAbsolute3 } from "path";
+import { createHash as createHash8, randomBytes as randomBytes3 } from "crypto";
+import { execFileSync as execFileSync7 } from "child_process";
+import { lstatSync as lstatSync3, realpathSync as realpathSync8 } from "fs";
+import { isAbsolute as isAbsolute5 } from "path";
 
 // src/codex_permissions.ts
 import { spawn as spawn2, execFileSync as execFileSync4 } from "child_process";
@@ -2688,13 +2733,13 @@ async function preflightCodex(input) {
       }));
     };
     const stamp = snapshot2();
-    const evidence = await observeCodexNative(executable, false, model, broker);
-    if (!evidence.applicable || evidence.rawDiagnostic || evidence.observations.length !== (broker ? 158 : 129) || evidence.executed !== evidence.observations.length) throw new KddError("Codex native enforcement unverified", { cause: {
+    const evidence2 = await observeCodexNative(executable, false, model, broker);
+    if (!evidence2.applicable || evidence2.rawDiagnostic || evidence2.observations.length !== (broker ? 158 : 129) || evidence2.executed !== evidence2.observations.length) throw new KddError("Codex native enforcement unverified", { cause: {
       expected: broker ? 158 : 129,
-      attempted: evidence.attempted,
-      executed: evidence.executed,
-      applicable: evidence.applicable,
-      observations: evidence.observations.filter((o) => o.failure).map((o) => ({
+      attempted: evidence2.attempted,
+      executed: evidence2.executed,
+      applicable: evidence2.applicable,
+      observations: evidence2.observations.filter((o) => o.failure).map((o) => ({
         caseId: o.caseId,
         mode: o.mode,
         outcome: o.outcome,
@@ -2702,10 +2747,10 @@ async function preflightCodex(input) {
         timedOut: o.timedOut,
         providerError: !!o.providerError
       })),
-      failedGuards: evidence.failures.filter((f) => f.caseId).map((f) => f.caseId)
+      failedGuards: evidence2.failures.filter((f) => f.caseId).map((f) => f.caseId)
     } });
     if (snapshot2() !== stamp) throw new KddError("native package binding changed during preflight");
-    const results = Object.freeze(evidence.observations.filter((result2) => !result2.control).map((result2) => Object.freeze({
+    const results = Object.freeze(evidence2.observations.filter((result2) => !result2.control).map((result2) => Object.freeze({
       caseId: `${result2.mode}:${result2.caseId}`,
       tool: result2.tool,
       outcome: result2.outcome,
@@ -2920,10 +2965,10 @@ function addCriterion(db, taskId, text2, actor) {
     return mustGetCriterion(db, taskId, id2);
   }).immediate();
 }
-function setCriterionChecked(db, taskId, id2, checked, actor, evidence) {
+function setCriterionChecked(db, taskId, id2, checked, actor, evidence2) {
   return db.transaction(() => {
     const c = mustGetCriterion(db, taskId, id2);
-    const proof = evidence?.trim();
+    const proof = evidence2?.trim();
     if (c.checked_at !== null === checked && (!checked || !proof)) return c;
     const stored = proof ? actor.type === "ai" ? redact(proof) : proof : null;
     db.prepare(
@@ -2954,11 +2999,754 @@ function removeCriterion(db, taskId, id2, actor) {
   }).immediate();
 }
 
+// src/memory.ts
+import { execFileSync as execFileSync6 } from "child_process";
+import { realpathSync as realpathSync6 } from "fs";
+import { isAbsolute as isAbsolute4 } from "path";
+
+// src/memory_import.ts
+import { execFileSync as execFileSync5 } from "child_process";
+import { createHash as createHash7 } from "crypto";
+import { basename as basename2, posix, isAbsolute as isAbsolute3 } from "path";
+
+// src/decisions.ts
+import { createHash as createHash6 } from "crypto";
+import { existsSync as existsSync5, mkdirSync as mkdirSync5, readFileSync as readFileSync5, readdirSync as readdirSync5, realpathSync as realpathSync5, writeFileSync as writeFileSync4 } from "fs";
+import { dirname as dirname4, join as join6 } from "path";
+function slugify(title) {
+  const s = title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 60).replace(/-+$/, "");
+  return s || "untitled";
+}
+var normalize = (s) => s.replace(/\r\n/g, "\n").trim();
+function contentHash(title, body) {
+  return createHash6("sha256").update(`${normalize(title)}
+${normalize(body)}`).digest("hex");
+}
+function normalizeSourceTasks(ids = []) {
+  for (const id2 of ids) {
+    if (!Number.isInteger(id2) || id2 < 1) throw new KddError(`invalid source task id '${id2}'`);
+  }
+  return [...new Set(ids)].sort((a, b) => a - b);
+}
+function parseSourceTasks(value) {
+  if (value === void 0) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new KddError("invalid source_tasks frontmatter");
+  }
+  if (!Array.isArray(parsed)) throw new KddError("invalid source_tasks frontmatter");
+  try {
+    return normalizeSourceTasks(parsed);
+  } catch {
+    throw new KddError("invalid source_tasks frontmatter");
+  }
+}
+function renderDecisionBody(input) {
+  if (input.body !== void 0) return normalize(input.body);
+  const sec = (name, v) => `## ${name}
+${normalize(v ?? "") || "-"}`;
+  return [
+    sec("Decision", input.decision),
+    sec("Rationale", input.rationale),
+    sec("Alternatives", input.alternatives),
+    sec("Supersedes", input.supersedes),
+    sec("Outcome", input.outcome)
+  ].join("\n\n");
+}
+function renderDecisionMd(input, created) {
+  const sources = normalizeSourceTasks(input.sourceTasks);
+  return `---
+created: ${created}
+status: active
+superseded_by:
+source_tasks: [${sources.join(", ")}]
+---
+# ${input.title.trim()}
+
+${renderDecisionBody(input)}
+`;
+}
+function parseDecisionMd(raw) {
+  const text2 = raw.replace(/\r\n/g, "\n");
+  const fm = {};
+  let rest = text2;
+  if (text2.startsWith("---\n")) {
+    const end = text2.indexOf("\n---\n", 4);
+    if (end !== -1) {
+      for (const line of text2.slice(4, end).split("\n")) {
+        const m = line.match(/^(\w+):\s*(.*)$/);
+        if (m) fm[m[1]] = m[2].trim();
+      }
+      rest = text2.slice(end + 5);
+    }
+  }
+  const tm = rest.match(/^# (.+)$/m);
+  const title = tm ? tm[1].trim() : "";
+  const indexBody = tm ? rest.slice(rest.indexOf(tm[0]) + tm[0].length).trim() : rest.trim();
+  return {
+    title,
+    created: fm.created ?? "",
+    status: fm.status || "active",
+    supersededBy: fm.superseded_by ?? "",
+    indexBody,
+    hash: contentHash(title, indexBody),
+    sourceTasks: parseSourceTasks(fm.source_tasks)
+  };
+}
+function supersede(db, dir, oldSlug, newSlug) {
+  const p = join6(dir, `${oldSlug}.md`);
+  if (!existsSync5(p)) throw new KddError(`decision '${oldSlug}' not found`);
+  assertLegacyDecisionSource(db, dirname4(realpathSync5(p)));
+  let raw = readFileSync5(p, "utf8").replace(/\r\n/g, "\n");
+  if (raw.startsWith("---\n") && /^status:/m.test(raw)) {
+    raw = raw.replace(/^status:.*$/m, "status: superseded").replace(/^superseded_by:.*$/m, `superseded_by: ${newSlug}`);
+  } else {
+    const doc = parseDecisionMd(raw);
+    raw = `---
+created: ${doc.created}
+status: superseded
+superseded_by: ${newSlug}
+---
+${raw}`;
+  }
+  writeFileSync4(p, raw);
+  db.prepare(`UPDATE decisions SET superseded_by = ? WHERE slug = ?`).run(newSlug, oldSlug);
+}
+function addDecision(db, decisionsDir, input) {
+  assertLegacyDecisionSource(db, decisionsDir);
+  if (!input.title.trim()) throw new KddError("title must not be empty");
+  if (input.body !== void 0 && [input.decision, input.rationale, input.alternatives, input.outcome].some((v) => v !== void 0)) {
+    throw new KddError("--body is mutually exclusive with section flags");
+  }
+  const sourceTasks = normalizeSourceTasks(input.sourceTasks);
+  for (const id2 of sourceTasks) {
+    if (!db.prepare(`SELECT 1 FROM tasks WHERE id = ?`).get(id2)) {
+      throw new KddError(`task #${id2} not found`);
+    }
+  }
+  const body = renderDecisionBody(input);
+  const hash = contentHash(input.title, body);
+  const provenance = JSON.stringify(sourceTasks);
+  let fileDup;
+  if (existsSync5(decisionsDir)) {
+    for (const file of readdirSync5(decisionsDir).filter((name) => name.endsWith(".md")).sort()) {
+      const path2 = join6(decisionsDir, file);
+      assertLegacyDecisionSource(db, dirname4(realpathSync5(path2)));
+      const doc = parseDecisionMd(readFileSync5(path2, "utf8"));
+      if (doc.hash !== hash) continue;
+      const slug2 = file.slice(0, -3);
+      if (JSON.stringify(doc.sourceTasks) !== provenance) {
+        throw new KddError(`decision '${slug2}' provenance mismatch`);
+      }
+      fileDup ??= { slug: slug2, path: path2 };
+    }
+  }
+  if (fileDup) return { ...fileDup, created: false };
+  const dup = db.prepare(`SELECT slug, path FROM decisions WHERE content_hash = ?`).get(hash);
+  if (dup) {
+    assertLegacyDecisionSource(db, dirname4(realpathSync5(dup.path)));
+    const existing = parseDecisionMd(readFileSync5(dup.path, "utf8")).sourceTasks;
+    if (JSON.stringify(existing) !== provenance) {
+      throw new KddError(`decision '${dup.slug}' provenance mismatch`);
+    }
+    return { slug: dup.slug, path: dup.path, created: false };
+  }
+  const date = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const base = `${date}-${slugify(input.title)}`;
+  let slug = base;
+  const taken = (s) => existsSync5(join6(decisionsDir, `${s}.md`)) || !!db.prepare(`SELECT 1 FROM decisions WHERE slug = ?`).get(s);
+  for (let i = 2; taken(slug); i++) slug = `${base}-${i}`;
+  const path = join6(decisionsDir, `${slug}.md`);
+  return db.transaction(() => {
+    if (input.supersedes) supersede(db, decisionsDir, input.supersedes, slug);
+    mkdirSync5(decisionsDir, { recursive: true });
+    writeFileSync4(path, renderDecisionMd({ ...input, sourceTasks }, date));
+    db.prepare(
+      `INSERT INTO decisions (slug, title, path, content_hash, created, superseded_by, source_tasks)
+       VALUES (?, ?, ?, ?, ?, NULL, ?)`
+    ).run(slug, input.title.trim(), path, hash, date, provenance);
+    db.prepare(
+      `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`
+    ).run(slug, input.title.trim(), body);
+    return { slug, path, created: true };
+  })();
+}
+
+// src/memory_import.ts
+function readMemoryDocument(db, input) {
+  shape(input, ["repoId", "checkoutPath", "commit", "path", "sha256"]);
+  safeMemoryText(input.path, CAPS.agentFieldChars);
+  memoryHex(input.sha256, [64]);
+  const path = input.path;
+  if (isAbsolute3(path) || path.includes("\\") || path.includes("\0") || path.split("/").some((p) => !p || p === "." || p === "..") || posix.normalize(path) !== path || memoryPrivatePath(path)) throw new KddError("private or invalid memory document path");
+  const checkoutPath = memoryCommit(db, input.repoId, input.commit, input.checkoutPath);
+  let bytes2;
+  try {
+    const options = { cwd: checkoutPath, stdio: "pipe", maxBuffer: 4 * CAPS.bodyChars + 4096 };
+    const listing = execFileSync5(
+      "/usr/bin/git",
+      ["--no-replace-objects", "--literal-pathspecs", "ls-tree", "--full-tree", "-z", input.commit, "--", path],
+      { ...options, encoding: "utf8" }
+    ).split("\0").filter(Boolean);
+    const match = listing.length === 1 ? /^(100644|100755) blob ([0-9a-f]{40}|[0-9a-f]{64})\t([\s\S]+)$/.exec(listing[0]) : null;
+    if (!match || match[3] !== path) throw new Error();
+    bytes2 = execFileSync5("/usr/bin/git", ["--no-replace-objects", "cat-file", "blob", match[2]], options);
+  } catch {
+    throw new KddError("memory document blob unavailable");
+  }
+  if (createHash7("sha256").update(bytes2).digest("hex") !== input.sha256) throw new KddError("memory document hash mismatch");
+  let body;
+  try {
+    body = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes2);
+  } catch {
+    throw new KddError("memory document requires UTF-8 text");
+  }
+  if (body.includes("\0")) throw new KddError("memory document requires text");
+  safeMemoryText(body, CAPS.bodyChars);
+  const normalized = body.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n"), parsed = parseDecisionMd(normalized + "\n");
+  const frontmatter = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(normalized)?.[1];
+  const declaredStatus = frontmatter?.split("\n").filter((line) => line.startsWith("status:")).at(-1)?.slice(7).trim();
+  const hasStatus = declaredStatus !== void 0;
+  const legacy = /(?:^|\/)\.planning\/decisions\/.*\.md$/.test(path);
+  const documentStatus = hasStatus || parsed.supersededBy || legacy ? declaredStatus === "superseded" || parsed.supersededBy ? "superseded" : declaredStatus === "active" ? "active" : "unknown" : null;
+  const title = parsed.title || basename2(path);
+  safeMemoryText(title, CAPS.agentFieldChars);
+  return { title, body, source: { kind: "git", repoId: input.repoId, commit: input.commit, path, sha256: input.sha256, documentStatus } };
+}
+function importMemory(handle, input, observers = {}) {
+  const db = controllerDb(handle);
+  return db.transaction(() => {
+    shape(input, ["commandId", "scope", "applicability", "repoId", "checkoutPath", "commit", "path", "sha256", "author"], ["kind", "status"]);
+    const document = readMemoryDocument(db, { repoId: input.repoId, checkoutPath: input.checkoutPath, commit: input.commit, path: input.path, sha256: input.sha256 });
+    const kind = input.kind === void 0 ? "candidate" : input.kind;
+    const status = input.status === void 0 ? "active" : input.status;
+    if (status === "active" && (kind === "decision" || kind === "rule") && document.source.documentStatus !== null && document.source.documentStatus !== "active") {
+      throw new KddError("inactive legacy memory requires explicit candidate acceptance");
+    }
+    const draft = {
+      commandId: input.commandId,
+      entryId: null,
+      expectedRevision: 0,
+      scope: input.scope,
+      applicability: input.applicability,
+      kind,
+      status,
+      title: document.title,
+      body: document.body,
+      source: document.source,
+      author: input.author
+    };
+    const importKey = digest({ repoId: input.repoId, path: input.path, commit: input.commit, sha256: input.sha256, scope: input.scope, applicability: input.applicability });
+    return writeMemoryDb(db, draft, observers, importKey);
+  }).immediate();
+}
+
+// src/memory.ts
+function memoryScope(db, scope) {
+  shape(scope, ["projectId", "taskId"]);
+  if (scope.projectId !== projectOf(db).project_id) throw new KddError("foreign project reference");
+  if (scope.taskId !== null) scopedTask(db, { projectId: scope.projectId, taskId: scope.taskId });
+}
+function memoryHex(value, sizes) {
+  if (typeof value !== "string" || !sizes.includes(value.length) || !/^[0-9a-f]+$/.test(value)) throw new KddError("invalid memory hash or id");
+}
+function safeMemoryText(value, cap) {
+  text(value);
+  if (value.length > cap) throw new KddError(`memory field exceeds limit ${cap}`);
+  if (Buffer.from(value, "utf8").toString("utf8") !== value) throw new KddError("memory requires well-formed text");
+  if (redact(value) !== value) throw new KddError("memory contains private credentials");
+}
+function memoryPrivatePath(value) {
+  return /(?:^|[\/\\])(?:\.git|\.codex|\.claude|\.kdd|\.kdd-runtime|\.superpowers|\.npmrc|\.git-credentials|\.netrc|\.env(?:\.[^\/\\]*)?|credentials(?:\.[^\/\\]*)?|id_rsa|id_ed25519)(?:[\/\\]|$)/i.test(value) || /(?:^|[\/\\])\.planning[\/\\]runs(?:[\/\\]|$)/i.test(value) || /(?:^|[\/\\])(?:\.mcp\.json|config\.toml|settings\.local\.json)(?:$)/i.test(value) || /\.(?:pem|key)$/i.test(value);
+}
+function memoryCheckout(db, repoId, checkoutPath) {
+  checkRepo(db, repoId);
+  const candidates = checkoutPath === void 0 ? bindingsOf(db).filter((b) => b.repo_id === repoId).map((b) => b.checkout_path) : [checkoutPath];
+  for (const path of candidates) {
+    try {
+      if (!isAbsolute4(path) || realpathSync6(path) !== path) continue;
+      const common = canonicalCommonDir(path);
+      if (bindingsOf(db).some((b) => b.repo_id === repoId && b.common_dir === common)) return path;
+    } catch {
+    }
+  }
+  throw new KddError("memory repository binding denied");
+}
+function memoryCommit(db, repoId, commit, checkoutPath) {
+  memoryHex(commit, [40, 64]);
+  checkRepo(db, repoId);
+  const candidates = checkoutPath === void 0 ? bindingsOf(db).filter((b) => b.repo_id === repoId).map((b) => b.checkout_path) : [checkoutPath];
+  for (const candidate of candidates) {
+    try {
+      const path = memoryCheckout(db, repoId, candidate);
+      const options = { cwd: path, encoding: "utf8", stdio: "pipe", maxBuffer: 4096 };
+      if (execFileSync6("/usr/bin/git", ["--no-replace-objects", "cat-file", "-t", commit], options).trim() === "commit" && execFileSync6("/usr/bin/git", ["--no-replace-objects", "rev-parse", "--verify", "--end-of-options", `${commit}^{commit}`], options).trim() === commit) return path;
+    } catch {
+    }
+  }
+  throw new KddError("unknown memory repository version or binding");
+}
+function validateDraft(db, draft) {
+  memoryScope(db, draft.scope);
+  shape(draft.applicability, ["repoId", "commit"]);
+  const { repoId, commit } = draft.applicability;
+  checkRepo(db, repoId);
+  if (repoId !== null) memoryHex(repoId, [32]);
+  if (commit !== null) {
+    if (repoId === null) throw new KddError("memory commit requires repository");
+    memoryCommit(db, repoId, commit);
+  }
+  if (!["fact", "decision", "rule", "candidate"].includes(draft.kind) || !["active", "withdrawn"].includes(draft.status)) throw new KddError("invalid memory kind or status");
+  if (draft.kind === "fact" && repoId !== null && commit === null) throw new KddError("code fact requires exact commit");
+  safeMemoryText(draft.title, CAPS.agentFieldChars);
+  safeMemoryText(draft.body, CAPS.bodyChars);
+  shape(draft.author, ["type", "id"]);
+  if (!["user", "ai"].includes(draft.author.type)) throw new KddError("invalid memory author");
+  if (draft.author.id !== null) safeMemoryText(draft.author.id, CAPS.agentFieldChars);
+  for (const field of [draft.source, draft.author]) {
+    const json = canonical(field);
+    if (Buffer.byteLength(json) > CAPS.agentDetailBytes) throw new KddError(`memory metadata exceeds limit ${CAPS.agentDetailBytes}`);
+    if (redact(json) !== json) throw new KddError("memory contains private credentials");
+  }
+  const source = draft.source;
+  if (!source || typeof source !== "object") throw new KddError("invalid memory source");
+  if (source.kind === "user" || source.kind === "host") {
+    shape(source, ["kind", "ref"]);
+    safeMemoryText(source.ref, CAPS.agentFieldChars);
+    if (memoryPrivatePath(source.ref)) throw new KddError("private memory source denied");
+  } else if (source.kind === "revision") {
+    shape(source, ["kind", "ref", "hash"]);
+    shape(source.ref, ["projectId", "entryId", "revision"]);
+    if (source.ref.projectId !== draft.scope.projectId) throw new KddError("foreign memory source");
+    memoryHex(source.ref.entryId, [32]);
+    integer(source.ref.revision);
+    memoryHex(source.hash, [64]);
+    const record = memoryRecordDb(db, source.ref.entryId, source.ref.revision);
+    if (record.hash !== source.hash) throw new KddError("memory source hash mismatch");
+    if (draft.kind === "fact" && record.applicability.repoId !== null && canonical(record.applicability) !== canonical(draft.applicability)) throw new KddError("code fact source version mismatch");
+  } else if (source.kind === "git") {
+    shape(source, ["kind", "repoId", "commit", "path", "sha256", "documentStatus"]);
+    const document = readMemoryDocument(db, {
+      repoId: source.repoId,
+      commit: source.commit,
+      path: source.path,
+      sha256: source.sha256,
+      checkoutPath: memoryCommit(db, source.repoId, source.commit)
+    });
+    if (canonical(source) !== canonical(document.source)) throw new KddError("memory Git source mismatch");
+    if (draft.kind === "fact" && (draft.applicability.repoId !== source.repoId || draft.applicability.commit !== source.commit)) throw new KddError("code fact source version mismatch");
+  } else if (source.kind === "run") {
+    if (draft.kind !== "candidate") throw new KddError("run memory requires candidate kind");
+    assertRunMemorySource(db, draft.scope, draft.applicability, source, draft.author);
+  } else {
+    throw new KddError("invalid memory source");
+  }
+}
+function memoryDraftHash(draft) {
+  const { scope, applicability, kind, status, title, body, source, author } = draft;
+  return digest({ scope, applicability, kind, status, title, body, source, author });
+}
+function memoryRecordDb(db, entryId, revision) {
+  memoryHex(entryId, [32]);
+  if (revision !== void 0) integer(revision);
+  const row = db.prepare(`SELECT e.task_id,e.repo_id,e.applicable_commit,e.current_revision,r.*
+    FROM memory_entries e JOIN memory_revisions r ON r.entry_id=e.id
+    WHERE e.id=? AND r.revision=${revision === void 0 ? "e.current_revision" : "?"}`).get(...revision === void 0 ? [entryId] : [entryId, revision]);
+  if (!row) throw new KddError("memory record unavailable");
+  return {
+    entryId: row.entry_id,
+    revision: row.revision,
+    currentRevision: row.current_revision,
+    predecessor: row.predecessor,
+    hash: row.content_hash,
+    createdAt: row.created_at,
+    kind: row.kind,
+    status: row.status,
+    title: row.title,
+    body: row.body,
+    source: JSON.parse(row.source_json),
+    author: JSON.parse(row.author_json),
+    evidence: JSON.parse(row.evidence_json),
+    scope: { projectId: projectOf(db).project_id, taskId: row.task_id },
+    applicability: { repoId: row.repo_id, commit: row.applicable_commit },
+    effectiveStatus: row.revision === row.current_revision ? row.status : "superseded"
+  };
+}
+function resolveMemoryView(db, view) {
+  shape(view, ["scope", "repositories"]);
+  memoryScope(db, view.scope);
+  if (!Array.isArray(view.repositories)) throw new KddError("invalid memory repositories");
+  const seen = /* @__PURE__ */ new Set();
+  const repositories = view.repositories.map((version) => {
+    shape(version, ["repoId", "checkoutPath", "commit"]);
+    memoryHex(version.repoId, [32]);
+    if (seen.has(version.repoId)) throw new KddError("duplicate memory repository");
+    seen.add(version.repoId);
+    return {
+      repoId: version.repoId,
+      commit: version.commit,
+      checkoutPath: memoryCommit(db, version.repoId, version.commit, version.checkoutPath)
+    };
+  });
+  return { scope: { projectId: view.scope.projectId, taskId: view.scope.taskId }, repositories };
+}
+function memoryReadOptions(options) {
+  shape(options, [], ["candidates", "withdrawn"]);
+  for (const flag of [options.candidates, options.withdrawn]) if (flag !== void 0 && typeof flag !== "boolean") throw new KddError("invalid memory read option");
+}
+function selectMemory(db, view, options = {}, historyEntryId, revision) {
+  if (!db.inTransaction) throw new KddError("memory read requires transaction");
+  memoryReadOptions(options);
+  const resolved = resolveMemoryView(db, view), taskIds = [];
+  if (resolved.scope.taskId !== null) {
+    const task = scopedTask(db, { projectId: resolved.scope.projectId, taskId: resolved.scope.taskId });
+    taskIds.push(task.id);
+    if (task.parent_id !== null) taskIds.push(task.parent_id);
+  }
+  const clauses = [`(e.task_id IS NULL${taskIds.length ? ` OR e.task_id IN (${taskIds.map(() => "?").join(",")})` : ""})`];
+  const parameters = [...taskIds];
+  clauses.push(`(e.repo_id IS NULL${resolved.repositories.map((version) => {
+    parameters.push(version.repoId, version.commit);
+    return " OR (e.repo_id=? AND (e.applicable_commit IS NULL OR e.applicable_commit=?))";
+  }).join("")})`);
+  if (historyEntryId !== void 0) {
+    memoryHex(historyEntryId, [32]);
+    clauses.push("e.id=?");
+    parameters.push(historyEntryId);
+  } else if (revision !== void 0) throw new KddError("memory revision requires entry");
+  if (revision !== void 0 && revision !== null) integer(revision);
+  if (historyEntryId === void 0 || revision === null) clauses.push("r.revision=e.current_revision");
+  else if (revision !== void 0) {
+    clauses.push("r.revision=?");
+    parameters.push(revision);
+  }
+  if (!options.candidates) clauses.push("r.kind<>'candidate'");
+  if (!options.withdrawn) clauses.push("r.status='active'");
+  const rows = db.prepare(`SELECT e.id,r.revision FROM memory_entries e
+    JOIN memory_revisions r ON r.entry_id=e.id WHERE ${clauses.join(" AND ")} ORDER BY e.id,r.revision`).all(...parameters);
+  if (historyEntryId !== void 0 && !rows.length) throw new KddError("memory record unavailable");
+  return rows.map((row) => memoryRecordDb(db, row.id, row.revision));
+}
+function evidence(input, operation, previous, observers) {
+  const origins = /* @__PURE__ */ new Set();
+  if (input.source.kind === "user" || ["rule", "decision"].includes(input.kind) || previous && ["rule", "decision"].includes(previous.kind)) origins.add("user");
+  if (input.kind === "fact" || previous?.kind === "fact") origins.add("host");
+  return [...origins].map((origin) => {
+    const request = {
+      operation,
+      entryId: input.entryId,
+      expectedRevision: input.expectedRevision,
+      origin,
+      scope: input.scope,
+      applicability: input.applicability,
+      payloadHash: memoryDraftHash(input),
+      source: input.source
+    };
+    const expected = canonical(request);
+    try {
+      const observed = observers.observe?.(structuredClone(request));
+      shape(observed, ["request", "origin", "verdict", "observedAt", "expiresAt"]);
+      if (!observed || canonical(observed.request) !== expected || observed.origin !== origin || observed.verdict !== "pass" || !Number.isFinite(observed.observedAt) || observed.observedAt < 0 || observed.observedAt > now() || observed.expiresAt !== null && (!Number.isFinite(observed.expiresAt) || observed.expiresAt <= now() || observed.expiresAt <= observed.observedAt)) throw new Error();
+      const json = canonical(observed);
+      if (Buffer.byteLength(json) > CAPS.agentDetailBytes || redact(json) !== json) throw new Error();
+      return JSON.parse(json);
+    } catch {
+      throw new KddError("memory evidence not verified");
+    }
+  });
+}
+function receipt(record, created) {
+  return {
+    entryId: record.entryId,
+    revision: record.revision,
+    currentRevision: record.currentRevision,
+    hash: record.hash,
+    created,
+    effectiveStatus: record.effectiveStatus
+  };
+}
+function writeMemoryDb(db, input, observers, importKey) {
+  if (!db.inTransaction) throw new KddError("memory write requires transaction");
+  try {
+    input = structuredClone(input);
+  } catch {
+    throw new KddError("invalid memory payload");
+  }
+  shape(input, ["commandId", "entryId", "expectedRevision", "scope", "applicability", "kind", "status", "title", "body", "source", "author"]);
+  safeMemoryText(input.commandId, CAPS.agentFieldChars);
+  integer(input.expectedRevision, 0);
+  if (input.entryId === null ? input.expectedRevision !== 0 : input.expectedRevision === 0) throw new KddError("invalid memory expected revision");
+  if (input.entryId !== null) memoryHex(input.entryId, [32]);
+  if (importKey !== void 0) memoryHex(importKey, [64]);
+  validateDraft(db, input);
+  const commandHash = digest(input);
+  const actor = { type: input.author.type, id: input.author.id ?? void 0 };
+  const command = db.prepare("SELECT entry_id,revision,command_hash FROM memory_revisions WHERE command_id=?").get(input.commandId);
+  const alias = command ? void 0 : db.prepare("SELECT detail FROM events WHERE action='memory_import_replay' AND json_extract(detail,'$.commandId')=?").get(input.commandId);
+  const bound = command ?? (alias ? (() => {
+    const detail = JSON.parse(alias.detail);
+    return { entry_id: detail.entryId, revision: detail.revision, command_hash: detail.commandHash };
+  })() : void 0);
+  if (bound && bound.command_hash !== commandHash) throw new KddError("memory command conflict");
+  const imported = !bound && importKey ? db.prepare("SELECT id FROM memory_entries WHERE import_key=?").get(importKey) : void 0;
+  const replay = bound ? memoryRecordDb(db, bound.entry_id, bound.revision) : imported ? memoryRecordDb(db, imported.id, 1) : null;
+  if (imported && replay?.hash !== memoryDraftHash(input)) throw new KddError("memory import publication conflict");
+  const previous = replay ? replay.predecessor === null ? null : memoryRecordDb(db, replay.entryId, replay.predecessor) : input.entryId === null ? null : memoryRecordDb(db, input.entryId, input.expectedRevision);
+  const existing = input.entryId === null ? null : memoryRecordDb(db, input.entryId);
+  if (existing && (canonical(existing.scope) !== canonical(input.scope) || canonical(existing.applicability) !== canonical(input.applicability))) throw new KddError("immutable memory identity");
+  if (previous && input.kind !== previous.kind && (previous.kind !== "candidate" || input.kind === "candidate")) throw new KddError("immutable memory kind");
+  const originalImport = replay && replay.revision === 1 && db.prepare("SELECT import_key FROM memory_entries WHERE id=?").get(replay.entryId);
+  const operation = importKey || originalImport && originalImport.import_key ? "import" : !previous ? "create" : input.status === "withdrawn" ? "withdraw" : input.kind !== previous.kind ? "accept" : "revise";
+  const observations = evidence(input, operation, previous, observers);
+  if (Buffer.byteLength(canonical(observations)) > CAPS.agentDetailBytes) throw new KddError(`memory evidence exceeds limit ${CAPS.agentDetailBytes}`);
+  if (replay) {
+    if (imported) appendEvent(
+      db,
+      input.scope.taskId,
+      actor,
+      "memory_import_replay",
+      { commandId: input.commandId, commandHash, entryId: replay.entryId, revision: replay.revision }
+    );
+    return receipt(replay, false);
+  }
+  if (existing && existing.currentRevision !== input.expectedRevision) throw new KddError("stale memory revision");
+  const entryId = input.entryId ?? newId(), revision = input.expectedRevision + 1;
+  integer(revision);
+  if (!existing) db.prepare("INSERT INTO memory_entries VALUES(?,?,?,?,?,?,?)").run(entryId, input.scope.taskId, input.applicability.repoId, input.applicability.commit, importKey ?? null, revision, now());
+  db.prepare("INSERT INTO memory_revisions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(
+    entryId,
+    revision,
+    previous?.revision ?? null,
+    input.kind,
+    input.status,
+    input.title,
+    input.body,
+    canonical(input.source),
+    canonical(input.author),
+    canonical(observations),
+    memoryDraftHash(input),
+    input.commandId,
+    commandHash,
+    now()
+  );
+  if (existing && db.prepare("UPDATE memory_entries SET current_revision=? WHERE id=? AND current_revision=?").run(revision, entryId, input.expectedRevision).changes !== 1) throw new KddError("stale memory revision");
+  appendEvent(
+    db,
+    input.scope.taskId,
+    actor,
+    "memory_revision",
+    {
+      entryId,
+      revision,
+      predecessor: previous?.revision ?? null,
+      kind: input.kind,
+      status: input.status,
+      source: input.source,
+      hash: memoryDraftHash(input),
+      operation
+    }
+  );
+  return receipt(memoryRecordDb(db, entryId, revision), true);
+}
+function writeMemory(handle, input, observers = {}) {
+  const db = controllerDb(handle);
+  return db.transaction(() => writeMemoryDb(db, input, observers)).immediate();
+}
+
+// src/memory_query.ts
+import Database5 from "better-sqlite3";
+
+// src/recall.ts
+import { existsSync as existsSync6, readFileSync as readFileSync6, readdirSync as readdirSync6, realpathSync as realpathSync7 } from "fs";
+import { dirname as dirname5, join as join7 } from "path";
+function syncIndex(db, decisionsDir) {
+  db.transaction(() => {
+    if (canSyncLegacyDecisions(db, decisionsDir)) {
+      const files = existsSync6(decisionsDir) ? readdirSync6(decisionsDir).filter((f) => f.endsWith(".md")) : [];
+      const inDb = new Map(
+        db.prepare(
+          `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`
+        ).all().map((r) => [r.slug, r])
+      );
+      const seen = /* @__PURE__ */ new Set();
+      for (const f of files) {
+        const slug = f.slice(0, -3);
+        seen.add(slug);
+        const path = join7(decisionsDir, f);
+        if (!canSyncLegacyDecisions(db, dirname5(realpathSync7(path)))) continue;
+        const doc = parseDecisionMd(readFileSync6(path, "utf8"));
+        const title = doc.title || slug;
+        const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
+        const sourceTasks = JSON.stringify(doc.sourceTasks);
+        const row = inDb.get(slug);
+        if (row && row.content_hash === doc.hash && (row.superseded_by ?? null) === (supersededBy ?? null)) {
+          if (row.path !== path || row.source_tasks !== sourceTasks || row.created !== (doc.created || null)) {
+            db.prepare(`UPDATE decisions SET path = ?, source_tasks = ?, created = ? WHERE slug = ?`).run(path, sourceTasks, doc.created || null, slug);
+          }
+          continue;
+        }
+        db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
+        db.prepare(
+          `INSERT OR REPLACE INTO decisions
+             (slug, title, path, content_hash, created, superseded_by, source_tasks)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        ).run(slug, title, path, doc.hash, doc.created || null, supersededBy, sourceTasks);
+        db.prepare(
+          `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`
+        ).run(slug, title, doc.indexBody);
+      }
+      for (const slug of inDb.keys()) {
+        if (seen.has(slug)) continue;
+        db.prepare(`DELETE FROM decisions WHERE slug = ?`).run(slug);
+        db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
+      }
+    }
+    const last = Number(
+      db.prepare(`SELECT value FROM meta WHERE key='fts_last_event_id'`).get()?.value ?? "0"
+    );
+    const max = db.prepare(`SELECT MAX(id) AS m FROM events`).get().m ?? 0;
+    if (max <= last) return;
+    const ids = db.prepare(
+      `SELECT DISTINCT task_id AS id FROM events WHERE id > ? AND task_id IS NOT NULL`
+    ).all(last);
+    const getTask = db.prepare(`SELECT * FROM tasks WHERE id = ?`);
+    const getComments = db.prepare(`SELECT body FROM comments WHERE task_id = ? ORDER BY id`);
+    for (const { id: id2 } of ids) {
+      db.prepare(`DELETE FROM search_index WHERE kind='task' AND ref = ?`).run(String(id2));
+      const t = getTask.get(id2);
+      if (!t || t.archived_at) continue;
+      const body = [t.body ?? "", ...getComments.all(id2).map((c) => c.body)].filter(Boolean).join("\n");
+      db.prepare(
+        `INSERT INTO search_index (kind, ref, title, body) VALUES ('task', ?, ?, ?)`
+      ).run(String(id2), t.title, body);
+    }
+    db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_last_event_id', ?)`).run(String(max));
+  })();
+}
+function sanitizeQuery(q) {
+  const parts = [];
+  for (const m of q.matchAll(/"([^"]+)"|[\p{L}\p{N}_][\p{L}\p{N}_.-]*/gu)) {
+    const raw = m[1] !== void 0 ? m[1].trim() : m[0].replace(/^[._-]+|[._-]+$/g, "");
+    if (raw) parts.push(`"${raw.replace(/"/g, '""')}"`);
+  }
+  if (parts.length === 0) throw new KddError("empty query");
+  return parts.join(" ");
+}
+function recall(db, decisionsDir, query, opts = {}) {
+  if (opts.kind && opts.kind !== "decision" && opts.kind !== "task") {
+    throw new KddError(`invalid kind '${opts.kind}'; allowed: decision, task`);
+  }
+  const k = opts.k ?? CAPS.recallK;
+  if (!Number.isInteger(k) || k < 1 || k > CAPS.recallKMax) {
+    throw new KddError(`k must be 1..${CAPS.recallKMax}`);
+  }
+  syncIndex(db, decisionsDir);
+  return db.prepare(`
+    SELECT search_index.kind AS kind, search_index.ref AS ref,
+      search_index.title AS title,
+      snippet(search_index, 3, '', '', '...', ${CAPS.recallSnippetTokens}) AS snippet,
+      COALESCE(d.superseded_by, '') AS superseded_by,
+      t.status AS status
+    FROM search_index
+    LEFT JOIN decisions d ON search_index.kind = 'decision' AND d.slug = search_index.ref
+    LEFT JOIN tasks t ON search_index.kind = 'task' AND t.id = CAST(search_index.ref AS INTEGER)
+    WHERE search_index MATCH @q
+      AND (@kind IS NULL OR search_index.kind = @kind)
+    ORDER BY (COALESCE(d.superseded_by, '') <> ''),
+      bm25(search_index, 0, 0, 3.0, 1.0)
+    LIMIT @k
+  `).all({
+    q: sanitizeQuery(query),
+    kind: opts.kind ?? null,
+    k
+  });
+}
+function rebuild(db, decisionsDir) {
+  assertLegacyDecisionSource(db, decisionsDir);
+  if (existsSync6(decisionsDir)) for (const name of readdirSync6(decisionsDir).filter((f) => f.endsWith(".md"))) {
+    assertLegacyDecisionSource(db, dirname5(realpathSync7(join7(decisionsDir, name))));
+  }
+  db.transaction(() => {
+    db.exec(`DELETE FROM search_index; DELETE FROM decisions;`);
+    db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_last_event_id', '0')`).run();
+  })();
+  syncIndex(db, decisionsDir);
+  return {
+    decisions: db.prepare(`SELECT COUNT(*) c FROM decisions`).get().c,
+    tasks: db.prepare(`SELECT COUNT(*) c FROM search_index WHERE kind='task'`).get().c
+  };
+}
+
+// src/memory_query.ts
+function memoryEntry(handle, view, entryId, revision) {
+  const db = controllerDb(handle);
+  if (revision !== void 0) integer(revision);
+  return db.transaction(() => selectMemory(db, view, { candidates: true, withdrawn: true }, entryId, revision ?? null)[0])();
+}
+function memoryHistory(handle, view, entryId) {
+  const db = controllerDb(handle);
+  return db.transaction(() => selectMemory(db, view, { candidates: true, withdrawn: true }, entryId))();
+}
+function listMemory(handle, view, options = {}) {
+  const db = controllerDb(handle);
+  return db.transaction(() => selectMemory(db, view, options))();
+}
+function memoryRules(handle, view) {
+  const db = controllerDb(handle);
+  return db.transaction(() => selectMemory(db, view).filter((record) => record.kind === "rule"))();
+}
+function queryMemoryDb(db, view, query, options = {}) {
+  shape(options, [], ["k", "candidates", "withdrawn"]);
+  const readOptions = { candidates: options.candidates, withdrawn: options.withdrawn };
+  memoryReadOptions(readOptions);
+  const k = options.k === void 0 ? CAPS.recallK : options.k;
+  integer(k);
+  if (k > CAPS.recallKMax) throw new KddError(`memory k must be 1..${CAPS.recallKMax}`);
+  safeMemoryText(query, CAPS.bodyChars);
+  const match = sanitizeQuery(query);
+  if (!match) throw new KddError("memory query requires words");
+  const eligible = selectMemory(db, view, readOptions);
+  const corpus = new Database5(":memory:");
+  try {
+    corpus.exec("CREATE VIRTUAL TABLE hits USING fts5(ref UNINDEXED,title,body,tokenize='unicode61 remove_diacritics 2')");
+    const insert = corpus.prepare("INSERT INTO hits(ref,title,body) VALUES(?,?,?)");
+    corpus.transaction(() => {
+      for (const row of eligible) insert.run(row.entryId, row.title, row.body);
+    })();
+    const hits = corpus.prepare(`SELECT ref,title,snippet(hits,2,'','','...',${CAPS.recallSnippetTokens}) snippet
+      FROM hits WHERE hits MATCH ? ORDER BY bm25(hits,0,3.0,1.0),ref LIMIT ?`).all(match, k);
+    const records = new Map(eligible.map((row) => [row.entryId, row]));
+    return hits.map((hit) => {
+      const row = records.get(hit.ref);
+      return {
+        ref: { projectId: row.scope.projectId, entryId: row.entryId, revision: row.revision },
+        hash: row.hash,
+        kind: row.kind,
+        status: row.status,
+        effectiveStatus: row.effectiveStatus,
+        title: capText(hit.title, CAPS.recallTitleChars),
+        snippet: hit.snippet,
+        source: row.source,
+        scope: row.scope,
+        applicability: row.applicability
+      };
+    });
+  } finally {
+    corpus.close();
+  }
+}
+function recallMemory(handle, view, query, options = {}) {
+  const db = controllerDb(handle);
+  return db.transaction(() => queryMemoryDb(db, view, query, options))();
+}
+
 // src/authority.ts
 var operations = ["get_context", "submit_report", "request_question"];
 var contexts = /* @__PURE__ */ new WeakMap();
 var denied = () => new KddError("run authority denied");
-var tokenHash = (token) => createHash6("sha256").update(token).digest("hex");
+var tokenHash = (token) => createHash8("sha256").update(token).digest("hex");
 var controllerActor2 = { type: "ai", id: "controller" };
 function assertLegacyTaskMutation(db, taskIds) {
   const ids = [...new Set(taskIds)];
@@ -2997,8 +3785,8 @@ function modeledOwnership(db, input, scope) {
   }
 }
 function canonicalCheckout(path) {
-  if (typeof path !== "string" || !isAbsolute3(path) || !lstatSync3(path).isDirectory()) throw new KddError("invalid repository scope");
-  return realpathSync5(path);
+  if (typeof path !== "string" || !isAbsolute5(path) || !lstatSync3(path).isDirectory()) throw new KddError("invalid repository scope");
+  return realpathSync8(path);
 }
 function repositoryScope(db, input, native) {
   if (!Array.isArray(input) || !input.length) throw new KddError("empty repository scope");
@@ -3016,7 +3804,7 @@ function repositoryScope(db, input, native) {
 }
 function privateStore(db, scope, native) {
   if (db.memory) return;
-  const path = realpathSync5(db.name);
+  const path = realpathSync8(db.name);
   if (db.name !== path) throw new KddError("project store alias denied");
   if (scope.some((resource) => inside(resource.checkoutPath, path) || inside(resource.commonDir, path))) throw new KddError("native repository scope exposes project store");
   const writableRoots = [canonicalCheckout(native.scratchDir), ...native.writableRoot ? [canonicalCheckout(native.writableRoot)] : []];
@@ -3095,6 +3883,35 @@ function assertRunAuthorityBinding(db, taskId, binding) {
     AND work_item_id=? AND run_id=? AND generation=?`).get(binding.authorityId, taskId, binding.workItemId, binding.runId, binding.generation);
   currentAuthority(db, row);
 }
+function assertRunMemorySource(db, scope, applicability, source, author) {
+  shape(source, ["kind", "task", "authority", "reportEventId"]);
+  scopedTask(db, source.task);
+  shape(source.authority, ["authorityId", "workItemId", "runId", "generation"]);
+  const binding = source.authority;
+  text(binding.authorityId);
+  text(binding.workItemId);
+  text(binding.runId);
+  integer(binding.generation);
+  integer(source.reportEventId);
+  const row = db.prepare(`SELECT * FROM run_authorities WHERE authority_id=? AND task_id=?
+    AND work_item_id=? AND run_id=? AND generation=?`).get(
+    binding.authorityId,
+    source.task.taskId,
+    binding.workItemId,
+    binding.runId,
+    binding.generation
+  );
+  const { grant } = currentAuthority(db, row);
+  if (!grant.operations.includes("submit_report") || scope.projectId !== grant.projectId || scope.taskId !== grant.taskId || author.type !== "ai" || author.id !== grant.runId || applicability.repoId !== null && !grant.repositories.some((repo) => repo.repoId === applicability.repoId)) throw denied();
+  const event = db.prepare("SELECT detail,actor_type,actor_id FROM events WHERE id=? AND task_id=? AND action='run_report'").get(source.reportEventId, grant.taskId);
+  let detail;
+  try {
+    detail = event?.detail ? JSON.parse(event.detail) : null;
+  } catch {
+    throw denied();
+  }
+  if (!detail || event?.actor_type !== "ai" || event.actor_id !== grant.runId || detail.work_item_id !== grant.workItemId || detail.run_id !== grant.runId || detail.generation !== grant.generation || detail.untrusted !== true) throw denied();
+}
 function lookup(db, token) {
   if (typeof token !== "string" || !/^[0-9a-f]{64}$/.test(token)) throw denied();
   const row = db.prepare("SELECT * FROM run_authorities WHERE token_hash=?").get(tokenHash(token));
@@ -3137,6 +3954,44 @@ function readRunContext(context) {
     };
   }).immediate();
 }
+function runMemoryView(grant) {
+  return { scope: { projectId: grant.projectId, taskId: grant.taskId }, repositories: grant.repositories.map((repo) => ({
+    repoId: repo.repoId,
+    checkoutPath: repo.checkoutPath,
+    commit: execFileSync7(
+      "/usr/bin/git",
+      ["--no-replace-objects", "rev-parse", "--verify", "HEAD^{commit}"],
+      { cwd: repo.checkoutPath, encoding: "utf8", stdio: "pipe", maxBuffer: 4096 }
+    ).trim()
+  })) };
+}
+function readRunMemory(context, input = {}) {
+  return registered(context).db.transaction(() => {
+    const { db, grant } = live(context, "get_context");
+    shape(input, [], ["entryId", "revision", "candidates", "withdrawn"]);
+    if (input.revision !== void 0) integer(input.revision);
+    if (input.revision !== void 0 && input.entryId === void 0) throw new KddError("memory revision requires entry");
+    return selectMemory(
+      db,
+      runMemoryView(grant),
+      { candidates: input.candidates, withdrawn: input.withdrawn },
+      input.entryId,
+      input.entryId === void 0 ? void 0 : input.revision ?? null
+    );
+  }).immediate();
+}
+function recallRunMemory(context, query, options = {}) {
+  return registered(context).db.transaction(() => {
+    const { db, grant } = live(context, "get_context");
+    return queryMemoryDb(db, runMemoryView(grant), query, options);
+  }).immediate();
+}
+function runMemoryRules(context) {
+  return registered(context).db.transaction(() => {
+    const { db, grant } = live(context, "get_context");
+    return selectMemory(db, runMemoryView(grant)).filter((record) => record.kind === "rule");
+  }).immediate();
+}
 function runEvent(context, operation, body) {
   return registered(context).db.transaction(() => {
     const { db, token, grant } = live(context, operation);
@@ -3155,7 +4010,7 @@ var submitRunReport = (context, body) => runEvent(context, "submit_report", body
 var requestRunQuestion = (context, body) => runEvent(context, "request_question", body);
 
 // src/ops.ts
-import { execFileSync as execFileSync5 } from "child_process";
+import { execFileSync as execFileSync8 } from "child_process";
 
 // src/tracks.ts
 function mustGetTrack(db, id2) {
@@ -3235,7 +4090,7 @@ function appendTaskMutationEvent(db, taskId, actor, action, detail, opts) {
   if (!session) return appendEvent(db, taskId, actor, action, detail, opts);
   const git3 = (args) => {
     try {
-      return execFileSync5("git", args, {
+      return execFileSync8("git", args, {
         cwd: session.cwd,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"]
@@ -3471,17 +4326,17 @@ function unarchiveTask(db, id2, actor) {
 }
 
 // src/files.ts
-import { createHash as createHash7 } from "crypto";
+import { createHash as createHash9 } from "crypto";
 import {
-  existsSync as existsSync5,
-  mkdirSync as mkdirSync5,
-  readFileSync as readFileSync5,
+  existsSync as existsSync7,
+  mkdirSync as mkdirSync6,
+  readFileSync as readFileSync7,
   renameSync as renameSync3,
   rmSync as rmSync4,
   statSync as statSync2,
-  writeFileSync as writeFileSync4
+  writeFileSync as writeFileSync5
 } from "fs";
-import { basename as basename2, dirname as dirname4, extname, join as join6 } from "path";
+import { basename as basename3, dirname as dirname6, extname, join as join8 } from "path";
 var MIME = {
   png: "image/png",
   jpg: "image/jpeg",
@@ -3513,9 +4368,9 @@ var INLINE = /* @__PURE__ */ new Set([
 var isInlineMime = (m) => m !== null && INLINE.has(m);
 var filesDir = (dbPath) => {
   if (dbPath === ":memory:") throw new KddError("attachments need a real board file, not :memory:");
-  return join6(dirname4(dbPath), "files");
+  return join8(dirname6(dbPath), "files");
 };
-var filePath = (dbPath, f) => join6(filesDir(dbPath), `${f.sha256}.${f.ext}`);
+var filePath = (dbPath, f) => join8(filesDir(dbPath), `${f.sha256}.${f.ext}`);
 function listFiles(db, taskId) {
   return db.prepare(`SELECT * FROM files WHERE task_id = ? ORDER BY id`).all(taskId);
 }
@@ -3532,22 +4387,22 @@ function attachFile(db, dbPath, taskId, srcPath, opts, actor) {
       if (stat.size > CAPS.fileBytes) {
         throw new KddError(`file is ${stat.size} bytes, the limit is ${CAPS.fileBytes}`);
       }
-      data = readFileSync5(srcPath);
+      data = readFileSync7(srcPath);
     } catch (e) {
       if (e instanceof KddError) throw e;
       throw new KddError(`cannot read ${srcPath}: ${e.message}`);
     }
     mustGetTask(db, taskId);
-    const sha256 = createHash7("sha256").update(data).digest("hex");
+    const sha256 = createHash9("sha256").update(data).digest("hex");
     const ext = (extname(srcPath).slice(1) || "bin").toLowerCase();
-    const target = join6(filesDir(dbPath), `${sha256}.${ext}`);
-    if (!existsSync5(target)) {
-      mkdirSync5(filesDir(dbPath), { recursive: true });
+    const target = join8(filesDir(dbPath), `${sha256}.${ext}`);
+    if (!existsSync7(target)) {
+      mkdirSync6(filesDir(dbPath), { recursive: true });
       const tmp = `${target}.${process.pid}.tmp`;
-      writeFileSync4(tmp, data);
+      writeFileSync5(tmp, data);
       renameSync3(tmp, target);
     }
-    const name = capText(basename2(srcPath), CAPS.fileNameChars);
+    const name = capText(basename3(srcPath), CAPS.fileNameChars);
     const r = db.prepare(
       `INSERT INTO files (task_id, sha256, ext, original_name, mime_type, size_bytes,
                           description, created_at)
@@ -3591,294 +4446,8 @@ function detachFile(db, dbPath, fileId, actor) {
   }).immediate();
 }
 
-// src/decisions.ts
-import { createHash as createHash8 } from "crypto";
-import { existsSync as existsSync6, mkdirSync as mkdirSync6, readFileSync as readFileSync6, readdirSync as readdirSync5, realpathSync as realpathSync6, writeFileSync as writeFileSync5 } from "fs";
-import { dirname as dirname5, join as join7 } from "path";
-function slugify(title) {
-  const s = title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 60).replace(/-+$/, "");
-  return s || "untitled";
-}
-var normalize = (s) => s.replace(/\r\n/g, "\n").trim();
-function contentHash(title, body) {
-  return createHash8("sha256").update(`${normalize(title)}
-${normalize(body)}`).digest("hex");
-}
-function normalizeSourceTasks(ids = []) {
-  for (const id2 of ids) {
-    if (!Number.isInteger(id2) || id2 < 1) throw new KddError(`invalid source task id '${id2}'`);
-  }
-  return [...new Set(ids)].sort((a, b) => a - b);
-}
-function parseSourceTasks(value) {
-  if (value === void 0) return [];
-  let parsed;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    throw new KddError("invalid source_tasks frontmatter");
-  }
-  if (!Array.isArray(parsed)) throw new KddError("invalid source_tasks frontmatter");
-  try {
-    return normalizeSourceTasks(parsed);
-  } catch {
-    throw new KddError("invalid source_tasks frontmatter");
-  }
-}
-function renderDecisionBody(input) {
-  if (input.body !== void 0) return normalize(input.body);
-  const sec = (name, v) => `## ${name}
-${normalize(v ?? "") || "-"}`;
-  return [
-    sec("Decision", input.decision),
-    sec("Rationale", input.rationale),
-    sec("Alternatives", input.alternatives),
-    sec("Supersedes", input.supersedes),
-    sec("Outcome", input.outcome)
-  ].join("\n\n");
-}
-function renderDecisionMd(input, created) {
-  const sources = normalizeSourceTasks(input.sourceTasks);
-  return `---
-created: ${created}
-status: active
-superseded_by:
-source_tasks: [${sources.join(", ")}]
----
-# ${input.title.trim()}
-
-${renderDecisionBody(input)}
-`;
-}
-function parseDecisionMd(raw) {
-  const text2 = raw.replace(/\r\n/g, "\n");
-  const fm = {};
-  let rest = text2;
-  if (text2.startsWith("---\n")) {
-    const end = text2.indexOf("\n---\n", 4);
-    if (end !== -1) {
-      for (const line of text2.slice(4, end).split("\n")) {
-        const m = line.match(/^(\w+):\s*(.*)$/);
-        if (m) fm[m[1]] = m[2].trim();
-      }
-      rest = text2.slice(end + 5);
-    }
-  }
-  const tm = rest.match(/^# (.+)$/m);
-  const title = tm ? tm[1].trim() : "";
-  const indexBody = tm ? rest.slice(rest.indexOf(tm[0]) + tm[0].length).trim() : rest.trim();
-  return {
-    title,
-    created: fm.created ?? "",
-    status: fm.status || "active",
-    supersededBy: fm.superseded_by ?? "",
-    indexBody,
-    hash: contentHash(title, indexBody),
-    sourceTasks: parseSourceTasks(fm.source_tasks)
-  };
-}
-function supersede(db, dir, oldSlug, newSlug) {
-  const p = join7(dir, `${oldSlug}.md`);
-  if (!existsSync6(p)) throw new KddError(`decision '${oldSlug}' not found`);
-  assertLegacyDecisionSource(db, dirname5(realpathSync6(p)));
-  let raw = readFileSync6(p, "utf8").replace(/\r\n/g, "\n");
-  if (raw.startsWith("---\n") && /^status:/m.test(raw)) {
-    raw = raw.replace(/^status:.*$/m, "status: superseded").replace(/^superseded_by:.*$/m, `superseded_by: ${newSlug}`);
-  } else {
-    const doc = parseDecisionMd(raw);
-    raw = `---
-created: ${doc.created}
-status: superseded
-superseded_by: ${newSlug}
----
-${raw}`;
-  }
-  writeFileSync5(p, raw);
-  db.prepare(`UPDATE decisions SET superseded_by = ? WHERE slug = ?`).run(newSlug, oldSlug);
-}
-function addDecision(db, decisionsDir, input) {
-  assertLegacyDecisionSource(db, decisionsDir);
-  if (!input.title.trim()) throw new KddError("title must not be empty");
-  if (input.body !== void 0 && [input.decision, input.rationale, input.alternatives, input.outcome].some((v) => v !== void 0)) {
-    throw new KddError("--body is mutually exclusive with section flags");
-  }
-  const sourceTasks = normalizeSourceTasks(input.sourceTasks);
-  for (const id2 of sourceTasks) {
-    if (!db.prepare(`SELECT 1 FROM tasks WHERE id = ?`).get(id2)) {
-      throw new KddError(`task #${id2} not found`);
-    }
-  }
-  const body = renderDecisionBody(input);
-  const hash = contentHash(input.title, body);
-  const provenance = JSON.stringify(sourceTasks);
-  let fileDup;
-  if (existsSync6(decisionsDir)) {
-    for (const file of readdirSync5(decisionsDir).filter((name) => name.endsWith(".md")).sort()) {
-      const path2 = join7(decisionsDir, file);
-      assertLegacyDecisionSource(db, dirname5(realpathSync6(path2)));
-      const doc = parseDecisionMd(readFileSync6(path2, "utf8"));
-      if (doc.hash !== hash) continue;
-      const slug2 = file.slice(0, -3);
-      if (JSON.stringify(doc.sourceTasks) !== provenance) {
-        throw new KddError(`decision '${slug2}' provenance mismatch`);
-      }
-      fileDup ??= { slug: slug2, path: path2 };
-    }
-  }
-  if (fileDup) return { ...fileDup, created: false };
-  const dup = db.prepare(`SELECT slug, path FROM decisions WHERE content_hash = ?`).get(hash);
-  if (dup) {
-    assertLegacyDecisionSource(db, dirname5(realpathSync6(dup.path)));
-    const existing = parseDecisionMd(readFileSync6(dup.path, "utf8")).sourceTasks;
-    if (JSON.stringify(existing) !== provenance) {
-      throw new KddError(`decision '${dup.slug}' provenance mismatch`);
-    }
-    return { slug: dup.slug, path: dup.path, created: false };
-  }
-  const date = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-  const base = `${date}-${slugify(input.title)}`;
-  let slug = base;
-  const taken = (s) => existsSync6(join7(decisionsDir, `${s}.md`)) || !!db.prepare(`SELECT 1 FROM decisions WHERE slug = ?`).get(s);
-  for (let i = 2; taken(slug); i++) slug = `${base}-${i}`;
-  const path = join7(decisionsDir, `${slug}.md`);
-  return db.transaction(() => {
-    if (input.supersedes) supersede(db, decisionsDir, input.supersedes, slug);
-    mkdirSync6(decisionsDir, { recursive: true });
-    writeFileSync5(path, renderDecisionMd({ ...input, sourceTasks }, date));
-    db.prepare(
-      `INSERT INTO decisions (slug, title, path, content_hash, created, superseded_by, source_tasks)
-       VALUES (?, ?, ?, ?, ?, NULL, ?)`
-    ).run(slug, input.title.trim(), path, hash, date, provenance);
-    db.prepare(
-      `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`
-    ).run(slug, input.title.trim(), body);
-    return { slug, path, created: true };
-  })();
-}
-
-// src/recall.ts
-import { existsSync as existsSync7, readFileSync as readFileSync7, readdirSync as readdirSync6, realpathSync as realpathSync7 } from "fs";
-import { dirname as dirname6, join as join8 } from "path";
-function syncIndex(db, decisionsDir) {
-  db.transaction(() => {
-    if (canSyncLegacyDecisions(db, decisionsDir)) {
-      const files = existsSync7(decisionsDir) ? readdirSync6(decisionsDir).filter((f) => f.endsWith(".md")) : [];
-      const inDb = new Map(
-        db.prepare(
-          `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`
-        ).all().map((r) => [r.slug, r])
-      );
-      const seen = /* @__PURE__ */ new Set();
-      for (const f of files) {
-        const slug = f.slice(0, -3);
-        seen.add(slug);
-        const path = join8(decisionsDir, f);
-        if (!canSyncLegacyDecisions(db, dirname6(realpathSync7(path)))) continue;
-        const doc = parseDecisionMd(readFileSync7(path, "utf8"));
-        const title = doc.title || slug;
-        const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
-        const sourceTasks = JSON.stringify(doc.sourceTasks);
-        const row = inDb.get(slug);
-        if (row && row.content_hash === doc.hash && (row.superseded_by ?? null) === (supersededBy ?? null)) {
-          if (row.path !== path || row.source_tasks !== sourceTasks || row.created !== (doc.created || null)) {
-            db.prepare(`UPDATE decisions SET path = ?, source_tasks = ?, created = ? WHERE slug = ?`).run(path, sourceTasks, doc.created || null, slug);
-          }
-          continue;
-        }
-        db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
-        db.prepare(
-          `INSERT OR REPLACE INTO decisions
-             (slug, title, path, content_hash, created, superseded_by, source_tasks)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
-        ).run(slug, title, path, doc.hash, doc.created || null, supersededBy, sourceTasks);
-        db.prepare(
-          `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`
-        ).run(slug, title, doc.indexBody);
-      }
-      for (const slug of inDb.keys()) {
-        if (seen.has(slug)) continue;
-        db.prepare(`DELETE FROM decisions WHERE slug = ?`).run(slug);
-        db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
-      }
-    }
-    const last = Number(
-      db.prepare(`SELECT value FROM meta WHERE key='fts_last_event_id'`).get()?.value ?? "0"
-    );
-    const max = db.prepare(`SELECT MAX(id) AS m FROM events`).get().m ?? 0;
-    if (max <= last) return;
-    const ids = db.prepare(
-      `SELECT DISTINCT task_id AS id FROM events WHERE id > ? AND task_id IS NOT NULL`
-    ).all(last);
-    const getTask = db.prepare(`SELECT * FROM tasks WHERE id = ?`);
-    const getComments = db.prepare(`SELECT body FROM comments WHERE task_id = ? ORDER BY id`);
-    for (const { id: id2 } of ids) {
-      db.prepare(`DELETE FROM search_index WHERE kind='task' AND ref = ?`).run(String(id2));
-      const t = getTask.get(id2);
-      if (!t || t.archived_at) continue;
-      const body = [t.body ?? "", ...getComments.all(id2).map((c) => c.body)].filter(Boolean).join("\n");
-      db.prepare(
-        `INSERT INTO search_index (kind, ref, title, body) VALUES ('task', ?, ?, ?)`
-      ).run(String(id2), t.title, body);
-    }
-    db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_last_event_id', ?)`).run(String(max));
-  })();
-}
-function sanitizeQuery(q) {
-  const parts = [];
-  for (const m of q.matchAll(/"([^"]+)"|[\p{L}\p{N}_][\p{L}\p{N}_.-]*/gu)) {
-    const raw = m[1] !== void 0 ? m[1].trim() : m[0].replace(/^[._-]+|[._-]+$/g, "");
-    if (raw) parts.push(`"${raw.replace(/"/g, '""')}"`);
-  }
-  if (parts.length === 0) throw new KddError("empty query");
-  return parts.join(" ");
-}
-function recall(db, decisionsDir, query, opts = {}) {
-  if (opts.kind && opts.kind !== "decision" && opts.kind !== "task") {
-    throw new KddError(`invalid kind '${opts.kind}'; allowed: decision, task`);
-  }
-  const k = opts.k ?? CAPS.recallK;
-  if (!Number.isInteger(k) || k < 1 || k > CAPS.recallKMax) {
-    throw new KddError(`k must be 1..${CAPS.recallKMax}`);
-  }
-  syncIndex(db, decisionsDir);
-  return db.prepare(`
-    SELECT search_index.kind AS kind, search_index.ref AS ref,
-      search_index.title AS title,
-      snippet(search_index, 3, '', '', '...', ${CAPS.recallSnippetTokens}) AS snippet,
-      COALESCE(d.superseded_by, '') AS superseded_by,
-      t.status AS status
-    FROM search_index
-    LEFT JOIN decisions d ON search_index.kind = 'decision' AND d.slug = search_index.ref
-    LEFT JOIN tasks t ON search_index.kind = 'task' AND t.id = CAST(search_index.ref AS INTEGER)
-    WHERE search_index MATCH @q
-      AND (@kind IS NULL OR search_index.kind = @kind)
-    ORDER BY (COALESCE(d.superseded_by, '') <> ''),
-      bm25(search_index, 0, 0, 3.0, 1.0)
-    LIMIT @k
-  `).all({
-    q: sanitizeQuery(query),
-    kind: opts.kind ?? null,
-    k
-  });
-}
-function rebuild(db, decisionsDir) {
-  assertLegacyDecisionSource(db, decisionsDir);
-  if (existsSync7(decisionsDir)) for (const name of readdirSync6(decisionsDir).filter((f) => f.endsWith(".md"))) {
-    assertLegacyDecisionSource(db, dirname6(realpathSync7(join8(decisionsDir, name))));
-  }
-  db.transaction(() => {
-    db.exec(`DELETE FROM search_index; DELETE FROM decisions;`);
-    db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_last_event_id', '0')`).run();
-  })();
-  syncIndex(db, decisionsDir);
-  return {
-    decisions: db.prepare(`SELECT COUNT(*) c FROM decisions`).get().c,
-    tasks: db.prepare(`SELECT COUNT(*) c FROM search_index WHERE kind='task'`).get().c
-  };
-}
-
 // src/queries.ts
-import { existsSync as existsSync8, readFileSync as readFileSync8, realpathSync as realpathSync8 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync8, realpathSync as realpathSync9 } from "fs";
 import { dirname as dirname7 } from "path";
 var PRIORITY_ORDER = `CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
 function manualEvent(event) {
@@ -4032,7 +4601,7 @@ function decisionDetail(db, decisionsDir, slug) {
     `SELECT slug, title, path, created, superseded_by, source_tasks FROM decisions WHERE slug = ?`
   ).get(slug);
   if (!row) throw new KddError(`decision '${slug}' not found`);
-  const trusted = canSyncLegacyDecisions(db, decisionsDir) && existsSync8(row.path) && canSyncLegacyDecisions(db, dirname7(realpathSync8(row.path)));
+  const trusted = canSyncLegacyDecisions(db, decisionsDir) && existsSync8(row.path) && canSyncLegacyDecisions(db, dirname7(realpathSync9(row.path)));
   const cached = trusted ? void 0 : db.prepare("SELECT body FROM search_index WHERE kind='decision' AND ref=?").get(slug);
   if (!trusted && !cached) throw new KddError(`decision '${slug}' has no indexed body`);
   const doc = trusted ? parseDecisionMd(readFileSync8(row.path, "utf8")) : {
@@ -4530,14 +5099,14 @@ function tick(db, opts) {
 }
 
 // src/worktree.ts
-import { execFileSync as execFileSync6 } from "child_process";
-import { existsSync as existsSync9, realpathSync as realpathSync9, rmSync as rmSync5 } from "fs";
+import { execFileSync as execFileSync9 } from "child_process";
+import { existsSync as existsSync9, realpathSync as realpathSync10, rmSync as rmSync5 } from "fs";
 import { dirname as dirname8, join as join9 } from "path";
 var branchName = (taskId) => `kdd/task-${taskId}`;
 var BRANCH_RE = /^refs\/heads\/kdd\/task-(\d+)$/;
 function git2(repoRoot, args) {
   try {
-    return execFileSync6("git", args, {
+    return execFileSync9("git", args, {
       cwd: repoRoot,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"]
@@ -4556,7 +5125,7 @@ function gitTry(repoRoot, args) {
 }
 function worktreePath(dbPath, taskId, title) {
   const root = dirname8(dbPath);
-  const realRoot = existsSync9(root) ? realpathSync9(root) : root;
+  const realRoot = existsSync9(root) ? realpathSync10(root) : root;
   return join9(realRoot, "worktrees", `task-${taskId}-${slugify(title)}`);
 }
 function headCommit(repoRoot) {
@@ -4877,7 +5446,7 @@ function readReminded(db) {
 }
 
 // src/brief.ts
-import { existsSync as existsSync10, readFileSync as readFileSync10, readdirSync as readdirSync7, realpathSync as realpathSync10 } from "fs";
+import { existsSync as existsSync10, readFileSync as readFileSync10, readdirSync as readdirSync7, realpathSync as realpathSync11 } from "fs";
 import { dirname as dirname9, join as join11 } from "path";
 var lexical = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 function detailObject(detail) {
@@ -4943,7 +5512,7 @@ function readTaskDecisions(db, decisionsDir, taskId) {
   if (!existsSync10(decisionsDir)) return [];
   return readdirSync7(decisionsDir).filter((file) => file.endsWith(".md")).flatMap((file) => {
     const slug = file.slice(0, -3);
-    if (!canSyncLegacyDecisions(db, dirname9(realpathSync10(join11(decisionsDir, file))))) return [];
+    if (!canSyncLegacyDecisions(db, dirname9(realpathSync11(join11(decisionsDir, file))))) return [];
     const decision = parseDecisionMd(readFileSync10(join11(decisionsDir, file), "utf8"));
     if (!decision.sourceTasks.includes(taskId)) return [];
     return [{
@@ -5380,10 +5949,10 @@ async function finishHandoff(handle, input, observer) {
       }
     }
     db.prepare("UPDATE tasks SET execution_mode=?,updated_at=? WHERE id=?").run(record.targetMode, now(), task.id);
-    const receipt = { handoffId: record.id, task: record.task, mode: record.targetMode, released: record.owners.map((o) => o.ref), revokedAuthorityIds, stops };
-    db.prepare("UPDATE execution_handoffs SET completed_at=?,receipt_json=? WHERE id=? AND completed_at IS NULL").run(now(), canonical(receipt), record.id);
-    appendEvent(db, task.id, controllerActor, "execution_handoff_completed", receipt);
-    return { status: "complete", receipt };
+    const receipt2 = { handoffId: record.id, task: record.task, mode: record.targetMode, released: record.owners.map((o) => o.ref), revokedAuthorityIds, stops };
+    db.prepare("UPDATE execution_handoffs SET completed_at=?,receipt_json=? WHERE id=? AND completed_at IS NULL").run(now(), canonical(receipt2), record.id);
+    appendEvent(db, task.id, controllerActor, "execution_handoff_completed", receipt2);
+    return { status: "complete", receipt: receipt2 };
   }).immediate();
 }
 export {
@@ -5460,6 +6029,7 @@ export {
   getReminded,
   handoff,
   headCommit,
+  importMemory,
   initializeProjectStore,
   inspectDependencies,
   invalidateResult,
@@ -5472,6 +6042,7 @@ export {
   listAgentEvents,
   listCriteria,
   listFiles,
+  listMemory,
   listProjectCheckouts,
   listProjects,
   listSubtasks,
@@ -5481,6 +6052,9 @@ export {
   manualSessionFromEnv,
   maxWorkers,
   maxWorkersEnvLocked,
+  memoryEntry,
+  memoryHistory,
+  memoryRules,
   moveTask,
   mustGetTask,
   mustGetTrack,
@@ -5504,10 +6078,13 @@ export {
   pruneAgentEvents,
   publishResult,
   readRunContext,
+  readRunMemory,
   reapExpired,
   rebindRepository,
   rebuild,
   recall,
+  recallMemory,
+  recallRunMemory,
   reclaimExpired,
   recordFailedAttempt,
   recordLaunchIntent,
@@ -5529,6 +6106,7 @@ export {
   result,
   reviseWorkItem,
   revokeRunAuthority,
+  runMemoryRules,
   runOperations,
   runProduced,
   sanitizeQuery,
@@ -5561,5 +6139,6 @@ export {
   versionChannel,
   withNativeControllerLock,
   workItem,
-  worktreePath
+  worktreePath,
+  writeMemory
 };

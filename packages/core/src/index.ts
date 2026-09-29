@@ -11,6 +11,14 @@ export * from './files.js';
 export * from './tracks.js';
 export * from './decisions.js';
 export * from './recall.js';
+export { writeMemory } from './memory.js';
+export { memoryEntry, memoryHistory, listMemory, memoryRules, recallMemory } from './memory_query.js';
+export { importMemory } from './memory_import.js';
+export type { MemoryImportInput } from './memory_import.js';
+export type { MemoryKind, MemoryStatus, MemoryScope, MemoryApplicability, MemoryRepoVersion, MemoryView,
+  MemoryRevisionRef, MemoryAuthor, MemorySource, MemoryDraft, MemoryWriteInput, MemoryOperation,
+  MemoryEvidenceRequest, MemoryEvidenceObservation, MemoryObservers, MemoryReceipt, MemoryRecord,
+  MemoryReadOptions, MemoryRecallOptions, MemoryHit } from './memory.js';
 export * from './queries.js';
 export * from './claim.js';
 export * from './driver.js';
@@ -23,7 +31,12 @@ export { assertWritableRoots, withNativeControllerLock, spawnCheckedNative, pref
 export type { NativeLaunchInput, CodexPermissionInput, NativeProbeResult, VerifiedCodexPackage } from './codex_permissions.js';
 export { observeCodexNative } from './codex_native_probe.js';
 export type { NativeEvidence } from './codex_native_probe.js';
-export * from './authority.js';
+export { openController, assertLegacyTaskMutation, protectTask, issueRunAuthority,
+  revokeRunAuthority, assertRunAuthorityBinding, openRunContext, runOperations,
+  readRunContext, submitRunReport, requestRunQuestion,
+  readRunMemory, recallRunMemory, runMemoryRules } from './authority.js';
+export type { ControllerHandle, RunOperation, RunContext, IssueRunInput,
+  IssuedRunAuthority, RunContextSnapshot, RunMemoryReadInput } from './authority.js';
 export { taskContractHash, createSubtasks, listSubtasks } from './execution.js';
 export type { ExecutionMode, TaskRef, AuthorityBinding, CreationSource, SubtaskDraft, CreateSubtasksInput } from './execution.js';
 export { createWorkItem, reviseWorkItem, workItem, taskWorkItems, createSubtaskPlan } from './execution.js';

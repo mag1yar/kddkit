@@ -33,14 +33,22 @@ try {
   const user = { type: 'user' }, controller = core.openController(db), repoId = core.projectOf(db).primary_repo_id;
   core.bindRepository(db, db.name, home, { cwd: workspace, repoId, kind: 'managed' }, user);
   const backendId = core.addRepository(db, db.name, home, { cwd: backend, purpose: 'backend', access: 'context_only' }, user).repository.repo_id;
-  const task = core.addTask(db, { title: 'Native broker fixture', criteria: ['prove scope'] }, user);
+  const parent=core.addTask(db,{title:'Native parent',body:'original requirements'},user);
+  const taskRef={projectId:core.projectOf(db).project_id,taskId:parent.id};
+  const children=core.createSubtasks(controller,{parent:taskRef,expectedParentHash:core.taskContractHash(controller,taskRef),
+    source:{kind:'manual',sourceTask:taskRef,instructionRef:'fixture:owner'},
+    children:[{key:'own',title:'Native broker fixture',criteria:['prove scope']},{key:'sibling',title:'Private sibling',criteria:['ready']}]});
+  const task=children.own;
+  const work=core.createWorkItem(controller,{task:{...taskRef,taskId:task.id},
+    definition:{kind:'implementation',repoId,sourceTasks:[],outputs:[]},dependencies:[]});
+  const owner=core.reserveWorkItem(controller,{ref:work.ref,expectedRevision:1,expectedFence:0,expectedMode:'manual',ownerId:'fixture',write:true});
   const entryPath = realpathSync(fileURLToPath(new URL('../../../packages/mcp/dist/run_main.js', import.meta.url)));
   const executable = process.env.KDD_CODEX_EXECUTABLE || '/opt/homebrew/bin/codex';
   const repositories = [{ repoId, checkoutPath: workspace, write: true }, { repoId: backendId, checkoutPath: backend, write: false }];
   const nativeInput = { executable, model: 'fixture-codex', cwd: workspace, readableRoots: [workspace, backend],
     writableRoot: workspace, scratchDir: scratch, controlDir, protectedPaths: [source, home, clone] };
-  const input = { taskId: task.id, workItemId: 'fixture-work', runId: 'fixture-run', expectedGeneration: 0,
-    expiresAt: core.now() + 7200, operations, repositories };
+  const input = { taskId: task.id, workItemId: work.ref.workItemId, runId: 'fixture-run', expectedGeneration: 0,
+    expiresAt: core.now() + 7200, operations, repositories, ownership:owner.ref };
   let issued;
   if (calibrate) {
     // Trusted fixture data only, used to debug the real tool protocol before the full gate.
@@ -54,8 +62,60 @@ try {
       .run(authorityId, task.id, input.workItemId, input.runId, 1, input.expiresAt, createHash('sha256').update(token).digest('hex'), JSON.stringify(grant), core.now());
     issued = { token, authorityId, generation: 1 };
   } else {
+    process.stderr.write('initial native preflight started\n');
     const initial = await core.preflightCodex(nativeInput);
+    process.stderr.write(`initial native preflight passed: ${initial.results.length} observations\n`);
     issued = core.issueRunAuthority(controller, { ...input, native: initial });
+  }
+  const memoryChecks=[];
+  if(!calibrate) {
+    const canonical=value=>JSON.stringify(order(value));
+    function order(value){return Array.isArray(value)?value.map(order):value && typeof value==='object'?
+      Object.fromEntries(Object.keys(value).sort().map(key=>[key,order(value[key])])):value;}
+    const draft=taskId=>({commandId:`fixture-memory-${taskId}`,entryId:null,expectedRevision:0,
+      scope:{projectId:taskRef.projectId,taskId},applicability:{repoId:null,commit:null},kind:'rule',status:'active',
+      title:'Fixture policy',body:'Preserve scoped memory',source:{kind:'user',ref:'fixture:explicit instruction'},author:{type:'user',id:null}});
+    const own=draft(task.id),{commandId,entryId,expectedRevision,...payload}=own;
+    const request={operation:'create',entryId,expectedRevision,origin:'user',scope:own.scope,applicability:own.applicability,
+      payloadHash:createHash('sha256').update(canonical(payload)).digest('hex'),source:own.source};
+    const receiptPath=join(home,'memory-fixture-receipt.json');
+    writeFileSync(receiptPath,JSON.stringify({request,origin:'user',verdict:'pass',observedAt:core.now(),expiresAt:null}),{mode:0o600});
+    core.writeMemory(controller,own,{observe:incoming=>{const receipt=JSON.parse(readFileSync(receiptPath,'utf8'));
+      return canonical(incoming)===canonical(receipt.request)?receipt:null;}});
+    const sibling=core.writeMemory(controller,{...draft(children.sibling.id),kind:'candidate',
+      source:{kind:'host',ref:'fixture:proposal'}});
+    const context=core.openRunContext(db,issued.token),snapshot=core.readRunContext(context);
+    assert.deepEqual(core.readRunMemory(context).map(row=>row.body),['Preserve scoped memory']);
+    assert.equal(core.recallRunMemory(context,'memory',{k:1}).length,1);
+    assert.equal(core.runMemoryRules(context).length,1);
+    assert.deepEqual(core.readRunContext(context),snapshot);memoryChecks.push('memory-own-scope');
+    assert.throws(()=>core.readRunMemory(context,{entryId:sibling.entryId,candidates:true}),/unavailable/);
+    assert.throws(()=>core.readRunMemory({...context}),/authority/);memoryChecks.push('memory-sibling-refused');
+    let proposal;
+    if(operations.includes('submit_report')) {
+      proposal={...draft(task.id),commandId:'fixture-run-proposal',kind:'candidate',author:{type:'ai',id:input.runId},
+        source:{kind:'run',task:{...taskRef,taskId:task.id},authority:{authorityId:issued.authorityId,workItemId:input.workItemId,
+          runId:input.runId,generation:issued.generation},reportEventId:core.submitRunReport(context,'Memory candidate')}};
+      core.writeMemory(controller,proposal);memoryChecks.push('memory-run-candidate');
+      const before=db.prepare("SELECT * FROM events WHERE action LIKE 'memory_%'").all();
+      for(const patch of [{scope:{...proposal.scope,taskId:null}},{kind:'rule'},
+        {entryId:core.readRunMemory(context)[0].entryId,expectedRevision:1}])assert.throws(()=>core.writeMemory(controller,{...proposal,commandId:'candidate-cannot-publish-policy',...patch}));
+      assert.deepEqual(db.prepare("SELECT * FROM events WHERE action LIKE 'memory_%'").all(),before);
+      memoryChecks.push('memory-run-policy-refused');
+    }else {assert.throws(()=>core.submitRunReport(context,'not granted'),/authority/);memoryChecks.push('memory-report-operation-refused');}
+    db.prepare('UPDATE run_authorities SET expires_at=1 WHERE authority_id=?').run(issued.authorityId);
+    assert.throws(()=>core.readRunMemory(context),/authority/);
+    if(proposal)assert.throws(()=>core.writeMemory(controller,proposal),/authority/);
+    db.prepare('UPDATE run_authorities SET expires_at=? WHERE authority_id=?').run(input.expiresAt,issued.authorityId);
+    memoryChecks.push('memory-expired-refused');
+    core.editTask(db,parent.id,{body:'changed requirements'},user);
+    const before=db.prepare("SELECT * FROM events WHERE action LIKE 'memory_%'").all();
+    for(const call of [()=>core.readRunMemory(context),()=>core.recallRunMemory(context,'memory'),()=>core.runMemoryRules(context)])assert.throws(call,/authority/);
+    if(proposal)assert.throws(()=>core.writeMemory(controller,proposal),/authority/);
+    assert.deepEqual(db.prepare("SELECT * FROM events WHERE action LIKE 'memory_%'").all(),before);
+    memoryChecks.push('memory-current-inputs-refused');
+    core.editTask(db,parent.id,{body:'original requirements'},user);
+    assert.equal(core.readRunMemory(context).length,1);
   }
   writeFileSync(configPath, JSON.stringify({ dbPath: db.name, token: issued.token }), { mode: 0o600 });
   core.readRunContext(core.openRunContext(db, issued.token));
@@ -74,22 +134,31 @@ try {
     process.stdout.write(JSON.stringify({ calibrationOnly: true, ...evidence }, null, 2) + '\n');
     if (!evidence.applicable) process.exitCode = 1;
   } else {
+    process.stderr.write('bound native preflight started\n');
     const packet = await core.preflightCodex({ ...nativeInput, brokerConfigPath: configPath, brokerEntryPath: entryPath });
+    process.stderr.write(`bound native preflight passed: ${packet.results.length} observations\n`);
     core.assertVerifiedCodexPackage(packet);
     const next = core.issueRunAuthority(controller, { ...input, expectedGeneration: 1, runId: 'fixture-final', native: packet });
+    const finalContext=core.openRunContext(db,next.token);
+    assert.equal(core.readRunMemory(finalContext).length,1);
     await core.withNativeControllerLock(controlDir, () => writeFileSync(configPath, JSON.stringify({ dbPath: db.name, token: next.token })));
     core.assertVerifiedCodexPackage(packet); // Public binding stays fixed across private credential rotation.
     assert.throws(() => core.openRunContext(db, issued.token), /authority/);
+    process.stderr.write('final native broker matrix started\n');
     const final = await core.observeCodexNative(executable, false, 'fixture-codex', binding, true);
+    process.stderr.write(`final native broker matrix: ${final.executed}/${final.attempted}, applicable=${final.applicable}\n`);
     assert.equal(final.applicable, true);
     assert.throws(() => core.openRunContext(db, next.token), /authority/); // Actual native live-revoke case revoked it.
+    for(const call of [()=>core.readRunMemory(finalContext),()=>core.recallRunMemory(finalContext,'memory'),()=>core.runMemoryRules(finalContext)])assert.throws(call,/authority/);
+    memoryChecks.push('memory-live-revoke-refused');
     const exposedPath = join(scratch, 'exposed.db');
     await core.withNativeControllerLock(controlDir, () => db.backup(exposedPath));
     const exposed = new Database(exposedPath);
     try {
       const own = core.addTask(exposed, { title: 'Scratch store must refuse authority' }, user);
+      const {ownership,...scratchInput}=input;
       const before = ['managed_task_policy', 'run_authorities', 'events'].map(table => exposed.prepare(`SELECT * FROM ${table}`).all());
-      assert.throws(() => core.issueRunAuthority(core.openController(exposed), { ...input, taskId: own.id, native: packet }), /store|scope/);
+      assert.throws(() => core.issueRunAuthority(core.openController(exposed), { ...scratchInput, taskId: own.id, workItemId:'scratch-work', native: packet }), /store|scope/);
       assert.deepEqual(['managed_task_policy', 'run_authorities', 'events'].map(table => exposed.prepare(`SELECT * FROM ${table}`).all()), before);
     } finally { exposed.close(); for (const path of [exposedPath, `${exposedPath}-wal`, `${exposedPath}-shm`]) rmSync(path, { force: true }); }
     assert.throws(() => core.assertVerifiedCodexPackage(JSON.parse(JSON.stringify(packet))), /unverified/);
@@ -118,7 +187,8 @@ try {
     process.stdout.write(JSON.stringify({ version: packet.version, configHash: packet.configHash,
       checks: ['actual-package', 'generation-2', 'private-token-rotation', 'old-token-refused', 'final-native-broker', 'live-revoke-refused',
         'json-copy-refused', 'public-broker-binding-change-refused', 'legacy-sandbox-override-refused', 'late-private-alias-resume-refused',
-        'git-common-dir-start-resume-refused', 'scratch-store-issue-refused-before-marker'],
+        'git-common-dir-start-resume-refused', 'scratch-store-issue-refused-before-marker',...memoryChecks],
+      memoryEvidence:'core library calls with genuine production-issued credential; fixture user receipt, no new MCP tools',
       results: packet.results, final }, null, 2) + '\n');
   }
 } finally { db?.close(); process.env = saved; rmSync(root, { recursive: true, force: true }); }

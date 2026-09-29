@@ -557,6 +557,153 @@ declare function rebuild(db: Database.Database, decisionsDir: string): {
     tasks: number;
 };
 
+type MemoryKind = 'fact' | 'decision' | 'rule' | 'candidate';
+type MemoryStatus = 'active' | 'withdrawn';
+interface MemoryScope {
+    projectId: string;
+    taskId: number | null;
+}
+interface MemoryApplicability {
+    repoId: string | null;
+    commit: string | null;
+}
+interface MemoryRepoVersion {
+    repoId: string;
+    checkoutPath: string;
+    commit: string;
+}
+interface MemoryView {
+    scope: MemoryScope;
+    repositories: readonly MemoryRepoVersion[];
+}
+interface MemoryRevisionRef {
+    projectId: string;
+    entryId: string;
+    revision: number;
+}
+interface MemoryAuthor {
+    type: 'user' | 'ai';
+    id: string | null;
+}
+type MemorySource = {
+    kind: 'user';
+    ref: string;
+} | {
+    kind: 'host';
+    ref: string;
+} | {
+    kind: 'run';
+    task: TaskRef;
+    authority: AuthorityBinding;
+    reportEventId: number;
+} | {
+    kind: 'git';
+    repoId: string;
+    commit: string;
+    path: string;
+    sha256: string;
+    documentStatus: 'active' | 'superseded' | 'unknown' | null;
+} | {
+    kind: 'revision';
+    ref: MemoryRevisionRef;
+    hash: string;
+};
+interface MemoryDraft {
+    scope: MemoryScope;
+    applicability: MemoryApplicability;
+    kind: MemoryKind;
+    status: MemoryStatus;
+    title: string;
+    body: string;
+    source: MemorySource;
+    author: MemoryAuthor;
+}
+interface MemoryWriteInput extends MemoryDraft {
+    commandId: string;
+    entryId: string | null;
+    expectedRevision: number;
+}
+type MemoryOperation = 'create' | 'revise' | 'withdraw' | 'accept' | 'import';
+interface MemoryEvidenceRequest {
+    operation: MemoryOperation;
+    entryId: string | null;
+    expectedRevision: number;
+    origin: 'user' | 'host';
+    scope: MemoryScope;
+    applicability: MemoryApplicability;
+    payloadHash: string;
+    source: MemorySource;
+}
+interface MemoryEvidenceObservation {
+    request: MemoryEvidenceRequest;
+    origin: 'user' | 'host';
+    verdict: 'pass' | 'fail' | 'inconclusive';
+    observedAt: number;
+    expiresAt: number | null;
+}
+interface MemoryObservers {
+    observe?: (request: MemoryEvidenceRequest) => MemoryEvidenceObservation | null;
+}
+interface MemoryReceipt {
+    entryId: string;
+    revision: number;
+    currentRevision: number;
+    hash: string;
+    created: boolean;
+    effectiveStatus: MemoryStatus | 'superseded';
+}
+interface MemoryRecord extends MemoryDraft {
+    entryId: string;
+    revision: number;
+    currentRevision: number;
+    predecessor: number | null;
+    hash: string;
+    createdAt: number;
+    evidence: readonly MemoryEvidenceObservation[];
+    effectiveStatus: MemoryStatus | 'superseded';
+}
+interface MemoryReadOptions {
+    candidates?: boolean;
+    withdrawn?: boolean;
+}
+interface MemoryRecallOptions extends MemoryReadOptions {
+    k?: number;
+}
+interface MemoryHit {
+    ref: MemoryRevisionRef;
+    hash: string;
+    kind: MemoryKind;
+    status: MemoryStatus;
+    effectiveStatus: MemoryStatus | 'superseded';
+    title: string;
+    snippet: string;
+    source: MemorySource;
+    scope: MemoryScope;
+    applicability: MemoryApplicability;
+}
+declare function writeMemory(handle: ControllerHandle, input: MemoryWriteInput, observers?: MemoryObservers): MemoryReceipt;
+
+declare function memoryEntry(handle: ControllerHandle, view: MemoryView, entryId: string, revision?: number): MemoryRecord;
+declare function memoryHistory(handle: ControllerHandle, view: MemoryView, entryId: string): MemoryRecord[];
+declare function listMemory(handle: ControllerHandle, view: MemoryView, options?: MemoryReadOptions): MemoryRecord[];
+declare function memoryRules(handle: ControllerHandle, view: MemoryView): MemoryRecord[];
+declare function recallMemory(handle: ControllerHandle, view: MemoryView, query: string, options?: MemoryRecallOptions): MemoryHit[];
+
+interface MemoryImportInput {
+    commandId: string;
+    scope: MemoryScope;
+    applicability: MemoryApplicability;
+    repoId: string;
+    checkoutPath: string;
+    commit: string;
+    path: string;
+    sha256: string;
+    kind?: MemoryKind;
+    status?: MemoryStatus;
+    author: MemoryAuthor;
+}
+declare function importMemory(handle: ControllerHandle, input: MemoryImportInput, observers?: MemoryObservers): MemoryReceipt;
+
 declare const PRIORITY_ORDER = "CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END";
 declare function boardData(db: Database.Database, f?: {
     area?: string;
@@ -1064,6 +1211,15 @@ interface RunContextSnapshot {
 }
 declare function runOperations(context: RunContext): readonly RunOperation[];
 declare function readRunContext(context: RunContext): RunContextSnapshot;
+interface RunMemoryReadInput {
+    entryId?: string;
+    revision?: number;
+    candidates?: boolean;
+    withdrawn?: boolean;
+}
+declare function readRunMemory(context: RunContext, input?: RunMemoryReadInput): MemoryRecord[];
+declare function recallRunMemory(context: RunContext, query: string, options?: MemoryRecallOptions): MemoryHit[];
+declare function runMemoryRules(context: RunContext): MemoryRecord[];
 declare const submitRunReport: (context: RunContext, body: string) => number;
 declare const requestRunQuestion: (context: RunContext, body: string) => number;
 
@@ -1407,4 +1563,4 @@ declare function finishHandoff(handle: ControllerHandle, input: {
     handoffId: string;
 }, observer?: StopObserver): Promise<HandoffOutcome>;
 
-export { type Actor, type AgentEvent, type AgentEventKind, type AttentionInbox, type AttentionItem, type AttentionReason, type AuthorityBinding, type AutoTick, BUG_BODY_TEMPLATE, type BindingKind, type BriefSection, CAPS, type CodexPermissionInput, type Comment, type ControllerHandle, type CreateSubtasksInput, type CreationSource, type Criterion, DEFAULT_TTL, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type DependencyBinding, type DependencyInput, type DependencyKind, type DependencyProjection, type DependencyReason, type EventRow, type EvidenceObservation, type EvidenceRequest, type ExecutionMode, type FileRow, type HandoffOutcome, type HandoffReceipt, type HandoffRecord, type IssueRunInput, type IssuedRunAuthority, KINDS, KddError, type KillFn, type KillOutcome, type Kind, type LaunchIntent, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, type ManualProvenance, type ManualSession, type NativeEvidence, type NativeLaunchInput, type NativeProbeResult, type NextAction, type OutputRequirement, type OwnershipRecord, type OwnershipRef, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ProjectRecord, type PublishResultInput, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RepositoryAccess, type RepositoryBinding, type RepositoryRecord, type ReserveWorkItemInput, type ResultBinding, type ResultObservers, type ResultPayload, type ResultRecord, type ResultSource, type RunContext, type RunContextSnapshot, type RunOperation, type RunResult, STATUSES, type SessionHandoff, type SpawnFn, type Status, type StopObservation, type StopObserver, type StopResult, type SubtaskDraft, type SubtaskPlanInput, TICK_INTERVALS, TRANSITIONS, type Task, type TaskBrief, type TaskDetailCapped, type TaskListRow, type TaskRef, type TickResult, type TickRun, type Track, type UpdateChannel, type VerifiedCodexPackage, type WorkItemDefinition, type WorkItemInput, type WorkItemKind, type WorkItemRecord, type WorkItemRef, type WorkItemState, _cacheUntil, _resetCache, addCriterion, addDecision, addRepository, addTask, agentId, appendAgentEvent, appendEvent, appendTaskMutationEvent, archiveTask, assertLegacyDecisionSource, assertLegacyTaskMutation, assertRunAuthorityBinding, assertVerifiedCodexPackage, assertWritableRoots, attachFile, attentionData, authorOf, beginHandoff, bindRepository, bindingsOf, blockTask, boardData, canSyncLegacyDecisions, canonicalCommonDir, canonicalProjectPath, capDetail, capText, checkMove, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, completeWorkItem, contentHash, createSubtaskPlan, createSubtasks, createTrack, createWorkItem, decisionDetail, deleteTrack, detachFile, editTask, editTrack, endWorkItem, ensureWorktree, expiredLeases, exportBoard, filePath, filesDir, finishHandoff, getAutoTick, getFile, getLastRun, getReminded, handoff, headCommit, initializeProjectStore, inspectDependencies, invalidateResult, isInlineMime, issueRunAuthority, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listFiles, listProjectCheckouts, listProjects, listSubtasks, listTracks, logError, lookupProjectStore, manualSessionFromEnv, maxWorkers, maxWorkersEnvLocked, moveTask, mustGetTask, mustGetTrack, normalizeSessionId, normalizeSourceTasks, now, observeCodexNative, openController, openDb, openRunContext, ownership, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, preflightCodex, projectOf, projectPathOf, projectToplevelOf, protectTask, pruneAgentEvents, publishResult, readRunContext, reapExpired, rebindRepository, rebuild, recall, reclaimExpired, recordFailedAttempt, recordLaunchIntent, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, repositoriesOf, requestRunQuestion, reserveWorkItem, resolveDbPath, resolveDecisionsDir, resolveDependencies, resolveToplevel, result, reviseWorkItem, revokeRunAuthority, runOperations, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, setReminded, setWorkItemWaiting, slugify, spawnCheckedNative, statusDigest, stopWorkers, storeIdentity, submitRunReport, sweepWorktrees, syncIndex, syncedTaskDetail, taskBranchHead, taskBrief, taskContractHash, taskDetail, taskDetailCapped, taskWorkItems, tick, unarchiveTask, unblockTask, unsubmitted, updateDisposition, versionChannel, withNativeControllerLock, workItem, worktreePath };
+export { type Actor, type AgentEvent, type AgentEventKind, type AttentionInbox, type AttentionItem, type AttentionReason, type AuthorityBinding, type AutoTick, BUG_BODY_TEMPLATE, type BindingKind, type BriefSection, CAPS, type CodexPermissionInput, type Comment, type ControllerHandle, type CreateSubtasksInput, type CreationSource, type Criterion, DEFAULT_TTL, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type DependencyBinding, type DependencyInput, type DependencyKind, type DependencyProjection, type DependencyReason, type EventRow, type EvidenceObservation, type EvidenceRequest, type ExecutionMode, type FileRow, type HandoffOutcome, type HandoffReceipt, type HandoffRecord, type IssueRunInput, type IssuedRunAuthority, KINDS, KddError, type KillFn, type KillOutcome, type Kind, type LaunchIntent, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, type ManualProvenance, type ManualSession, type MemoryApplicability, type MemoryAuthor, type MemoryDraft, type MemoryEvidenceObservation, type MemoryEvidenceRequest, type MemoryHit, type MemoryImportInput, type MemoryKind, type MemoryObservers, type MemoryOperation, type MemoryReadOptions, type MemoryRecallOptions, type MemoryReceipt, type MemoryRecord, type MemoryRepoVersion, type MemoryRevisionRef, type MemoryScope, type MemorySource, type MemoryStatus, type MemoryView, type MemoryWriteInput, type NativeEvidence, type NativeLaunchInput, type NativeProbeResult, type NextAction, type OutputRequirement, type OwnershipRecord, type OwnershipRef, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ProjectRecord, type PublishResultInput, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RepositoryAccess, type RepositoryBinding, type RepositoryRecord, type ReserveWorkItemInput, type ResultBinding, type ResultObservers, type ResultPayload, type ResultRecord, type ResultSource, type RunContext, type RunContextSnapshot, type RunMemoryReadInput, type RunOperation, type RunResult, STATUSES, type SessionHandoff, type SpawnFn, type Status, type StopObservation, type StopObserver, type StopResult, type SubtaskDraft, type SubtaskPlanInput, TICK_INTERVALS, TRANSITIONS, type Task, type TaskBrief, type TaskDetailCapped, type TaskListRow, type TaskRef, type TickResult, type TickRun, type Track, type UpdateChannel, type VerifiedCodexPackage, type WorkItemDefinition, type WorkItemInput, type WorkItemKind, type WorkItemRecord, type WorkItemRef, type WorkItemState, _cacheUntil, _resetCache, addCriterion, addDecision, addRepository, addTask, agentId, appendAgentEvent, appendEvent, appendTaskMutationEvent, archiveTask, assertLegacyDecisionSource, assertLegacyTaskMutation, assertRunAuthorityBinding, assertVerifiedCodexPackage, assertWritableRoots, attachFile, attentionData, authorOf, beginHandoff, bindRepository, bindingsOf, blockTask, boardData, canSyncLegacyDecisions, canonicalCommonDir, canonicalProjectPath, capDetail, capText, checkMove, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, completeWorkItem, contentHash, createSubtaskPlan, createSubtasks, createTrack, createWorkItem, decisionDetail, deleteTrack, detachFile, editTask, editTrack, endWorkItem, ensureWorktree, expiredLeases, exportBoard, filePath, filesDir, finishHandoff, getAutoTick, getFile, getLastRun, getReminded, handoff, headCommit, importMemory, initializeProjectStore, inspectDependencies, invalidateResult, isInlineMime, issueRunAuthority, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listFiles, listMemory, listProjectCheckouts, listProjects, listSubtasks, listTracks, logError, lookupProjectStore, manualSessionFromEnv, maxWorkers, maxWorkersEnvLocked, memoryEntry, memoryHistory, memoryRules, moveTask, mustGetTask, mustGetTrack, normalizeSessionId, normalizeSourceTasks, now, observeCodexNative, openController, openDb, openRunContext, ownership, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, preflightCodex, projectOf, projectPathOf, projectToplevelOf, protectTask, pruneAgentEvents, publishResult, readRunContext, readRunMemory, reapExpired, rebindRepository, rebuild, recall, recallMemory, recallRunMemory, reclaimExpired, recordFailedAttempt, recordLaunchIntent, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, repositoriesOf, requestRunQuestion, reserveWorkItem, resolveDbPath, resolveDecisionsDir, resolveDependencies, resolveToplevel, result, reviseWorkItem, revokeRunAuthority, runMemoryRules, runOperations, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, setReminded, setWorkItemWaiting, slugify, spawnCheckedNative, statusDigest, stopWorkers, storeIdentity, submitRunReport, sweepWorktrees, syncIndex, syncedTaskDetail, taskBranchHead, taskBrief, taskContractHash, taskDetail, taskDetailCapped, taskWorkItems, tick, unarchiveTask, unblockTask, unsubmitted, updateDisposition, versionChannel, withNativeControllerLock, workItem, worktreePath, writeMemory };

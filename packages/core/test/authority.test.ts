@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as core from '../src/index.js';
 import * as authority from '../src/authority.js';
+import { fixtureHash } from './memory_fixture.js';
 
 // Native execution has its own real-tool gate. These DB tests isolate issuance/fencing.
 const proved = vi.hoisted(() => new WeakSet<object>());
@@ -53,6 +54,110 @@ function issueInput(taskId: number) {
     operations: ['get_context', 'submit_report', 'request_question'] as const,
     repositories: [{ repoId: core.projectOf(db).primary_repo_id!, checkoutPath: workspace, write: true }], native: native() };
 }
+function memoryInput(taskId: number | null, title = 'memory'): core.MemoryWriteInput {
+  return { commandId: `memory:${title}`, entryId: null, expectedRevision: 0,
+    scope: { projectId: core.projectOf(db).project_id, taskId }, applicability: { repoId: null, commit: null },
+    kind: 'candidate', status: 'active', title, body: `${title} policy`,
+    source: { kind: 'host', ref: 'fixture:proposal' }, author: { type: 'ai', id: 'host' } };
+}
+const memoryRows = () => ['memory_entries','memory_revisions'].map(table => db.prepare(`SELECT * FROM ${table}`).all());
+function runProposal(taskId: number, issued: core.IssuedRunAuthority, reportEventId: number): core.MemoryWriteInput {
+  return { ...memoryInput(taskId), source: { kind: 'run', task: { projectId: core.projectOf(db).project_id, taskId },
+    authority: { authorityId: issued.authorityId, workItemId: 'w1', runId: 'r1', generation: issued.generation }, reportEventId },
+    author: { type: 'ai', id: 'r1' } };
+}
+it('derives inherited memory scope from the grant and preserves the context response and operations', () => {
+  const handle = core.openController(db), parent = core.addTask(db,{title:'parent'},user);
+  const ref = { projectId: core.projectOf(db).project_id, taskId: parent.id };
+  const children = core.createSubtasks(handle,{parent:ref,expectedParentHash:core.taskContractHash(handle,ref),
+    source:{kind:'manual',sourceTask:ref,instructionRef:'owner'},children:[{key:'a',title:'a',criteria:['ready']},{key:'b',title:'b',criteria:['ready']}]});
+  const own = core.writeMemory(handle,memoryInput(children.a.id,'own'));
+  const sibling = core.writeMemory(handle,memoryInput(children.b.id,'sibling'));
+  core.writeMemory(handle,memoryInput(parent.id,'parent'));
+  core.writeMemory(handle,memoryInput(null,'project'));
+  const input = {...issueInput(children.a.id),operations:['get_context'] as const};
+  const context = core.openRunContext(db,core.issueRunAuthority(handle,input).token), snapshot = core.readRunContext(context);
+  expect(core.readRunMemory(context)).toEqual([]);
+  expect(core.readRunMemory(context,{candidates:true}).map(row=>row.title).sort()).toEqual(['own','parent','project']);
+  expect(core.readRunMemory(context,{entryId:own.entryId,revision:1,candidates:true})[0]).toMatchObject({kind:'candidate',effectiveStatus:'active'});
+  expect(core.recallRunMemory(context,'policy',{candidates:true,k:1})).toHaveLength(1);
+  expect(core.runMemoryRules(context)).toEqual([]);
+  expect(core.readRunContext(context)).toEqual(snapshot);
+  expect(core.runOperations(context)).toEqual(['get_context']);
+  const before = memoryRows(), events = db.prepare('SELECT * FROM events').all();
+  for(const bad of [{entryId:sibling.entryId,candidates:true},{revision:1},{projectId:ref.projectId},{taskId:children.b.id},
+    {repositories:[]},{entryId:own.entryId,revision:null},{candidates:null}]) {
+    expect(()=>core.readRunMemory(context,bad as core.RunMemoryReadInput)).toThrow();
+  }
+  for(const fake of [{kind:'run'},{...context},JSON.parse(JSON.stringify(context))]) {
+    expect(()=>core.readRunMemory(fake)).toThrow(/authority/);
+    expect(()=>core.recallRunMemory(fake,'policy')).toThrow(/authority/);
+    expect(()=>core.runMemoryRules(fake)).toThrow(/authority/);
+  }
+  expect(memoryRows()).toEqual(before); expect(db.prepare('SELECT * FROM events').all()).toEqual(events);
+  expect('assertRunMemorySource' in core).toBe(false);
+});
+it('binds run memory to the actual checkout HEAD and returns all active rules',()=>{
+  const handle=core.openController(db), task=core.addTask(db,{title:'scope'},user), projectId=core.projectOf(db).project_id;
+  const repoId=core.projectOf(db).primary_repo_id!, head=git(workspace,'rev-parse','HEAD');
+  const versioned={...memoryInput(task.id,'versioned'),applicability:{repoId,commit:head}};
+  const entry=core.writeMemory(handle,versioned);
+  for(let i=0;i<12;i++) {
+    const rule:core.MemoryWriteInput={...memoryInput(null,`rule-${i}`),kind:'rule'};
+    const request:core.MemoryEvidenceRequest={operation:'create',entryId:null,expectedRevision:0,origin:'user',
+      scope:rule.scope,applicability:rule.applicability,payloadHash:fixtureHash(rule),source:rule.source};
+    const observed:core.MemoryEvidenceObservation={request,origin:'user',verdict:'pass',observedAt:core.now(),expiresAt:null};
+    core.writeMemory(handle,rule,{observe:incoming=>JSON.stringify(incoming)===JSON.stringify(request)?observed:null});
+  }
+  const context=core.openRunContext(db,core.issueRunAuthority(handle,issueInput(task.id)).token);
+  expect(core.readRunMemory(context,{entryId:entry.entryId,candidates:true})[0].applicability.commit).toBe(head);
+  expect(core.runMemoryRules(context)).toHaveLength(12);
+  expect(core.recallRunMemory(context,'policy',{k:1})).toHaveLength(1);
+  git(workspace,'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--allow-empty','-qm','next');
+  expect(()=>core.readRunMemory(context,{entryId:entry.entryId,candidates:true})).toThrow(/unavailable/);
+  expect(core.runMemoryRules(context)).toHaveLength(12);
+});
+it.each(['revoke','expire','rotate','no context','scratch alias'] as const)('rechecks initialized run memory after %s',change=>{
+  const task=core.addTask(db,{title:'scope'},user),handle=core.openController(db),input=issueInput(task.id);
+  const issued=core.issueRunAuthority(handle,input),context=core.openRunContext(db,issued.token);
+  const proposed=runProposal(task.id,issued,core.submitRunReport(context,'candidate'));
+  core.writeMemory(handle,proposed);
+  expect(core.readRunMemory(context,{candidates:true})).toHaveLength(1);
+  if(change==='revoke')core.revokeRunAuthority(handle,issued.authorityId);
+  if(change==='expire')db.prepare('UPDATE run_authorities SET expires_at=1 WHERE authority_id=?').run(issued.authorityId);
+  if(change==='rotate')core.issueRunAuthority(handle,{...input,expectedGeneration:1,runId:'r2'});
+  if(change==='no context')db.prepare("UPDATE run_authorities SET grant_json=json_set(grant_json,'$.operations',json('[\"submit_report\"]')) WHERE authority_id=?").run(issued.authorityId);
+  if(change==='scratch alias'){rmSync(join(root,'scratch'),{recursive:true});symlinkSync(home,join(root,'scratch'));}
+  const before=memoryRows(),events=db.prepare('SELECT * FROM events').all();
+  for(const call of [()=>core.readRunMemory(context,{candidates:true}),()=>core.recallRunMemory(context,'policy'),()=>core.runMemoryRules(context)])expect(call).toThrow(/authority/);
+  if(change!=='no context')expect(()=>core.writeMemory(handle,proposed)).toThrow(/authority/);
+  expect(memoryRows()).toEqual(before);expect(db.prepare('SELECT * FROM events').all()).toEqual(events);
+});
+it('permits only current own candidate provenance from an actual submit_report event',()=>{
+  const task=core.addTask(db,{title:'own'},user), other=core.addTask(db,{title:'other'},user), handle=core.openController(db);
+  const issued=core.issueRunAuthority(handle,issueInput(task.id)),context=core.openRunContext(db,issued.token);
+  const report=core.submitRunReport(context,'candidate'),question=core.requestRunQuestion(context,'question');
+  const otherIssued=core.issueRunAuthority(handle,{...issueInput(other.id),runId:'other'});
+  const otherReport=core.submitRunReport(core.openRunContext(db,otherIssued.token),'other');
+  const proposed=runProposal(task.id,issued,report),stored=core.writeMemory(handle,proposed);
+  const backendId=core.addRepository(db,dbPath,home,{cwd:backend,purpose:'backend',access:'context_only'},user).repository.repo_id;
+  expect(core.writeMemory(handle,proposed)).toMatchObject({entryId:stored.entryId,created:false});
+  const source=proposed.source as Extract<core.MemorySource,{kind:'run'}>;
+  const bad:core.MemoryWriteInput[]=[
+    {...proposed,scope:{...proposed.scope,taskId:null}}, {...proposed,scope:{...proposed.scope,taskId:other.id}},
+    {...proposed,kind:'rule'}, {...proposed,kind:'fact'}, {...proposed,author:{type:'ai',id:'other'}},
+    {...proposed,author:{type:'user',id:'r1'}}, {...proposed,source:{...source,reportEventId:question}},
+    {...proposed,source:{...source,reportEventId:otherReport}}, {...proposed,source:{...source,reportEventId:0}},
+    {...proposed,source:{...source,authority:{...source.authority,generation:2}}},
+    {...proposed,source:{...source,authority:{...source.authority,runId:'other'}}},
+    {...proposed,applicability:{repoId:backendId,commit:git(backend,'rev-parse','HEAD')}},
+  ];
+  const before=memoryRows(),events=db.prepare('SELECT * FROM events').all();
+  for(const [i,input] of bad.entries())expect(()=>core.writeMemory(handle,{...input,commandId:`bad-${i}`})).toThrow();
+  db.prepare("UPDATE run_authorities SET grant_json=json_set(grant_json,'$.operations',json('[\"get_context\"]')) WHERE authority_id=?").run(issued.authorityId);
+  expect(()=>core.writeMemory(handle,proposed)).toThrow(/authority/);
+  expect(memoryRows()).toEqual(before);expect(db.prepare('SELECT * FROM events').all()).toEqual(events);
+});
 it('protects a task only through an authentic connection-bound handle, without a legacy claim', () => {
   const task = core.addTask(db, { title: 'protected' }, user);
   const handle = authority.openController(db);
@@ -270,6 +375,9 @@ it('refuses a run proposal after its modeled parent inputs become stale without 
   core.editTask(db,parent.id,{body:'changed requirements'},user);
   expect(core.inspectDependencies(handle,item.ref).inputsCurrent).toBe(false);
   expect(()=>core.readRunContext(context)).toThrow(/authority/);
+  expect(()=>core.readRunMemory(context,{candidates:true})).toThrow(/authority/);
+  expect(()=>core.recallRunMemory(context,'proposal')).toThrow(/authority/);
+  expect(()=>core.runMemoryRules(context)).toThrow(/authority/);
   const freshParent={...proposal,expectedParentHash:core.taskContractHash(handle,parentRef)};
   const before={tasks:db.prepare('SELECT * FROM tasks').all(),events:db.prepare('SELECT * FROM events').all()};
   expect(()=>core.createSubtasks(handle,freshParent)).toThrow(/authority/);
@@ -395,7 +503,12 @@ it.each(['invalidation','upstream invalidation','artifact change','producer requ
   const before=['tasks','events','work_item_owners','run_authorities'].map(table=>db.prepare(`SELECT * FROM ${table}`).all());
   expect(()=>core.recordLaunchIntent(handle,{owner:owner.ref,intent:{launchId:'late',writerScopeId:'stale-input'}})).toThrow(/stale|inputs/);
   expect(()=>core.issueRunAuthority(handle,{...input,runId:'late',expectedGeneration:1})).toThrow(/stale|inputs/);
+  const memoryProposal:core.MemoryWriteInput={...memoryInput(parent.id),source:{kind:'run',task:ref(parent.id),
+    authority:(proposal.source as Extract<core.CreationSource,{kind:'run'}>).authority,
+    reportEventId:(proposal.source as Extract<core.CreationSource,{kind:'run'}>).proposalEventId},author:{type:'ai',id:'r1'}};
   for(const call of [()=>core.readRunContext(context),()=>core.submitRunReport(context,'late'),()=>core.requestRunQuestion(context,'late'),
+    ()=>core.readRunMemory(context),()=>core.recallRunMemory(context,'API'),()=>core.runMemoryRules(context),
+    ()=>core.writeMemory(handle,memoryProposal),
     ()=>core.createSubtasks(handle,proposal),()=>core.createSubtaskPlan(handle,{...proposal,workItems:[],dependencies:[]})])expect(call).toThrow(/authority/);
   expect(['tasks','events','work_item_owners','run_authorities'].map(table=>db.prepare(`SELECT * FROM ${table}`).all())).toEqual(before);
   expect(core.ownership(handle,owner.ref)).toEqual(owner);

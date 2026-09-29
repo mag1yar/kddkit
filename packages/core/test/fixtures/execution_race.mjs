@@ -50,6 +50,35 @@ export async function runRace(dbPath, requests) {
   }
 }
 
+export async function crashMemoryWrite(dbPath,input) {
+  const child=fork(entry,[dbPath],{execPath:process.execPath,stdio:['ignore','ignore','pipe','ipc']});
+  let diagnostic='',timer,received,failed,exited;
+  child.stderr.on('data',data=>{diagnostic=(diagnostic+data).slice(-4096);});
+  const closed=new Promise(resolve=>child.once('close',(code,signal)=>resolve({code,signal})));
+  try {
+    await new Promise((resolve,reject)=>{
+      let ready=false;
+      failed=error=>reject(error);
+      exited=code=>reject(new Error(`crash worker exited ${code}: ${diagnostic}`));
+      received=value=>{
+        if(!ready && value.ready===true){ready=true;child.send('go');}
+        else if(ready && value.pending===true)resolve();
+        else reject(new Error(`crash barrier failed: ${JSON.stringify(value)}`));
+      };
+      child.on('message',received);child.on('error',failed);child.on('exit',exited);
+      timer=setTimeout(()=>reject(new Error('crash worker timeout')),10000);
+      child.send({request:{op:'memory-crash',input}});
+    });
+    child.kill('SIGKILL');
+    const exit=await closed;
+    if(exit.signal!=='SIGKILL')throw new Error(`crash kill failed: ${JSON.stringify(exit)}`);
+  }finally {
+    clearTimeout(timer);child.off('message',received);child.off('error',failed);child.off('exit',exited);
+    if(child.exitCode===null && child.signalCode===null)child.kill('SIGKILL');
+    await closed;
+  }
+}
+
 if (process.argv[1] === entry) {
   const db = core.openDb(process.argv[2]), handle = core.openController(db);
   let request;
@@ -59,6 +88,11 @@ if (process.argv[1] === entry) {
     try {
       if (request.op === 'reserve') response = { ok: true, value: core.reserveWorkItem(handle, request.input) };
       else if (request.op === 'revise') response = { ok: true, value: core.reviseWorkItem(handle, request.input) };
+      else if (request.op === 'memory') response = { ok: true, value: core.writeMemory(handle, request.input) };
+      else if (request.op === 'memory-crash') {
+        db.exec('BEGIN IMMEDIATE');core.writeMemory(handle,request.input);
+        process.send({pending:true});return;
+      }
       else throw new Error('unknown race operation');
     } catch (error) { response = { ok: false, error: error instanceof Error ? error.message : String(error) }; }
     db.close(); process.send(response, () => process.disconnect());

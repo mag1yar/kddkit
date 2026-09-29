@@ -71,7 +71,7 @@ it('uses the project default for new roots and hashes actual requirements only',
     const before = core.taskContractHash(f.handle, f.ref(task.id)); f.db.exec(sql);
     expect(core.taskContractHash(f.handle, f.ref(task.id))).not.toBe(before);
   }
-  f.db.pragma('user_version=16');
+  f.db.pragma(`user_version=${core.MIGRATIONS.length + 1}`);
   expect(() => core.openController(f.db)).toThrow(/authority/);
   expect(() => core.taskContractHash(f.handle, f.ref(task.id))).toThrow(/authority/);
 });
