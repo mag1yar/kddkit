@@ -2,6 +2,8 @@
 
 Дата: 2026-09-30. KDD #150, track 6. Статус: **перепроверено по обновлённому grounded-task-loop; реализация не начата**. Изменения этого прохода относятся к evidence и деталям согласованного контракта, не к пользовательской приёмке runtime.
 
+Следующий артефакт: [план реализации](../plans/2026-09-30-runtime-lifecycle.md), семь связанных шагов и mapping L01–L10 на проверки. Preflight среды 2026-09-30: Codex CLI авторизован через ChatGPT; Claude CLI `auth status` возвращает exit 1, `loggedIn:false`, `authMethod:none`. Настоящий Claude provider smoke требует локальной авторизации; это не препятствует независимым SQLite/protocol/process/native-probe работам. Production code и критерии 404/405 в этом проходе не изменены.
+
 Основания: [контракт продукта](2026-09-27-kanban-orchestrator-contract-design.md), [authority #145](2026-09-27-controller-authority-design.md), [context #148](2026-09-29-run-context-design.md), [roles #149](2026-09-29-role-profiles-skills-design.md), [консолидированный анализ](../../../.planning/research/orchestration/ANALYSIS.md) §§5, 9, 13. Пользователь согласовал **оба runtime на macOS**, установленные CLI, разделение session/attempt и проверяемую остановку. Маршрут — `audit`: реализация в основной сессии, затем свежий независимый `gpt-6.1-sol/high` проверяет accumulated diff и evidence; при сложных спорных invariants — `xhigh`. Это выбор маршрута, не утверждение о переключении модели основной сессии.
 
 ## 1. Результат и граница
