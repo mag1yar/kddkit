@@ -42,7 +42,8 @@ export function runInputChangesDb(db:Database.Database,snapshot:RunInputSnapshot
       const o=validation.ownership;
       const row=o?db.prepare('SELECT * FROM work_item_owners WHERE work_item_id=? AND fence=? AND owner_id=? AND revision=? AND released_at IS NULL')
         .get(o.workItemId,o.fence,o.ownerId,o.revision) as {inputs_json:string}|undefined:undefined;
-      if(!o||!row||item.fence!==o.fence||item.revision!==o.revision||JSON.parse(row.inputs_json).inputsHash!==saved.inputsHash
+      if(!o||!row||db.prepare('SELECT 1 FROM work_item_retirements WHERE work_item_id=? AND fence=? AND completed_at IS NULL').get(o.workItemId,o.fence)
+        ||item.fence!==o.fence||item.revision!==o.revision||JSON.parse(row.inputs_json).inputsHash!==saved.inputsHash
         ||canonical(JSON.parse(row.inputs_json).inputResults)!==canonical(validation.inputResults))changes.push({reason:'ownership_changed'});
       if(!pinnedInputsCurrent(db,item,validation.inputResults))changes.push({reason:'dependency_changed'});
     }catch{changes.push({reason:'work_item_changed'});}

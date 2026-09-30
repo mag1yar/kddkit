@@ -51,12 +51,16 @@ it('upgrades a populated v16 WAL store without rewriting any old rows', () => {
     }).immediate();
     const tables = ['tasks','criteria','comments','events','tracks','task_links','decisions','search_index','agent_events','errors','meta','project','repositories','repository_bindings','managed_task_policy','run_authorities',
       'files','work_items','work_item_revisions','work_item_results','work_item_dependencies','work_item_owners','execution_handoffs','memory_entries','memory_revisions'];
-    const snapshot = (db: Database.Database) => tables.map(table => db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+    const snapshot = (db: Database.Database) => tables.map(table => {
+      const rows=db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all() as Record<string,unknown>[];
+      return table==='work_item_owners'?rows.map(({release_retirement_id,...old})=>old):rows;
+    });
     const before = snapshot(raw);
     expect(statSync(path + '-wal').size).toBeGreaterThan(0);
     upgraded = core.openDb(path, core.canonicalCommonDir(f.repo), f.repo);
-    expect(upgraded.pragma('user_version', { simple: true })).toBe(18);
+    expect(upgraded.pragma('user_version', { simple: true })).toBe(core.MIGRATIONS.length);
     expect(snapshot(upgraded)).toEqual(before);
+    expect(upgraded.prepare('SELECT release_retirement_id FROM work_item_owners').all()).toEqual([{release_retirement_id:null}]);
     expect(upgraded.prepare('SELECT count(*) n FROM run_input_snapshots').get()).toEqual({ n: 0 });
     backup = new Database(path + '.v16.bak', { readonly: true });
     expect(backup.pragma('user_version', { simple: true })).toBe(16);
@@ -65,7 +69,7 @@ it('upgrades a populated v16 WAL store without rewriting any old rows', () => {
     upgraded.close(); upgraded = core.openDb(path);
     expect(snapshot(upgraded)).toEqual(before);
     expect(upgraded.prepare('SELECT count(*) n FROM memory_revisions').get()).toEqual({ n: 1 });
-    upgraded.pragma('user_version=19'); expect(() => core.openDb(path)).toThrow(/newer|version|schema/);
+    upgraded.pragma(`user_version=${core.MIGRATIONS.length+1}`); expect(() => core.openDb(path)).toThrow(/newer|version|schema/);
   } finally { backup?.close(); upgraded?.close(); raw.close(); }
 });
 

@@ -46,9 +46,10 @@ export { publishResult, invalidateResult, result, inspectDependencies, resolveDe
   setWorkItemWaiting, endWorkItem } from './execution_results.js';
 export type { ResultSource, ResultPayload, ResultBinding, EvidenceRequest, EvidenceObservation, ResultObservers,
   ResultRecord, PublishResultInput, DependencyReason, DependencyProjection } from './execution_results.js';
-export { reserveWorkItem, ownership, recordLaunchIntent, beginHandoff, handoff, finishHandoff } from './execution_ownership.js';
+export { reserveWorkItem, ownership, recordLaunchIntent, beginHandoff, handoff, finishHandoff, retireOwnership } from './execution_ownership.js';
 export type { LaunchIntent, OwnershipRecord, ReserveWorkItemInput, HandoffRecord, HandoffReceipt,
   StopObservation, StopObserver, HandoffOutcome } from './execution_ownership.js';
+export type { RetirementReceipt, RetirementOutcome } from './execution_ownership.js';
 
 export { runInputSnapshot } from './run_inputs.js';
 export type { RunInputRef, RunInputSnapshot, RunInputSections, RunInputOptions, RunRolePin } from './run_inputs.js';
@@ -58,3 +59,5 @@ export { saveRoleRevision, roleRevision, currentRoleRevision, revokeRole } from 
 export type { SkillSource, RoleDefinition, RoleRef, RoleReceipt } from './roles.js';
 export { prepareRoleLaunch, spawnCheckedRoleRun } from './role_prompt.js';
 export type { RoleLaunchPermit } from './role_prompt.js';
+export { runtimeAttempt, runtimeEvents } from './runtime.js';
+export type { RuntimeKind, RuntimeState, RuntimeReason, RuntimeRef, RuntimeLimits, RuntimeAttempt, RuntimeEvent } from './runtime.js';

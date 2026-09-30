@@ -20,7 +20,7 @@ describe('openDb', () => {
     const before = old.prepare('SELECT * FROM comments').all();
     old.close();
     const upgraded = openDb(p);
-    expect(upgraded.pragma('user_version', { simple: true })).toBe(18);
+    expect(upgraded.pragma('user_version', { simple: true })).toBe(MIGRATIONS.length);
     expect(upgraded.prepare('SELECT * FROM comments').all()).toEqual(before);
     for (const table of ['role_profiles', 'role_revisions', 'role_skill_files']) {
       expect(upgraded.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });

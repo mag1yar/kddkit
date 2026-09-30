@@ -367,7 +367,7 @@ export function createSubtaskPlan(handle: ControllerHandle, input: SubtaskPlanIn
 export interface OwnerRow {
   work_item_id: string; fence: number; revision: number; owner_id: string; mode: ExecutionMode;
   write_access: number; inputs_json: string; launch_id: string | null; launch_json: string | null;
-  created_at: number; released_at: number | null; release_handoff_id: string | null;
+  created_at: number; released_at: number | null; release_handoff_id: string | null; release_retirement_id: string | null;
 }
 export function checkOwnershipRef(db: Database.Database, ref: OwnershipRef): void {
   shape(ref, ['projectId','workItemId','revision','ownerId','fence']);
@@ -376,6 +376,8 @@ export function checkOwnershipRef(db: Database.Database, ref: OwnershipRef): voi
 }
 export function liveOwner(db: Database.Database, ref: OwnershipRef): OwnerRow {
   checkOwnershipRef(db, ref);
+  if(db.prepare('SELECT 1 FROM work_item_retirements WHERE work_item_id=? AND fence=? AND completed_at IS NULL')
+    .get(ref.workItemId,ref.fence))throw new KddError('ownership retirement pending');
   const item = scopedWorkItem(db, {projectId:ref.projectId,workItemId:ref.workItemId});
   const row = db.prepare('SELECT * FROM work_item_owners WHERE work_item_id=? AND fence=? AND owner_id=? AND revision=? AND released_at IS NULL')
     .get(ref.workItemId, ref.fence, ref.ownerId, ref.revision) as OwnerRow | undefined;

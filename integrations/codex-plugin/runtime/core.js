@@ -520,6 +520,94 @@ CREATE TRIGGER role_skill_files_immutable_update BEFORE UPDATE ON role_skill_fil
 BEGIN SELECT RAISE(ABORT,'immutable skill file'); END;
 CREATE TRIGGER role_skill_files_immutable_delete BEFORE DELETE ON role_skill_files
 BEGIN SELECT RAISE(ABORT,'immutable skill file'); END;
+  `,
+  // v19: durable runtime attempts and scoped ownership retirement.
+  `
+CREATE TABLE work_item_retirements (
+  id TEXT PRIMARY KEY, command_id TEXT NOT NULL UNIQUE, command_hash TEXT NOT NULL,
+  work_item_id TEXT NOT NULL, fence INTEGER NOT NULL, snapshot_json TEXT NOT NULL CHECK(json_valid(snapshot_json)),
+  created_at INTEGER NOT NULL, completed_at INTEGER, receipt_json TEXT CHECK(receipt_json IS NULL OR json_valid(receipt_json)),
+  FOREIGN KEY(work_item_id,fence) REFERENCES work_item_owners(work_item_id,fence),
+  CHECK((completed_at IS NULL)=(receipt_json IS NULL))
+);
+CREATE TABLE work_item_owners_v19 (
+  work_item_id TEXT NOT NULL, fence INTEGER NOT NULL CHECK(typeof(fence)='integer' AND fence BETWEEN 1 AND 9007199254740991),
+  revision INTEGER NOT NULL, owner_id TEXT NOT NULL,
+  mode TEXT NOT NULL CHECK(mode IN ('manual','orchestrated')),
+  write_access INTEGER NOT NULL CHECK(write_access IN (0,1)),
+  inputs_json TEXT NOT NULL CHECK(json_valid(inputs_json)),
+  launch_id TEXT, launch_json TEXT CHECK(launch_json IS NULL OR json_valid(launch_json)),
+  created_at INTEGER NOT NULL, released_at INTEGER,
+  release_handoff_id TEXT REFERENCES execution_handoffs(id),
+  release_retirement_id TEXT REFERENCES work_item_retirements(id),
+  PRIMARY KEY(work_item_id,fence),
+  FOREIGN KEY(work_item_id,revision) REFERENCES work_item_revisions(work_item_id,revision),
+  CHECK((launch_id IS NULL)=(launch_json IS NULL)),
+  CHECK((released_at IS NULL AND release_handoff_id IS NULL AND release_retirement_id IS NULL)
+    OR (released_at IS NOT NULL AND ((release_handoff_id IS NOT NULL)+(release_retirement_id IS NOT NULL))=1))
+);
+INSERT INTO work_item_owners_v19 SELECT *,NULL FROM work_item_owners;
+DROP TABLE work_item_owners;
+ALTER TABLE work_item_owners_v19 RENAME TO work_item_owners;
+CREATE UNIQUE INDEX idx_work_item_owners_live ON work_item_owners(work_item_id) WHERE released_at IS NULL;
+CREATE UNIQUE INDEX idx_work_item_retirement_live ON work_item_retirements(work_item_id,fence) WHERE completed_at IS NULL;
+CREATE TABLE runtime_sessions (
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, task_id INTEGER NOT NULL REFERENCES tasks(id),
+  work_item_id TEXT NOT NULL REFERENCES work_items(id), runtime TEXT NOT NULL CHECK(runtime IN ('codex','claude')),
+  version TEXT NOT NULL, model TEXT NOT NULL, effort TEXT NOT NULL,
+  semantic_hash TEXT NOT NULL CHECK(length(semantic_hash)=64 AND semantic_hash NOT GLOB '*[^0-9a-f]*'),
+  provider_session_id TEXT, created_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX idx_runtime_provider_session ON runtime_sessions(runtime,provider_session_id) WHERE provider_session_id IS NOT NULL;
+CREATE TABLE runtime_attempts (
+  id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES runtime_sessions(id),
+  command_id TEXT NOT NULL UNIQUE, command_hash TEXT NOT NULL,
+  work_item_id TEXT NOT NULL, fence INTEGER NOT NULL, revision INTEGER NOT NULL, owner_id TEXT NOT NULL,
+  authority_id TEXT NOT NULL UNIQUE REFERENCES run_authorities(authority_id), run_id TEXT NOT NULL, generation INTEGER NOT NULL,
+  input_hash TEXT NOT NULL CHECK(length(input_hash)=64 AND input_hash NOT GLOB '*[^0-9a-f]*'),
+  phase TEXT NOT NULL CHECK(phase IN ('start','resume')), limits_json TEXT NOT NULL CHECK(json_valid(limits_json)),
+  writer_scope_id TEXT NOT NULL UNIQUE, state TEXT NOT NULL CHECK(state IN ('created','running','waiting','completed','failed','cancelled')),
+  reason TEXT, pid INTEGER, process_json TEXT CHECK(process_json IS NULL OR json_valid(process_json)),
+  created_at INTEGER NOT NULL, stop_intent_at INTEGER, terminal_json TEXT CHECK(terminal_json IS NULL OR json_valid(terminal_json)),
+  exit_json TEXT CHECK(exit_json IS NULL OR json_valid(exit_json)),
+  writers_stopped INTEGER NOT NULL DEFAULT 0 CHECK(writers_stopped IN (0,1)), ended_at INTEGER,
+  FOREIGN KEY(work_item_id,fence) REFERENCES work_item_owners(work_item_id,fence),
+  FOREIGN KEY(work_item_id,revision) REFERENCES work_item_revisions(work_item_id,revision),
+  UNIQUE(work_item_id,run_id,generation),
+  CHECK(ended_at IS NULL OR (writers_stopped=1 AND state IN ('completed','failed','cancelled')))
+);
+CREATE UNIQUE INDEX idx_runtime_session_active ON runtime_attempts(session_id) WHERE ended_at IS NULL;
+CREATE UNIQUE INDEX idx_runtime_work_active ON runtime_attempts(work_item_id) WHERE ended_at IS NULL;
+CREATE TABLE runtime_events (
+  attempt_id TEXT NOT NULL REFERENCES runtime_attempts(id), sequence INTEGER NOT NULL CHECK(sequence>0),
+  kind TEXT NOT NULL CHECK(kind IN ('session','attempt_start','text','tool_start','tool_finish','usage','error','provider_terminal','host_stop','attempt_end')),
+  detail_json TEXT NOT NULL CHECK(json_valid(detail_json)), created_at INTEGER NOT NULL,
+  PRIMARY KEY(attempt_id,sequence)
+);
+CREATE TRIGGER runtime_events_no_update BEFORE UPDATE ON runtime_events
+BEGIN SELECT RAISE(ABORT,'immutable runtime event'); END;
+CREATE TRIGGER runtime_events_no_delete BEFORE DELETE ON runtime_events
+BEGIN SELECT RAISE(ABORT,'immutable runtime event'); END;
+CREATE TRIGGER runtime_sessions_identity BEFORE UPDATE OF id,project_id,task_id,work_item_id,runtime,version,model,effort,semantic_hash,created_at ON runtime_sessions
+BEGIN SELECT RAISE(ABORT,'immutable runtime session'); END;
+CREATE TRIGGER runtime_session_binding BEFORE UPDATE OF provider_session_id ON runtime_sessions
+WHEN OLD.provider_session_id IS NOT NULL AND NEW.provider_session_id IS NOT OLD.provider_session_id
+BEGIN SELECT RAISE(ABORT,'immutable provider session'); END;
+CREATE TRIGGER runtime_sessions_no_delete BEFORE DELETE ON runtime_sessions
+BEGIN SELECT RAISE(ABORT,'immutable runtime session'); END;
+CREATE TRIGGER runtime_attempt_identity BEFORE UPDATE OF id,session_id,command_id,command_hash,work_item_id,fence,revision,owner_id,
+  authority_id,run_id,generation,input_hash,phase,limits_json,writer_scope_id,created_at ON runtime_attempts
+BEGIN SELECT RAISE(ABORT,'immutable runtime attempt identity'); END;
+CREATE TRIGGER runtime_attempt_terminal BEFORE UPDATE ON runtime_attempts WHEN OLD.ended_at IS NOT NULL
+BEGIN SELECT RAISE(ABORT,'immutable runtime outcome'); END;
+CREATE TRIGGER runtime_attempt_no_delete BEFORE DELETE ON runtime_attempts
+BEGIN SELECT RAISE(ABORT,'immutable runtime attempt'); END;
+CREATE TRIGGER retirement_identity BEFORE UPDATE OF id,command_id,command_hash,work_item_id,fence,snapshot_json,created_at ON work_item_retirements
+BEGIN SELECT RAISE(ABORT,'immutable retirement identity'); END;
+CREATE TRIGGER retirement_terminal BEFORE UPDATE ON work_item_retirements WHEN OLD.completed_at IS NOT NULL
+BEGIN SELECT RAISE(ABORT,'immutable retirement receipt'); END;
+CREATE TRIGGER retirement_no_delete BEFORE DELETE ON work_item_retirements
+BEGIN SELECT RAISE(ABORT,'immutable retirement'); END;
   `
 ];
 
@@ -3243,9 +3331,9 @@ data: ${JSON.stringify({ type, ...fields })}
       observation.protectedHashes = unchangedPaths.map((path, i) => ({ path, before: before[i], after: fingerprint2(path) }));
       observation.outcome = "inconclusive";
       const allowed = observation.executed && /(?:Process exited with code|Exit code:) 0/.test(text2);
-      const denied5 = observation.executed && /Operation not permitted|Permission denied|patch rejected/.test(text2);
+      const denied6 = observation.executed && /Operation not permitted|Permission denied|patch rejected/.test(text2);
       if (allowed) observation.outcome = "allowed";
-      else if (denied5) observation.outcome = "denied";
+      else if (denied6) observation.outcome = "denied";
       else if (testCase.unavailable && observation.executed && text2.includes(testCase.tool) && /unsupported|unknown|unrecognized|not found/i.test(text2)) observation.outcome = "denied";
       else if (["get_context", "submit_report", "request_question", "read_skill_file"].includes(testCase.tool)) {
         if (text2.includes("run operation denied") || /["\\]isError["\\]*\s*:\s*true/.test(text2)) observation.outcome = "denied";
@@ -4212,7 +4300,7 @@ function runInputChangesDb(db, snapshot2) {
       if (item.task.taskId !== response.taskId || item.revision !== saved.revision || item.inputsHash !== saved.inputsHash || !inputsCurrent(db, item) || canonical(item.definition) !== canonical(saved.definition)) changes.push({ reason: "work_item_changed" });
       const o = validation.ownership;
       const row = o ? db.prepare("SELECT * FROM work_item_owners WHERE work_item_id=? AND fence=? AND owner_id=? AND revision=? AND released_at IS NULL").get(o.workItemId, o.fence, o.ownerId, o.revision) : void 0;
-      if (!o || !row || item.fence !== o.fence || item.revision !== o.revision || JSON.parse(row.inputs_json).inputsHash !== saved.inputsHash || canonical(JSON.parse(row.inputs_json).inputResults) !== canonical(validation.inputResults)) changes.push({ reason: "ownership_changed" });
+      if (!o || !row || db.prepare("SELECT 1 FROM work_item_retirements WHERE work_item_id=? AND fence=? AND completed_at IS NULL").get(o.workItemId, o.fence) || item.fence !== o.fence || item.revision !== o.revision || JSON.parse(row.inputs_json).inputsHash !== saved.inputsHash || canonical(JSON.parse(row.inputs_json).inputResults) !== canonical(validation.inputResults)) changes.push({ reason: "ownership_changed" });
       if (!pinnedInputsCurrent(db, item, validation.inputResults)) changes.push({ reason: "dependency_changed" });
     } catch {
       changes.push({ reason: "work_item_changed" });
@@ -4693,6 +4781,7 @@ function checkOwnershipRef(db, ref) {
 }
 function liveOwner(db, ref) {
   checkOwnershipRef(db, ref);
+  if (db.prepare("SELECT 1 FROM work_item_retirements WHERE work_item_id=? AND fence=? AND completed_at IS NULL").get(ref.workItemId, ref.fence)) throw new KddError("ownership retirement pending");
   const item = scopedWorkItem(db, { projectId: ref.projectId, workItemId: ref.workItemId });
   const row = db.prepare("SELECT * FROM work_item_owners WHERE work_item_id=? AND fence=? AND owner_id=? AND revision=? AND released_at IS NULL").get(ref.workItemId, ref.fence, ref.ownerId, ref.revision);
   if (!row || item.revision !== ref.revision || item.fence !== ref.fence || !inputsCurrent(db, item) || JSON.parse(row.inputs_json).inputsHash !== item.inputsHash || !pinnedInputsCurrent(db, item, JSON.parse(row.inputs_json).inputResults)) throw new KddError("ownership fence or inputs stale");
@@ -6828,12 +6917,85 @@ function authorityTracked(db, record, authority) {
     if (ref.workItemId !== authority.workItemId) return false;
     if (record.owners.some((owner) => canonical(owner.ref) === canonical(ref))) return true;
     return !!db.prepare(`SELECT 1 FROM work_item_owners o JOIN work_items w ON w.id=o.work_item_id
-      JOIN execution_handoffs h ON h.id=o.release_handoff_id AND h.task_id=w.task_id
+      LEFT JOIN execution_handoffs h ON h.id=o.release_handoff_id AND h.task_id=w.task_id
+      LEFT JOIN work_item_retirements r ON r.id=o.release_retirement_id AND r.work_item_id=o.work_item_id AND r.fence=o.fence
       WHERE w.task_id=? AND o.work_item_id=? AND o.fence=? AND o.revision=? AND o.owner_id=?
-        AND o.released_at IS NOT NULL AND h.completed_at IS NOT NULL`).get(record.task.taskId, ref.workItemId, ref.fence, ref.revision, ref.ownerId);
+        AND o.released_at IS NOT NULL AND (h.completed_at IS NOT NULL OR r.completed_at IS NOT NULL)`).get(record.task.taskId, ref.workItemId, ref.fence, ref.revision, ref.ownerId);
   } catch {
     return false;
   }
+}
+function retirementSnapshot(handle, ref) {
+  const db = controllerDb(handle), owner = ownership(handle, ref);
+  const rows = db.prepare("SELECT authority_id id,grant_json grant FROM run_authorities WHERE work_item_id=? ORDER BY authority_id").all(ref.workItemId);
+  return { owner, authorities: rows.filter((row) => canonical(JSON.parse(row.grant).ownership) === canonical(ref)) };
+}
+async function retireOwnership(handle, input, observer) {
+  const db = controllerDb(handle);
+  shape(input, ["commandId", "owner"]);
+  text(input.commandId);
+  checkOwnershipRef(db, input.owner);
+  const commandHash = digest(input);
+  const read = () => db.prepare("SELECT * FROM work_item_retirements WHERE command_id=?").get(input.commandId);
+  const row = db.transaction(() => {
+    const previous = read();
+    if (previous) {
+      if (previous.command_hash !== commandHash) throw new KddError("retirement command conflict");
+      return previous;
+    }
+    const item = scopedWorkItem(db, { projectId: input.owner.projectId, workItemId: input.owner.workItemId });
+    assertNoHandoff(db, item.task.taskId);
+    const snap2 = retirementSnapshot(handle, input.owner);
+    if (snap2.owner.releasedAt !== null || item.fence !== input.owner.fence || item.revision !== input.owner.revision) throw new KddError("retirement owner stale");
+    const pending = db.prepare("SELECT 1 FROM work_item_retirements WHERE work_item_id=? AND fence=? AND completed_at IS NULL").get(input.owner.workItemId, input.owner.fence);
+    if (pending) throw new KddError("retirement already pending");
+    db.prepare("INSERT INTO work_item_retirements(id,command_id,command_hash,work_item_id,fence,snapshot_json,created_at) VALUES(?,?,?,?,?,?,?)").run(newId(), input.commandId, commandHash, input.owner.workItemId, input.owner.fence, canonical(snap2), now());
+    appendEvent(db, item.task.taskId, controllerActor, "ownership_retirement_intent", { owner: input.owner });
+    return read();
+  }).immediate();
+  if (row.receipt_json !== null) return { status: "complete", receipt: JSON.parse(row.receipt_json) };
+  const snap = JSON.parse(row.snapshot_json);
+  let stop;
+  if (snap.owner.launchIntent === null) stop = { outcome: "never_started" };
+  else {
+    if (typeof observer !== "function") return { status: "held", reason: "missing_observer" };
+    let observation;
+    const started = now();
+    try {
+      observation = await observer(structuredClone(snap.owner));
+    } catch {
+      return { status: "held", reason: "observer_error" };
+    }
+    const reason = stopReason(snap.owner, observation, started);
+    if (reason) return { status: "held", reason };
+    stop = { outcome: "stopped", observationId: observation.observationId, launchId: snap.owner.launchIntent.launchId, writerScopeId: snap.owner.launchIntent.writerScopeId };
+  }
+  controllerDb(handle);
+  return db.transaction(() => {
+    const current = read();
+    if (current.receipt_json !== null) return { status: "complete", receipt: JSON.parse(current.receipt_json) };
+    const item = scopedWorkItem(db, { projectId: input.owner.projectId, workItemId: input.owner.workItemId });
+    assertNoHandoff(db, item.task.taskId);
+    if (item.fence !== input.owner.fence || item.revision !== input.owner.revision || canonical(retirementSnapshot(handle, input.owner)) !== canonical(snap)) return { status: "held", reason: "snapshot_changed" };
+    const foreign = db.prepare("SELECT authority_id,grant_json FROM run_authorities WHERE work_item_id=? AND revoked_at IS NULL").all(input.owner.workItemId);
+    if (foreign.some((a) => canonical(JSON.parse(a.grant_json).ownership) !== canonical(input.owner))) return { status: "held", reason: "unknown" };
+    const revokedAuthorityIds = [];
+    for (const authority of snap.authorities) {
+      if (db.prepare("SELECT 1 FROM run_authorities WHERE authority_id=? AND revoked_at IS NULL").get(authority.id)) {
+        revokeRunAuthority(handle, authority.id);
+        revokedAuthorityIds.push(authority.id);
+      }
+    }
+    const receipt2 = { id: row.id, commandId: input.commandId, owner: input.owner, stop, revokedAuthorityIds };
+    db.prepare("UPDATE work_item_retirements SET completed_at=?,receipt_json=? WHERE id=?").run(now(), canonical(receipt2), row.id);
+    db.prepare("UPDATE work_item_owners SET released_at=?,release_retirement_id=? WHERE work_item_id=? AND fence=? AND released_at IS NULL").run(now(), row.id, input.owner.workItemId, input.owner.fence);
+    if (item.state === "running" && inputsCurrent(db, item)) {
+      const deps = resolveDependencies(handle, { ref: item.ref, expectedRevision: item.revision });
+      if (deps.ready) db.prepare("UPDATE work_items SET state='ready' WHERE id=? AND fence=? AND current_revision=? AND state='running'").run(item.ref.workItemId, input.owner.fence, input.owner.revision);
+    }
+    appendEvent(db, item.task.taskId, controllerActor, "ownership_retired", receipt2);
+    return { status: "complete", receipt: receipt2 };
+  }).immediate();
 }
 function readHandoff(db, id2) {
   text(id2);
@@ -6876,6 +7038,8 @@ function beginHandoff(handle, input) {
       if (canonical(prior.task) !== canonical(input.task) || prior.expectedMode !== input.expectedMode || prior.targetMode !== input.targetMode || canonical(prior.owners.map((o) => o.ref)) !== canonical(expected)) throw new KddError("handoff command conflict");
       return prior;
     }
+    if (db.prepare(`SELECT 1 FROM work_item_retirements r JOIN work_items w ON w.id=r.work_item_id
+      WHERE w.task_id=? AND r.completed_at IS NULL`).get(task.id)) throw new KddError("ownership retirement pending");
     assertNoHandoff(db, task.id);
     if (task.execution_mode !== input.expectedMode) throw new KddError("execution mode changed");
     if (task.claimed_by !== null) throw new KddError("legacy writer must stop before handoff");
@@ -6965,6 +7129,44 @@ async function finishHandoff(handle, input, observer) {
     appendEvent(db, task.id, controllerActor, "execution_handoff_completed", receipt2);
     return { status: "complete", receipt: receipt2 };
   }).immediate();
+}
+
+// src/runtime.ts
+var denied5 = (reason) => new KddError(`runtime denied: ${reason}`);
+function readRuntimeAttemptDb(db, ref) {
+  shape(ref, ["projectId", "sessionId", "attemptId"]);
+  if (ref.projectId !== projectOf(db).project_id) throw denied5("foreign project");
+  text(ref.sessionId);
+  text(ref.attemptId);
+  const row = db.prepare(`SELECT a.*,s.project_id,s.provider_session_id FROM runtime_attempts a
+    JOIN runtime_sessions s ON s.id=a.session_id WHERE a.id=? AND s.id=? AND s.project_id=?`).get(ref.attemptId, ref.sessionId, ref.projectId);
+  if (!row) throw denied5("attempt not found");
+  return {
+    ref: { ...ref },
+    owner: { projectId: ref.projectId, workItemId: row.work_item_id, revision: row.revision, ownerId: row.owner_id, fence: row.fence },
+    authority: { authorityId: row.authority_id, workItemId: row.work_item_id, runId: row.run_id, generation: row.generation },
+    phase: row.phase,
+    state: row.state,
+    reason: row.reason,
+    providerSessionId: row.provider_session_id,
+    writersStopped: row.writers_stopped === 1,
+    lastSequence: db.prepare("SELECT COALESCE(MAX(sequence),0) n FROM runtime_events WHERE attempt_id=?").get(ref.attemptId).n
+  };
+}
+function runtimeAttempt(handle, ref) {
+  const db = controllerDb(handle);
+  return db.transaction(() => readRuntimeAttemptDb(db, ref))();
+}
+function runtimeEvents(handle, input) {
+  const db = controllerDb(handle);
+  shape(input, ["ref", "afterSequence", "limit"]);
+  integer(input.afterSequence, 0);
+  integer(input.limit);
+  if (input.limit > 1e3) throw denied5("journal page limit");
+  return db.transaction(() => {
+    readRuntimeAttemptDb(db, input.ref);
+    return db.prepare("SELECT sequence,kind,detail_json FROM runtime_events WHERE attempt_id=? AND sequence>? ORDER BY sequence LIMIT ?").all(input.ref.attemptId, input.afterSequence, input.limit).map((row) => ({ sequence: row.sequence, kind: row.kind, detail: JSON.parse(row.detail_json) }));
+  })();
 }
 export {
   BUG_BODY_TEMPLATE,
@@ -7119,6 +7321,7 @@ export {
   resolveDependencies,
   resolveToplevel,
   result,
+  retireOwnership,
   reviseWorkItem,
   revokeRole,
   revokeRunAuthority,
@@ -7127,6 +7330,8 @@ export {
   runMemoryRules,
   runOperations,
   runProduced,
+  runtimeAttempt,
+  runtimeEvents,
   sanitizeQuery,
   saveRoleRevision,
   setAutoTick,

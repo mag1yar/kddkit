@@ -21626,6 +21626,94 @@ CREATE TRIGGER role_skill_files_immutable_update BEFORE UPDATE ON role_skill_fil
 BEGIN SELECT RAISE(ABORT,'immutable skill file'); END;
 CREATE TRIGGER role_skill_files_immutable_delete BEFORE DELETE ON role_skill_files
 BEGIN SELECT RAISE(ABORT,'immutable skill file'); END;
+  `,
+  // v19: durable runtime attempts and scoped ownership retirement.
+  `
+CREATE TABLE work_item_retirements (
+  id TEXT PRIMARY KEY, command_id TEXT NOT NULL UNIQUE, command_hash TEXT NOT NULL,
+  work_item_id TEXT NOT NULL, fence INTEGER NOT NULL, snapshot_json TEXT NOT NULL CHECK(json_valid(snapshot_json)),
+  created_at INTEGER NOT NULL, completed_at INTEGER, receipt_json TEXT CHECK(receipt_json IS NULL OR json_valid(receipt_json)),
+  FOREIGN KEY(work_item_id,fence) REFERENCES work_item_owners(work_item_id,fence),
+  CHECK((completed_at IS NULL)=(receipt_json IS NULL))
+);
+CREATE TABLE work_item_owners_v19 (
+  work_item_id TEXT NOT NULL, fence INTEGER NOT NULL CHECK(typeof(fence)='integer' AND fence BETWEEN 1 AND 9007199254740991),
+  revision INTEGER NOT NULL, owner_id TEXT NOT NULL,
+  mode TEXT NOT NULL CHECK(mode IN ('manual','orchestrated')),
+  write_access INTEGER NOT NULL CHECK(write_access IN (0,1)),
+  inputs_json TEXT NOT NULL CHECK(json_valid(inputs_json)),
+  launch_id TEXT, launch_json TEXT CHECK(launch_json IS NULL OR json_valid(launch_json)),
+  created_at INTEGER NOT NULL, released_at INTEGER,
+  release_handoff_id TEXT REFERENCES execution_handoffs(id),
+  release_retirement_id TEXT REFERENCES work_item_retirements(id),
+  PRIMARY KEY(work_item_id,fence),
+  FOREIGN KEY(work_item_id,revision) REFERENCES work_item_revisions(work_item_id,revision),
+  CHECK((launch_id IS NULL)=(launch_json IS NULL)),
+  CHECK((released_at IS NULL AND release_handoff_id IS NULL AND release_retirement_id IS NULL)
+    OR (released_at IS NOT NULL AND ((release_handoff_id IS NOT NULL)+(release_retirement_id IS NOT NULL))=1))
+);
+INSERT INTO work_item_owners_v19 SELECT *,NULL FROM work_item_owners;
+DROP TABLE work_item_owners;
+ALTER TABLE work_item_owners_v19 RENAME TO work_item_owners;
+CREATE UNIQUE INDEX idx_work_item_owners_live ON work_item_owners(work_item_id) WHERE released_at IS NULL;
+CREATE UNIQUE INDEX idx_work_item_retirement_live ON work_item_retirements(work_item_id,fence) WHERE completed_at IS NULL;
+CREATE TABLE runtime_sessions (
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, task_id INTEGER NOT NULL REFERENCES tasks(id),
+  work_item_id TEXT NOT NULL REFERENCES work_items(id), runtime TEXT NOT NULL CHECK(runtime IN ('codex','claude')),
+  version TEXT NOT NULL, model TEXT NOT NULL, effort TEXT NOT NULL,
+  semantic_hash TEXT NOT NULL CHECK(length(semantic_hash)=64 AND semantic_hash NOT GLOB '*[^0-9a-f]*'),
+  provider_session_id TEXT, created_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX idx_runtime_provider_session ON runtime_sessions(runtime,provider_session_id) WHERE provider_session_id IS NOT NULL;
+CREATE TABLE runtime_attempts (
+  id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES runtime_sessions(id),
+  command_id TEXT NOT NULL UNIQUE, command_hash TEXT NOT NULL,
+  work_item_id TEXT NOT NULL, fence INTEGER NOT NULL, revision INTEGER NOT NULL, owner_id TEXT NOT NULL,
+  authority_id TEXT NOT NULL UNIQUE REFERENCES run_authorities(authority_id), run_id TEXT NOT NULL, generation INTEGER NOT NULL,
+  input_hash TEXT NOT NULL CHECK(length(input_hash)=64 AND input_hash NOT GLOB '*[^0-9a-f]*'),
+  phase TEXT NOT NULL CHECK(phase IN ('start','resume')), limits_json TEXT NOT NULL CHECK(json_valid(limits_json)),
+  writer_scope_id TEXT NOT NULL UNIQUE, state TEXT NOT NULL CHECK(state IN ('created','running','waiting','completed','failed','cancelled')),
+  reason TEXT, pid INTEGER, process_json TEXT CHECK(process_json IS NULL OR json_valid(process_json)),
+  created_at INTEGER NOT NULL, stop_intent_at INTEGER, terminal_json TEXT CHECK(terminal_json IS NULL OR json_valid(terminal_json)),
+  exit_json TEXT CHECK(exit_json IS NULL OR json_valid(exit_json)),
+  writers_stopped INTEGER NOT NULL DEFAULT 0 CHECK(writers_stopped IN (0,1)), ended_at INTEGER,
+  FOREIGN KEY(work_item_id,fence) REFERENCES work_item_owners(work_item_id,fence),
+  FOREIGN KEY(work_item_id,revision) REFERENCES work_item_revisions(work_item_id,revision),
+  UNIQUE(work_item_id,run_id,generation),
+  CHECK(ended_at IS NULL OR (writers_stopped=1 AND state IN ('completed','failed','cancelled')))
+);
+CREATE UNIQUE INDEX idx_runtime_session_active ON runtime_attempts(session_id) WHERE ended_at IS NULL;
+CREATE UNIQUE INDEX idx_runtime_work_active ON runtime_attempts(work_item_id) WHERE ended_at IS NULL;
+CREATE TABLE runtime_events (
+  attempt_id TEXT NOT NULL REFERENCES runtime_attempts(id), sequence INTEGER NOT NULL CHECK(sequence>0),
+  kind TEXT NOT NULL CHECK(kind IN ('session','attempt_start','text','tool_start','tool_finish','usage','error','provider_terminal','host_stop','attempt_end')),
+  detail_json TEXT NOT NULL CHECK(json_valid(detail_json)), created_at INTEGER NOT NULL,
+  PRIMARY KEY(attempt_id,sequence)
+);
+CREATE TRIGGER runtime_events_no_update BEFORE UPDATE ON runtime_events
+BEGIN SELECT RAISE(ABORT,'immutable runtime event'); END;
+CREATE TRIGGER runtime_events_no_delete BEFORE DELETE ON runtime_events
+BEGIN SELECT RAISE(ABORT,'immutable runtime event'); END;
+CREATE TRIGGER runtime_sessions_identity BEFORE UPDATE OF id,project_id,task_id,work_item_id,runtime,version,model,effort,semantic_hash,created_at ON runtime_sessions
+BEGIN SELECT RAISE(ABORT,'immutable runtime session'); END;
+CREATE TRIGGER runtime_session_binding BEFORE UPDATE OF provider_session_id ON runtime_sessions
+WHEN OLD.provider_session_id IS NOT NULL AND NEW.provider_session_id IS NOT OLD.provider_session_id
+BEGIN SELECT RAISE(ABORT,'immutable provider session'); END;
+CREATE TRIGGER runtime_sessions_no_delete BEFORE DELETE ON runtime_sessions
+BEGIN SELECT RAISE(ABORT,'immutable runtime session'); END;
+CREATE TRIGGER runtime_attempt_identity BEFORE UPDATE OF id,session_id,command_id,command_hash,work_item_id,fence,revision,owner_id,
+  authority_id,run_id,generation,input_hash,phase,limits_json,writer_scope_id,created_at ON runtime_attempts
+BEGIN SELECT RAISE(ABORT,'immutable runtime attempt identity'); END;
+CREATE TRIGGER runtime_attempt_terminal BEFORE UPDATE ON runtime_attempts WHEN OLD.ended_at IS NOT NULL
+BEGIN SELECT RAISE(ABORT,'immutable runtime outcome'); END;
+CREATE TRIGGER runtime_attempt_no_delete BEFORE DELETE ON runtime_attempts
+BEGIN SELECT RAISE(ABORT,'immutable runtime attempt'); END;
+CREATE TRIGGER retirement_identity BEFORE UPDATE OF id,command_id,command_hash,work_item_id,fence,snapshot_json,created_at ON work_item_retirements
+BEGIN SELECT RAISE(ABORT,'immutable retirement identity'); END;
+CREATE TRIGGER retirement_terminal BEFORE UPDATE ON work_item_retirements WHEN OLD.completed_at IS NOT NULL
+BEGIN SELECT RAISE(ABORT,'immutable retirement receipt'); END;
+CREATE TRIGGER retirement_no_delete BEFORE DELETE ON work_item_retirements
+BEGIN SELECT RAISE(ABORT,'immutable retirement'); END;
   `
 ];
 function projectOf(db) {
@@ -22135,7 +22223,7 @@ function runInputChangesDb(db, snapshot2) {
       if (item.task.taskId !== response.taskId || item.revision !== saved.revision || item.inputsHash !== saved.inputsHash || !inputsCurrent(db, item) || canonical(item.definition) !== canonical(saved.definition)) changes.push({ reason: "work_item_changed" });
       const o = validation.ownership;
       const row = o ? db.prepare("SELECT * FROM work_item_owners WHERE work_item_id=? AND fence=? AND owner_id=? AND revision=? AND released_at IS NULL").get(o.workItemId, o.fence, o.ownerId, o.revision) : void 0;
-      if (!o || !row || item.fence !== o.fence || item.revision !== o.revision || JSON.parse(row.inputs_json).inputsHash !== saved.inputsHash || canonical(JSON.parse(row.inputs_json).inputResults) !== canonical(validation.inputResults)) changes.push({ reason: "ownership_changed" });
+      if (!o || !row || db.prepare("SELECT 1 FROM work_item_retirements WHERE work_item_id=? AND fence=? AND completed_at IS NULL").get(o.workItemId, o.fence) || item.fence !== o.fence || item.revision !== o.revision || JSON.parse(row.inputs_json).inputsHash !== saved.inputsHash || canonical(JSON.parse(row.inputs_json).inputResults) !== canonical(validation.inputResults)) changes.push({ reason: "ownership_changed" });
       if (!pinnedInputsCurrent(db, item, validation.inputResults)) changes.push({ reason: "dependency_changed" });
     } catch {
       changes.push({ reason: "work_item_changed" });
@@ -22290,6 +22378,7 @@ function checkOwnershipRef(db, ref) {
 }
 function liveOwner(db, ref) {
   checkOwnershipRef(db, ref);
+  if (db.prepare("SELECT 1 FROM work_item_retirements WHERE work_item_id=? AND fence=? AND completed_at IS NULL").get(ref.workItemId, ref.fence)) throw new KddError("ownership retirement pending");
   const item = scopedWorkItem(db, { projectId: ref.projectId, workItemId: ref.workItemId });
   const row = db.prepare("SELECT * FROM work_item_owners WHERE work_item_id=? AND fence=? AND owner_id=? AND revision=? AND released_at IS NULL").get(ref.workItemId, ref.fence, ref.ownerId, ref.revision);
   if (!row || item.revision !== ref.revision || item.fence !== ref.fence || !inputsCurrent(db, item) || JSON.parse(row.inputs_json).inputsHash !== item.inputsHash || !pinnedInputsCurrent(db, item, JSON.parse(row.inputs_json).inputResults)) throw new KddError("ownership fence or inputs stale");

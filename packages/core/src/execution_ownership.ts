@@ -6,7 +6,7 @@ import { appendEvent, mustGetTask } from './ops.js';
 import { projectOf } from './project_store.js';
 import { protectTask, revokeRunAuthority } from './authority.js';
 import { shape, text, integer, mode, canonical, newId, scopedTask, scopedWorkItem, inputsCurrent, liveOwner, checkOwnershipRef,
-  checkAuthority, assertNoHandoff, controllerActor, type ExecutionMode, type TaskRef, type AuthorityBinding,
+  checkAuthority, assertNoHandoff, controllerActor, digest, type ExecutionMode, type TaskRef, type AuthorityBinding,
   type WorkItemRef, type OwnershipRef, type OwnerRow } from './execution.js';
 import { resolveDependencies, type ResultObservers } from './execution_results.js';
 
@@ -23,6 +23,9 @@ export interface StopObservation {observationId:string;owner:OwnershipRef;launch
 export type StopObserver=(owner:OwnershipRecord)=>Promise<StopObservation|null>;
 export type HandoffOutcome={status:'complete';receipt:HandoffReceipt}|{status:'held';handoffId:string;
   reason:'missing_observer'|'observer_error'|'unknown'|'live'|'stale_observation'|'snapshot_changed'};
+export interface RetirementReceipt{id:string;commandId:string;owner:OwnershipRef;revokedAuthorityIds:readonly string[];
+  stop:{outcome:'never_started'}|{outcome:'stopped';observationId:string;launchId:string;writerScopeId:string}}
+export type RetirementOutcome={status:'complete';receipt:RetirementReceipt}|{status:'held';reason:Extract<HandoffOutcome,{status:'held'}>['reason']};
 interface HandoffRow {id:string;command_id:string;task_id:number;expected_mode:ExecutionMode;target_mode:ExecutionMode;
   snapshot_json:string;created_at:number;completed_at:number|null;receipt_json:string|null}
 interface Snapshot {owners:OwnershipRecord[];authorities:AuthorityBinding[]}
@@ -105,13 +108,83 @@ function authorityTracked(db:Database.Database,record:HandoffRecord,authority:Au
     const ref=grant.ownership as OwnershipRef;
     if(ref.workItemId!==authority.workItemId)return false;
     if(record.owners.some(owner=>canonical(owner.ref)===canonical(ref)))return true;
-    // Revocation alone is not stop evidence; only an already completed handoff retires a prior owner.
+    // Revocation alone is not stop evidence; a completed bound release receipt is required.
     return !!db.prepare(`SELECT 1 FROM work_item_owners o JOIN work_items w ON w.id=o.work_item_id
-      JOIN execution_handoffs h ON h.id=o.release_handoff_id AND h.task_id=w.task_id
+      LEFT JOIN execution_handoffs h ON h.id=o.release_handoff_id AND h.task_id=w.task_id
+      LEFT JOIN work_item_retirements r ON r.id=o.release_retirement_id AND r.work_item_id=o.work_item_id AND r.fence=o.fence
       WHERE w.task_id=? AND o.work_item_id=? AND o.fence=? AND o.revision=? AND o.owner_id=?
-        AND o.released_at IS NOT NULL AND h.completed_at IS NOT NULL`)
+        AND o.released_at IS NOT NULL AND (h.completed_at IS NOT NULL OR r.completed_at IS NOT NULL)`)
       .get(record.task.taskId,ref.workItemId,ref.fence,ref.revision,ref.ownerId);
   }catch{return false}
+}
+
+interface RetirementSnapshot{owner:OwnershipRecord;authorities:{id:string;grant:string}[]}
+function retirementSnapshot(handle:ControllerHandle,ref:OwnershipRef):RetirementSnapshot{
+  const db=controllerDb(handle),owner=ownership(handle,ref);
+  const rows=db.prepare('SELECT authority_id id,grant_json grant FROM run_authorities WHERE work_item_id=? ORDER BY authority_id')
+    .all(ref.workItemId) as {id:string;grant:string}[];
+  return {owner,authorities:rows.filter(row=>canonical(JSON.parse(row.grant).ownership)===canonical(ref))};
+}
+/** Stop one writer scope, without changing task mode or sibling ownership. */
+export async function retireOwnership(handle:ControllerHandle,input:{commandId:string;owner:OwnershipRef},observer?:StopObserver):Promise<RetirementOutcome>{
+  const db=controllerDb(handle);shape(input,['commandId','owner']);text(input.commandId);checkOwnershipRef(db,input.owner);
+  const commandHash=digest(input);
+  const read=()=>db.prepare('SELECT * FROM work_item_retirements WHERE command_id=?').get(input.commandId) as
+    {id:string;command_hash:string;snapshot_json:string;created_at:number;receipt_json:string|null}|undefined;
+  const row=db.transaction(()=>{
+    const previous=read();
+    if(previous){if(previous.command_hash!==commandHash)throw new KddError('retirement command conflict');return previous}
+    const item=scopedWorkItem(db,{projectId:input.owner.projectId,workItemId:input.owner.workItemId});
+    assertNoHandoff(db,item.task.taskId);
+    const snap=retirementSnapshot(handle,input.owner);
+    if(snap.owner.releasedAt!==null||item.fence!==input.owner.fence||item.revision!==input.owner.revision)throw new KddError('retirement owner stale');
+    const pending=db.prepare('SELECT 1 FROM work_item_retirements WHERE work_item_id=? AND fence=? AND completed_at IS NULL')
+      .get(input.owner.workItemId,input.owner.fence);
+    if(pending)throw new KddError('retirement already pending');
+    db.prepare('INSERT INTO work_item_retirements(id,command_id,command_hash,work_item_id,fence,snapshot_json,created_at) VALUES(?,?,?,?,?,?,?)')
+      .run(newId(),input.commandId,commandHash,input.owner.workItemId,input.owner.fence,canonical(snap),now());
+    appendEvent(db,item.task.taskId,controllerActor,'ownership_retirement_intent',{owner:input.owner});
+    return read()!;
+  }).immediate();
+  if(row.receipt_json!==null)return {status:'complete',receipt:JSON.parse(row.receipt_json)};
+  const snap=JSON.parse(row.snapshot_json) as RetirementSnapshot;
+  let stop:RetirementReceipt['stop'];
+  if(snap.owner.launchIntent===null)stop={outcome:'never_started'};
+  else{
+    if(typeof observer!=='function')return {status:'held',reason:'missing_observer'};
+    let observation:StopObservation|null;const started=now();
+    try{observation=await observer(structuredClone(snap.owner))}catch{return{status:'held',reason:'observer_error'}}
+    const reason=stopReason(snap.owner,observation,started);if(reason)return{status:'held',reason};
+    stop={outcome:'stopped',observationId:observation!.observationId,launchId:snap.owner.launchIntent.launchId,writerScopeId:snap.owner.launchIntent.writerScopeId};
+  }
+  controllerDb(handle);
+  return db.transaction(():RetirementOutcome=>{
+    const current=read()!;if(current.receipt_json!==null)return{status:'complete',receipt:JSON.parse(current.receipt_json)};
+    const item=scopedWorkItem(db,{projectId:input.owner.projectId,workItemId:input.owner.workItemId});
+    assertNoHandoff(db,item.task.taskId);
+    if(item.fence!==input.owner.fence||item.revision!==input.owner.revision
+      ||canonical(retirementSnapshot(handle,input.owner))!==canonical(snap))return{status:'held',reason:'snapshot_changed'};
+    // An active unbound grant for this item could own an unobserved writer.
+    const foreign=db.prepare('SELECT authority_id,grant_json FROM run_authorities WHERE work_item_id=? AND revoked_at IS NULL')
+      .all(input.owner.workItemId) as {authority_id:string;grant_json:string}[];
+    if(foreign.some(a=>canonical(JSON.parse(a.grant_json).ownership)!==canonical(input.owner)))return{status:'held',reason:'unknown'};
+    const revokedAuthorityIds:string[]=[];
+    for(const authority of snap.authorities){
+      if(db.prepare('SELECT 1 FROM run_authorities WHERE authority_id=? AND revoked_at IS NULL').get(authority.id)){
+        revokeRunAuthority(handle,authority.id);revokedAuthorityIds.push(authority.id);
+      }
+    }
+    const receipt:RetirementReceipt={id:row.id,commandId:input.commandId,owner:input.owner,stop,revokedAuthorityIds};
+    db.prepare('UPDATE work_item_retirements SET completed_at=?,receipt_json=? WHERE id=?').run(now(),canonical(receipt),row.id);
+    db.prepare('UPDATE work_item_owners SET released_at=?,release_retirement_id=? WHERE work_item_id=? AND fence=? AND released_at IS NULL')
+      .run(now(),row.id,input.owner.workItemId,input.owner.fence);
+    if(item.state==='running'&&inputsCurrent(db,item)){
+      const deps=resolveDependencies(handle,{ref:item.ref,expectedRevision:item.revision});
+      if(deps.ready)db.prepare("UPDATE work_items SET state='ready' WHERE id=? AND fence=? AND current_revision=? AND state='running'")
+        .run(item.ref.workItemId,input.owner.fence,input.owner.revision);
+    }
+    appendEvent(db,item.task.taskId,controllerActor,'ownership_retired',receipt);return{status:'complete',receipt};
+  }).immediate();
 }
 function readHandoff(db:Database.Database,id:string):HandoffRow {
   text(id);const row=db.prepare('SELECT * FROM execution_handoffs WHERE id=?').get(id) as HandoffRow|undefined;
@@ -140,6 +213,8 @@ export function beginHandoff(handle:ControllerHandle,input:{commandId:string;tas
       if(canonical(prior.task)!==canonical(input.task)||prior.expectedMode!==input.expectedMode||prior.targetMode!==input.targetMode
         ||canonical(prior.owners.map(o=>o.ref))!==canonical(expected))throw new KddError('handoff command conflict');return prior;
     }
+    if(db.prepare(`SELECT 1 FROM work_item_retirements r JOIN work_items w ON w.id=r.work_item_id
+      WHERE w.task_id=? AND r.completed_at IS NULL`).get(task.id))throw new KddError('ownership retirement pending');
     assertNoHandoff(db,task.id);
     if(task.execution_mode!==input.expectedMode)throw new KddError('execution mode changed');
     if(task.claimed_by!==null)throw new KddError('legacy writer must stop before handoff');
