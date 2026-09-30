@@ -4,21 +4,26 @@ import {join} from 'node:path';
 import * as core from '../src/index.js';
 import {memoryFixture} from './memory_fixture.js';
 import type {RunInputGrant} from '../src/run_inputs.js';
-export function runInputFixture(registerNative: (packet: core.VerifiedCodexPackage) => void = () => {}) {
+import {roleFixture} from './role_fixture.js';
+export function runInputFixture(registerNative: (packet: core.VerifiedCodexPackage) => void = () => {},
+  brokerTools: readonly core.RunOperation[] = ['get_context','submit_report','request_question']) {
   const f=memoryFixture(),workspace=join(f.root,'workspace'),scratch=join(f.root,'scratch');
   execFileSync('/usr/bin/git',['clone','--no-hardlinks','-q',f.repo,workspace]);mkdirSync(scratch);
   const repoId=core.projectOf(f.db).primary_repo_id!;
   core.bindRepository(f.db,f.dbPath,f.home,{cwd:workspace,repoId,kind:'managed'},{type:'user'});
   // Unit-native attestation shim only; genuine native evidence is a separate gate.
-  const native=Object.freeze({executable:'/fixture/codex',version:'codex-cli 0.157.0',cwd:workspace,controlDir:f.home,
+  const native=Object.freeze({executable:'/fixture/codex',version:'codex-cli 0.159.0',model:'gpt-6-sol',effort:'high',contextWindow:258400,cwd:workspace,controlDir:f.home,
+    brokerConfigPath:join(f.home,'broker.json'),brokerTools:Object.freeze([...brokerTools]),
     readableRoots:Object.freeze([workspace]),writableRoot:workspace,scratchDir:scratch,protectedPaths:Object.freeze([f.home]),
     argv:Object.freeze([]),env:Object.freeze({}),configHash:'a'.repeat(64),results:Object.freeze([])});
   registerNative(native);
+  const role=roleFixture(f.handle);
   const t=f.task('context'),input:core.IssueRunInput={taskId:t.id,workItemId:'context-fixture',runId:'context-run',expectedGeneration:0,
-    expiresAt:core.now()+3600,operations:['get_context','submit_report','request_question'],repositories:[{repoId,checkoutPath:workspace,write:true}],native};
+    expiresAt:core.now()+3600,operations:['get_context','submit_report','request_question'],repositories:[{repoId,checkoutPath:workspace,write:true}],native,role};
   const grant:RunInputGrant={projectId:f.projectId,taskId:t.id,workItemId:input.workItemId,runId:input.runId,generation:1,
+    role,
     operations:input.operations,repositories:[{repoId,checkoutPath:workspace,commonDir:core.canonicalCommonDir(workspace),write:true}],
-    native:{readableRoots:[workspace],writableRoot:workspace,scratchDir:scratch,configHash:native.configHash}};
+    native:{readableRoots:[workspace],writableRoot:workspace,scratchDir:scratch,configHash:native.configHash,contextWindow:native.contextWindow}};
   return {...f,workspace,scratch,repoId,input,grant,t};
 }
 

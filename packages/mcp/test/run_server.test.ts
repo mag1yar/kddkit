@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, rmSync, realpathSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -31,20 +32,30 @@ beforeEach(() => {
   const resolved = core.resolveDbPath(source); db = core.openDb(resolved.dbPath, resolved.projectPath, source);
   const repoId = core.projectOf(db).primary_repo_id!;
   core.bindRepository(db, db.name, process.env.KDD_HOME, { cwd: workspace, repoId, kind: 'managed' }, user);
-  const native: core.VerifiedCodexPackage = { executable: '/fixture/codex', version: 'fixture', cwd: workspace,
+  const native: core.VerifiedCodexPackage = { executable: '/fixture/codex', version: 'fixture', model: 'gpt-6-sol', effort: 'high', contextWindow: 258400, cwd: workspace,
     controlDir: join(root, 'home'), readableRoots: [workspace], writableRoot: workspace, scratchDir: join(root, 'scratch'),
-    protectedPaths: [join(root, 'home')], argv: [], env: {}, results: [], configHash: 'fixture' }; proved.add(native);
+    protectedPaths: [join(root, 'home')], brokerConfigPath: join(root, 'home', 'broker.json'),
+    brokerTools: ['get_context', 'submit_report', 'request_question'], argv: [], env: {}, results: [], configHash: 'fixture' }; proved.add(native);
+  const role = core.saveRoleRevision(core.openController(db), { expectedRevision: 0, commandId: 'mcp-fixture-role', definition: {
+    name: 'Fixture', prompt: 'Complete scoped work.', runtime: 'codex', model: native.model, effort: native.effort,
+    access: 'workspace-write', operations: ['get_context', 'submit_report', 'request_question'], skills: [],
+  } });
   input = { taskId: core.addTask(db, { title: 'own context', criteria: ['proof'] }, user).id,
     workItemId: 'work', runId: 'run', expectedGeneration: 0, expiresAt: core.now() + 60,
-    operations: ['get_context', 'submit_report', 'request_question'], repositories: [{ repoId, checkoutPath: workspace, write: true }], native };
+    operations: ['get_context', 'submit_report', 'request_question'], repositories: [{ repoId, checkoutPath: workspace, write: true }], native, role };
 });
 afterEach(async () => { for (const client of clients.splice(0)) await client.close(); db.close(); process.env = saved; rmSync(root, { recursive: true, force: true }); });
 async function connect(operations = input.operations) {
-  const controller = core.openController(db), issued = core.issueRunAuthority(controller, { ...input, operations });
+  const controller = core.openController(db), issued = core.issueRunAuthority(controller, { ...input, operations, native: packetFor(operations) });
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();
   await createRunServer(core.openRunContext(db, issued.token)).connect(serverT);
   const client = new Client({ name: 'scope-test', version: '0' }); clients.push(client); await client.connect(clientT);
   return { client, controller, issued };
+}
+function packetFor(operations: readonly core.RunOperation[]): core.VerifiedCodexPackage {
+  const packet = { ...input.native, brokerTools: [...operations] };
+  proved.add(packet);
+  return packet;
 }
 it('advertises exactly the granted tools and rejects forged inputs and global methods', async () => {
   const { client } = await connect();
@@ -78,9 +89,47 @@ it('hides missing operations and refuses direct calls to them', async () => {
   const { client } = await connect(['get_context']);
   expect((await client.listTools()).tools.map(t => t.name)).toEqual(['get_context']);
   expect((await client.callTool({ name: 'submit_report', arguments: { body: 'hidden' } })).isError).toBe(true);
+  expect((await client.callTool({ name: 'read_skill_file', arguments: { skill: 'Guide', path: 'SKILL.md', offset: 0 } })).isError).toBe(true);
+});
+it('serves pinned skill files through one scoped tool and denies foreign or revoked reads', async () => {
+  const folder = join(root, 'skill-library', 'guide');
+  for (const part of ['', 'references', 'scripts', 'assets']) mkdirSync(join(folder, part), { recursive: true });
+  writeFileSync(join(folder, 'SKILL.md'), '# MCP guide\n');
+  writeFileSync(join(folder, 'references', 'note.md'), 'pinned note');
+  writeFileSync(join(folder, 'scripts', 'check.sh'), 'echo pinned\n');
+  const asset = Buffer.alloc(40000, 9); writeFileSync(join(folder, 'assets', 'icon.bin'), asset);
+  const role = core.saveRoleRevision(core.openController(db), { expectedRevision: 0, commandId: 'mcp-skill-role', definition: {
+    name: 'Skilled', prompt: 'Use pinned skills.', runtime: 'codex', model: 'gpt-6-sol', effort: 'high',
+    access: 'workspace-write', operations: ['get_context', 'read_skill_file'],
+    skills: [{ name: 'Guide', mode: 'Available', description: 'Guide', source: { kind: 'local', root: join(root, 'skill-library'), path: 'guide' } }],
+  } });
+  input = { ...input, role, operations: ['get_context', 'read_skill_file'] };
+  const { client, controller, issued } = await connect();
+  expect((await client.listTools()).tools.map(tool => tool.name).sort()).toEqual(['get_context', 'read_skill_file']);
+  const read = async (path: string, offset = 0, skill = 'Guide') => {
+    const reply = await client.callTool({ name: 'read_skill_file', arguments: { skill, path, offset } });
+    expect(reply.isError).not.toBe(true);
+    const content = reply.content as { text: string }[];
+    return JSON.parse(content[0].text) as { contentBase64: string; length: number; sha256: string };
+  };
+  expect(Buffer.from((await read('SKILL.md')).contentBase64, 'base64').toString()).toBe('# MCP guide\n');
+  expect(Buffer.from((await read('references/note.md')).contentBase64, 'base64').toString()).toBe('pinned note');
+  expect(Buffer.from((await read('scripts/check.sh')).contentBase64, 'base64').toString()).toBe('echo pinned\n');
+  const first = await read('assets/icon.bin'), second = await read('assets/icon.bin', 32768);
+  expect(Buffer.concat([Buffer.from(first.contentBase64, 'base64'), Buffer.from(second.contentBase64, 'base64')])).toEqual(asset);
+  expect(first.sha256).toBe(createHash('sha256').update(asset).digest('hex'));
+  for (const args of [
+    { skill: 'Other', path: 'SKILL.md', offset: 0 }, { skill: 'Guide', path: '../SKILL.md', offset: 0 },
+    { skill: 'Guide', path: 'SKILL.md', offset: -1 }, { skill: 'Guide', path: 'assets/icon.bin', offset: 40000 },
+  ]) {
+    const reply = await client.callTool({ name: 'read_skill_file', arguments: args });
+    expect(reply.isError).toBe(true); expect(JSON.stringify(reply)).not.toContain(root);
+  }
+  core.revokeRunAuthority(controller, issued.authorityId);
+  expect((await client.callTool({ name: 'read_skill_file', arguments: { skill: 'Guide', path: 'SKILL.md', offset: 0 } })).isError).toBe(true);
 });
 it('starts the built scoped broker on the current schema without migration', async () => {
-  const issued = core.issueRunAuthority(core.openController(db), { ...input, operations: ['get_context'] });
+  const issued = core.issueRunAuthority(core.openController(db), { ...input, operations: ['get_context'], native: packetFor(['get_context']) });
   const path = join(root, 'current-broker.json');
   writeFileSync(path, JSON.stringify({ dbPath: db.name, token: issued.token }), { mode: 0o600 });
   const client = new Client({ name: 'current-schema', version: '0' }); clients.push(client);

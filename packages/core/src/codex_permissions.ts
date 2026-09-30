@@ -4,7 +4,8 @@ import { lstatSync, mkdirSync, readdirSync, realpathSync, rmdirSync, readFileSyn
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { KddError } from './errors.js';
-import { observeCodexNative } from './codex_native_probe.js';
+import { brokerOperationNames, observeCodexNative } from './codex_native_probe.js';
+import type { RunOperation } from './authority.js';
 
 function directory(path: string): string {
   try {
@@ -70,6 +71,7 @@ export interface NativeLaunchInput {
   env: Readonly<Record<string, string>>;
   phase: 'start' | 'resume';
   verified?: VerifiedCodexPackage;
+  beforeSpawn?: () => void;
 }
 
 export function inside(parent: string, path: string): boolean {
@@ -100,6 +102,7 @@ export async function spawnCheckedNative(input: NativeLaunchInput): Promise<Chil
     // Bind the roots again after lock acquisition; no caller callback/await occurs between this scan and spawn.
     if (roots.some((root, index) => directory(root) !== canonical[index])) throw new KddError('native root binding changed');
     assertWritableRoots(canonical);
+    input.beforeSpawn?.();
     const child = spawn(executable, args, { cwd: resolve(cwd), env, stdio: ['ignore', 'pipe', 'pipe'] });
     return new Promise<ChildProcess>((resolveChild, reject) => {
       child.once('error', reject);
@@ -109,14 +112,14 @@ export async function spawnCheckedNative(input: NativeLaunchInput): Promise<Chil
 }
 
 export interface CodexPermissionInput {
-  executable: string; cwd: string; controlDir: string; model: string;
+  executable: string; cwd: string; controlDir: string; model: string; effort: string;
   readableRoots: readonly string[]; writableRoot?: string; scratchDir: string;
   protectedPaths: readonly string[];
   brokerConfigPath?: string; brokerEntryPath?: string;
 }
 export interface NativeProbeResult {
   caseId: string; tool: string; outcome: 'allowed' | 'denied' | 'inconclusive';
-  executed: boolean; unchangedProtectedBytes: boolean;
+  executed: boolean; unchangedProtectedBytes: boolean; firstRequestBytes?: number;
 }
 export interface CodexBrokerBinding { configPath: string; entryPath: string; dbPath: string; nodePath: string }
 export function codexBrokerBinding(configPath: string, entryPath: string): CodexBrokerBinding {
@@ -141,11 +144,14 @@ export function codexBrokerBinding(configPath: string, entryPath: string): Codex
 }
 export interface VerifiedCodexPackage {
   readonly executable: string; readonly version: string; readonly cwd: string;
+  readonly model: string; readonly effort: string; readonly contextWindow: number;
+  readonly brokerConfigPath?: string; readonly brokerTools: readonly RunOperation[];
   readonly controlDir: string; readonly readableRoots: readonly string[];
   readonly writableRoot?: string; readonly scratchDir: string; readonly protectedPaths: readonly string[];
   readonly argv: readonly string[]; readonly env: Readonly<Record<string, string>>;
   readonly configHash: string; readonly results: readonly NativeProbeResult[];
 }
+export const nativeAccess = (packet: VerifiedCodexPackage): 'read' | 'workspace-write' => packet.writableRoot ? 'workspace-write' : 'read';
 
 const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 const verifiedPackages = new WeakMap<object, { stamp: string; snapshot: () => string }>();
@@ -162,16 +168,18 @@ export function closedCodexCatalog(model: string): string {
   }] });
 }
 
-export function fixedCodexConfig(filesystem: Record<string, 'read' | 'write' | 'deny'>, catalogPath: string, broker?: CodexBrokerBinding): string[] {
+export function fixedCodexConfig(filesystem: Record<string, 'read' | 'write' | 'deny'>, catalogPath: string,
+  broker?: CodexBrokerBinding, effort?: string, brokerTools: readonly RunOperation[] = ['get_context', 'submit_report', 'request_question']): string[] {
   const table = Object.entries(filesystem).map(([key, value]) => `${JSON.stringify(key)}=${JSON.stringify(value)}`).join(',');
   return [
     'model_provider="openai"',
     `model_catalog_json=${JSON.stringify(catalogPath)}`,
+    ...(effort ? [`model_reasoning_effort=${JSON.stringify(effort)}`] : []),
     'approval_policy="never"', 'default_permissions="kdd_probe"',
     `permissions.kdd_probe.filesystem={${table}}`, 'permissions.kdd_probe.network.enabled=false',
     'web_search="disabled"', 'project_doc_max_bytes=0', 'tools.experimental_request_user_input.enabled=false',
     'shell_environment_policy.inherit="none"',
-    ...(broker ? [`mcp_servers={kdd_run={command=${JSON.stringify(broker.nodePath)},args=${JSON.stringify([broker.entryPath, '--config', broker.configPath])},enabled=true,required=true,env_vars=[],default_tools_approval_mode="auto",startup_timeout_sec=10.0,tool_timeout_sec=10.0,enabled_tools=["get_context","submit_report","request_question"]}}`] : []),
+    ...(broker ? [`mcp_servers={kdd_run={command=${JSON.stringify(broker.nodePath)},args=${JSON.stringify([broker.entryPath, '--config', broker.configPath])},enabled=true,required=true,env_vars=[],default_tools_approval_mode="auto",startup_timeout_sec=10.0,tool_timeout_sec=10.0,enabled_tools=${JSON.stringify(brokerTools)}}}`] : []),
     'features={apply_patch_freeform=true,unified_exec=true,enable_request_compression=false,plugins=false,apps=false,connectors=false,enable_mcp_apps=false,codex_apps_mcp_2026_07_28=false,multi_agent=false,multi_agent_v2=false,multi_agent_mode=false,agent_message_board=false,computer_use=false,browser_use=false,browser_use_external=false,browser_use_full_cdp_access=false,in_app_browser=false,hooks=false,codex_hooks=false,plugin_hooks=false,shell_snapshot=false,shell_snapshot_v2=false,responses_websockets=false,responses_websockets_v2=false,skip_host_skill_discovery=true,skill_search=false,skill_mcp_dependency_install=false,goals=false,view_image=false,image_generation=false,imagegenext=false,js_repl=false,js_repl_tools_only=false,code_mode=false,code_mode_host=false,code_mode_only=false,memories=false,memory_tool=false,external_agent_memory_import=false,standalone_web_search=false,web_search=false,web_search_cached=false,web_search_request=false,search_tool=false,tool_search=false,tool_search_always_defer_mcp_tools=false,remote_models=false,remote_control=false,remote_plugin=false,daemon_auto_start=false,request_permissions=false,request_permissions_tool=false,request_rule=false,tool_call_mcp_elicitation=false,default_mode_request_user_input=false,api_key_model_discovery=false}',
   ];
 }
@@ -196,6 +204,70 @@ function assertNoProjectConfig(roots: readonly string[]): void {
   }
 }
 
+function contextMetadata(version: string, model: string): { contextWindow: number; hash: string; expiresAt: number } {
+  try {
+    if (!process.env.HOME) throw new Error('HOME missing');
+    const cache = JSON.parse(readFileSync(join(process.env.HOME, '.codex/models_cache.json'), 'utf8')) as {
+      client_version?: string; fetched_at?: string; models?: { slug?: string; context_window?: number; effective_context_window_percent?: number }[];
+    };
+    const age = Date.now() - Date.parse(cache.fetched_at ?? '');
+    const entry = cache.models?.find(item => item.slug === model);
+    if (cache.client_version !== version.replace('codex-cli ', '') || !Number.isFinite(age) || age < -60000 || age > 86400000
+      || !entry || !Number.isSafeInteger(entry.context_window) || entry.context_window! <= 0
+      || !Number.isInteger(entry.effective_context_window_percent) || entry.effective_context_window_percent! < 1
+      || entry.effective_context_window_percent! > 100) throw new Error('unverified cache');
+    return { contextWindow: Math.floor(entry.context_window! * entry.effective_context_window_percent! / 100),
+      expiresAt: Date.parse(cache.fetched_at!) + 86400000,
+      hash: digest(JSON.stringify({ version: cache.client_version, model,
+        contextWindow: entry.context_window, effectivePercent: entry.effective_context_window_percent })) };
+  } catch { throw new KddError('Codex context window unavailable'); }
+}
+
+async function discoverCodexModel(executable: string, version: string, model: string, effort: string): Promise<{ contextWindow: number; hash: string; expiresAt: number }> {
+  const offered = await new Promise<{ model: string; supportedReasoningEfforts: { reasoningEffort: string }[] }[]>((resolveModels, rejectModels) => {
+    const child = spawn(executable, ['app-server'], { stdio: ['pipe', 'pipe', 'ignore'] });
+    const models: { model: string; supportedReasoningEfforts: { reasoningEffort: string }[] }[] = [];
+    let buffer = ''; let finished = false; let requestId = 2;
+    const timeout = setTimeout(() => finish(new KddError('Codex model discovery timed out')), 10000);
+    function finish(error?: Error): void {
+      if (finished) return;
+      finished = true; clearTimeout(timeout); child.kill();
+      if (error) rejectModels(error); else resolveModels(models);
+    }
+    child.on('error', () => finish(new KddError('Codex model discovery unavailable')));
+    child.on('close', () => finish(new KddError('Codex model discovery incomplete')));
+    child.stdin.on('error', () => finish(new KddError('Codex model discovery unavailable')));
+    child.stdout.on('data', (chunk: Buffer) => {
+      buffer += chunk.toString('utf8');
+      if (buffer.length > 4 * 1024 * 1024) return finish(new KddError('Codex model discovery oversized'));
+      for (let newline; !finished && (newline = buffer.indexOf('\n')) >= 0;) {
+        const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
+        try {
+          const reply = JSON.parse(line) as { id?: number; error?: unknown; result?: { data?: unknown; nextCursor?: unknown } };
+          if (reply.id === 1) {
+            if (reply.error) throw new Error('initialize failed');
+            child.stdin.write(`${JSON.stringify({ method: 'initialized', params: {} })}\n`);
+            child.stdin.write(`${JSON.stringify({ id: requestId, method: 'model/list', params: { includeHidden: true } })}\n`);
+          } else if (reply.id === requestId) {
+            if (reply.error || !Array.isArray(reply.result?.data)) throw new Error('model/list failed');
+            models.push(...reply.result.data as typeof models);
+            if (reply.result.nextCursor === null || reply.result.nextCursor === undefined) finish();
+            else if (typeof reply.result.nextCursor === 'string' && requestId < 12) {
+              child.stdin.write(`${JSON.stringify({ id: ++requestId, method: 'model/list', params: { cursor: reply.result.nextCursor, includeHidden: true } })}\n`);
+            } else throw new Error('model/list pagination failed');
+          }
+        } catch { finish(new KddError('Codex model discovery invalid')); }
+      }
+    });
+    child.stdin.write(`${JSON.stringify({ id: 1, method: 'initialize', params: { clientInfo: { name: 'kddkit', version: '1' } } })}\n`);
+  });
+  const chosen = offered.find(item => item.model === model);
+  if (!chosen) throw new KddError('unsupported Codex model');
+  if (!Array.isArray(chosen.supportedReasoningEfforts)
+    || !chosen.supportedReasoningEfforts.some(item => item.reasoningEffort === effort)) throw new KddError('unsupported Codex effort');
+  return contextMetadata(version, model);
+}
+
 export function assertVerifiedCodexPackage(packet: unknown): asserts packet is VerifiedCodexPackage {
   const binding = typeof packet === 'object' && packet !== null ? verifiedPackages.get(packet) : undefined;
   if (!binding) throw new KddError('unverified native package');
@@ -214,6 +286,7 @@ export async function preflightCodex(input: CodexPermissionInput): Promise<Verif
   const writableRoot = input.writableRoot ? directory(input.writableRoot) : undefined;
   if ((input.brokerConfigPath === undefined) !== (input.brokerEntryPath === undefined)) throw new KddError('incomplete native broker binding');
   const broker = input.brokerConfigPath === undefined ? undefined : codexBrokerBinding(input.brokerConfigPath, input.brokerEntryPath!);
+  const brokerTools = broker ? brokerOperationNames(broker) : undefined;
   const protectedPaths = [...new Set([...input.protectedPaths, controlDir,
     ...(broker ? [broker.configPath, broker.entryPath, dirname(broker.dbPath)] : [])].map(path => {
     if (!isAbsolute(path)) throw new KddError('native protected path must be absolute');
@@ -221,6 +294,8 @@ export async function preflightCodex(input: CodexPermissionInput): Promise<Verif
   }))];
   const model = input.model;
   if (typeof model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_.:-]*$/.test(model)) throw new KddError('unsupported Codex model identifier');
+  const effort = input.effort;
+  if (typeof effort !== 'string' || !/^[a-z]+$/.test(effort)) throw new KddError('unsupported Codex effort');
   if (!readableRoots.includes(cwd) || (writableRoot && writableRoot !== cwd)) throw new KddError('unsupported Codex workspace scope');
   const writableRoots = [scratchDir, ...(writableRoot ? [writableRoot] : [])];
   const overlaps = (a: string, b: string) => inside(a, b) || inside(b, a);
@@ -229,7 +304,7 @@ export async function preflightCodex(input: CodexPermissionInput): Promise<Verif
   assertNoProjectConfig([cwd]);
   if (process.platform !== 'darwin') throw new KddError('unsupported Codex host');
   const version = execFileSync(executable, ['--version'], { encoding: 'utf8' }).trim();
-  if (version !== 'codex-cli 0.157.0') throw new KddError('unsupported Codex version');
+  if (version !== 'codex-cli 0.159.0') throw new KddError('unsupported Codex version');
   const resolveGitMetadata = () => [...new Set(readableRoots.flatMap(root => [join(root, '.git'), ...['--absolute-git-dir', '--git-common-dir']
     .map(flag => realpathSync(execFileSync('/usr/bin/git', ['-C', root, 'rev-parse', '--path-format=absolute', flag], { encoding: 'utf8' }).trim()))]))];
   const gitMetadata = resolveGitMetadata();
@@ -241,9 +316,10 @@ export async function preflightCodex(input: CodexPermissionInput): Promise<Verif
   const catalog = closedCodexCatalog(model);
   const catalogPath = join(controlDir, `codex-catalog-${digest(catalog)}.json`);
   filesystem[catalogPath] = 'deny';
-  const argv = Object.freeze(fixedCodexArguments(cwd, model, fixedCodexConfig(filesystem, catalogPath, broker)));
+  const argv = Object.freeze(fixedCodexArguments(cwd, model, fixedCodexConfig(filesystem, catalogPath, broker, effort, brokerTools)));
   if (!process.env.HOME) throw new KddError('Codex home unavailable');
   const env = Object.freeze({ HOME: process.env.HOME, PATH: '/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin', TMPDIR: scratchDir, LANG: 'en_US.UTF-8' });
+  const metadata = await discoverCodexModel(executable, version, model, effort);
   return withNativeControllerLock(controlDir, async () => {
     assertWritableRoots(writableRoots);
     if (existsSync(catalogPath)) {
@@ -265,27 +341,36 @@ export async function preflightCodex(input: CodexPermissionInput): Promise<Verif
       return digest(JSON.stringify({ identities, argv, env, executable, version,
         gitPointers: gitMetadata.filter(path => lstatSync(path).isFile()).map(path => [path, digest(readFileSync(path))]),
         executableHash: digest(readFileSync(executable)), catalogHash: digest(readFileSync(catalogPath)),
-        broker: currentBroker, brokerEntryHash: broker ? digest(readFileSync(broker.entryPath)) : undefined,
+        broker: currentBroker, brokerTools: broker ? brokerOperationNames(broker) : undefined,
+        brokerEntryHash: broker ? digest(readFileSync(broker.entryPath)) : undefined,
         nodeHash: broker ? digest(readFileSync(broker.nodePath)) : undefined,
         runtimeHash: digest(readFileSync(fileURLToPath(import.meta.url))) }));
     };
     const stamp = snapshot();
     const evidence = await observeCodexNative(executable, false, model, broker);
-    if (!evidence.applicable || evidence.rawDiagnostic || evidence.observations.length !== (broker ? 158 : 129)
-      || evidence.executed !== evidence.observations.length) throw new KddError('Codex native enforcement unverified', { cause: {
-        expected: broker ? 158 : 129, attempted: evidence.attempted, executed: evidence.executed, applicable: evidence.applicable,
+    if (!evidence.applicable || evidence.rawDiagnostic || evidence.observations.length !== (broker ? 160 : 129)
+      || evidence.executed !== evidence.observations.length
+      || evidence.observations.some(o => o.firstRequestBytes > 131072)) throw new KddError('Codex native enforcement unverified', { cause: {
+        expected: broker ? 160 : 129, attempted: evidence.attempted, executed: evidence.executed, applicable: evidence.applicable,
         observations: evidence.observations.filter(o => o.failure).map(o => ({ caseId: o.caseId, mode: o.mode,
           outcome: o.outcome, executed: o.executed, timedOut: o.timedOut, providerError: !!o.providerError })),
         failedGuards: evidence.failures.filter(f => f.caseId).map(f => f.caseId),
       } });
     if (snapshot() !== stamp) throw new KddError('native package binding changed during preflight');
+    const contextWindow = metadata.contextWindow;
+    const boundStamp = digest(`${stamp}:${metadata.hash}`);
     const results = Object.freeze(evidence.observations.filter(result => !result.control).map(result => Object.freeze({
       caseId: `${result.mode}:${result.caseId}`, tool: result.tool, outcome: result.outcome,
       executed: result.executed, unchangedProtectedBytes: result.unchangedProtectedBytes,
+      firstRequestBytes: result.firstRequestBytes,
     })));
-    const packet = Object.freeze({ executable, version, cwd, controlDir, readableRoots: Object.freeze(readableRoots),
-      writableRoot, scratchDir, protectedPaths: Object.freeze(protectedPaths), argv, env, configHash: stamp, results });
-    verifiedPackages.set(packet, { stamp, snapshot });
+    const packet = Object.freeze({ executable, version, model, effort, contextWindow,
+      brokerConfigPath: broker?.configPath, brokerTools: Object.freeze([...(brokerTools ?? [])]), cwd, controlDir, readableRoots: Object.freeze(readableRoots),
+      writableRoot, scratchDir, protectedPaths: Object.freeze(protectedPaths), argv, env, configHash: boundStamp, results });
+    verifiedPackages.set(packet, { stamp: boundStamp, snapshot: () => {
+      if (Date.now() > metadata.expiresAt) throw new KddError('Codex context metadata expired');
+      return digest(`${snapshot()}:${metadata.hash}`);
+    } });
     return packet;
   });
 }

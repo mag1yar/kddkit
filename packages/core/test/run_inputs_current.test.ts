@@ -10,6 +10,27 @@ vi.mock('../src/codex_permissions.js',async importOriginal=>{
   return {...actual,assertVerifiedCodexPackage(packet:object){if(!proved.has(packet))throw new core.KddError('unverified native package');}};
 });
 afterEach(cleanupFixtures);
+it('marks a revoked pinned role stale while preserving its historical snapshot', () => {
+  const f=runInputFixture(p=>proved.add(p));
+  const issued=core.issueRunAuthority(f.handle,f.input),ref={projectId:f.projectId,authorityId:issued.authorityId};
+  const context=core.openRunContext(f.db,issued.token),saved=core.runInputSnapshot(f.handle,ref);
+  core.revokeRole(f.handle,f.input.role.roleId);
+  expect(core.checkRunInputs(f.handle,ref)).toMatchObject({status:'update_required',changes:[{reason:'role_changed'}]});
+  expect(()=>core.readRunContext(context)).toThrow();
+  expect(core.runInputSnapshot(f.handle,ref)).toEqual(saved);
+});
+it('keeps an issued run pinned when the role current pointer advances', () => {
+  const f=runInputFixture(p=>proved.add(p));
+  const issued=core.issueRunAuthority(f.handle,f.input),ref={projectId:f.projectId,authorityId:issued.authorityId};
+  const original=core.runInputSnapshot(f.handle,ref);
+  core.saveRoleRevision(f.handle,{roleId:f.input.role.roleId,expectedRevision:1,commandId:'next-role',definition:{
+    name:'Fixture',prompt:'A later revision.',runtime:'codex',model:'gpt-6-sol',effort:'high',access:'workspace-write',
+    operations:['get_context','submit_report','request_question'],skills:[],
+  }});
+  expect(core.checkRunInputs(f.handle,ref)).toEqual({status:'current',authorityId:issued.authorityId,inputHash:original.inputHash});
+  expect(core.runInputSnapshot(f.handle,ref)).toEqual(original);
+  expect(core.readRunContext(core.openRunContext(f.db,issued.token)).inputs.schemaVersion).toBe(2);
+});
 function scenario(){
   const f=ownedContextFixture(p=>proved.add(p));
   const rule=f.draft('rule','context rule'),accepted=core.writeMemory(f.handle,rule,f.proof(rule,'create','user'));

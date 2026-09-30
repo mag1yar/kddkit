@@ -9,6 +9,27 @@ import {
 import { KddError } from '../src/errors.js';
 
 describe('openDb', () => {
+  it('upgrades a populated v17 WAL without changing its rows and starts empty role tables', () => {
+    const p = join(mkdtempSync(join(tmpdir(), 'kdd-role-mig-')), 'board.db');
+    const old = new Database(p);
+    old.pragma('journal_mode = WAL'); old.pragma('wal_autocheckpoint = 0');
+    for (const sql of MIGRATIONS.slice(0, 17)) old.exec(sql);
+    old.pragma('user_version = 17');
+    old.prepare("INSERT INTO tasks(id,title,status,created_at,updated_at) VALUES(41,'retained','new',1,1)").run();
+    old.prepare("INSERT INTO comments(id,task_id,author,body,created_at) VALUES(7,41,'user','retained',1)").run();
+    const before = old.prepare('SELECT * FROM comments').all();
+    old.close();
+    const upgraded = openDb(p);
+    expect(upgraded.pragma('user_version', { simple: true })).toBe(18);
+    expect(upgraded.prepare('SELECT * FROM comments').all()).toEqual(before);
+    for (const table of ['role_profiles', 'role_revisions', 'role_skill_files']) {
+      expect(upgraded.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
+    }
+    upgraded.close();
+    const reopened = openDb(p);
+    expect(reopened.prepare('SELECT * FROM comments').all()).toEqual(before);
+    reopened.close();
+  });
   it('creates schema at user_version 1 with all tables', () => {
     const db = openDb(':memory:', 'C:/proj');
     const tables = db.prepare(

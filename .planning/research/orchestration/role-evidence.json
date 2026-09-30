@@ -1,0 +1,184 @@
+{
+  "measuredAtUtc": "2026-09-30T05:49:34.000Z",
+  "implementationCommit": "fbf486a8255a17d44e7a9c26b4bf890e30042ad7",
+  "scriptSha256": "0f31b1f183e053f228dd236e99d9b76f457955f390dcc040cfbd42613597fdf2",
+  "postMeasurementVerification": {
+    "commit": "b51ff451b43aae6d3aad9e8c95dc7b45372f8238",
+    "change": "Restore the historical v18 literal; evaluated SQL and all other generated bundle bytes are unchanged.",
+    "migrationSqlUnchanged": true,
+    "migrationSqlSha256": "cd21786aae95cfa7796f51c8910ab374e147667b8e740c5c4bde3b45fe5f8334",
+    "equivalentGeneratedArtifacts": [
+      "packages/core/dist/index.js",
+      "packages/mcp/dist/main.js",
+      "packages/mcp/dist/run_main.js",
+      "integrations/codex-plugin/runtime/core.js",
+      "integrations/codex-plugin/runtime/mcp.js"
+    ],
+    "testCommand": "pnpm test --concurrency=1 -- --maxWorkers=2",
+    "tests": {
+      "core": 633,
+      "mcp": 80,
+      "cli": 215,
+      "ui": 212,
+      "total": 1140
+    },
+    "build": true,
+    "typecheck": true,
+    "codexPluginSmoke": true,
+    "runtimeSync": true,
+    "review": {
+      "specOpenFindings": 0,
+      "standardsOpenFindings": 0
+    }
+  },
+  "version": "codex-cli 0.159.0",
+  "model": "gpt-6-sol",
+  "effort": "high",
+  "modes": [
+    {
+      "mode": "workspace-write",
+      "manifestHash": "c972380f9ba889ef8ab2e0cde77890d4904eaeb9f3c204e7e6681e4df1e453b3",
+      "promptHash": "ca6a3b616c86824a9588068e7612943101a11f6daa41a739f1b54ae77c5a37b1",
+      "configHash": "bf9779ad427dd9dcf9bb80b6134a4d82bffede56985bffa918d265c854074764",
+      "executableHash": "e89718aa1969bfc4a471277bdc4679a3a3529293de0a309909822dfd67ddb77a",
+      "observations": 155,
+      "maxFirstRequestBytes": 22441,
+      "runs": [
+        {
+          "mode": "workspace-write",
+          "repetition": 1,
+          "code": 0,
+          "timedOut": false,
+          "eventCount": 26,
+          "firstReadEvent": 13,
+          "contextCalled": true,
+          "alwaysObserved": true,
+          "availableAbsentBeforeRead": true,
+          "availableObservedAfterRead": true,
+          "availableDecodedByModel": true,
+          "resourceHashesObserved": {
+            "available/SKILL.md": true,
+            "available/references/detail.md": true,
+            "available/scripts/check.sh": true,
+            "available/assets/payload.bin": true
+          }
+        },
+        {
+          "mode": "workspace-write",
+          "repetition": 2,
+          "code": 0,
+          "timedOut": false,
+          "eventCount": 27,
+          "firstReadEvent": 14,
+          "contextCalled": true,
+          "alwaysObserved": true,
+          "availableAbsentBeforeRead": true,
+          "availableObservedAfterRead": true,
+          "availableDecodedByModel": true,
+          "resourceHashesObserved": {
+            "available/SKILL.md": true,
+            "available/references/detail.md": true,
+            "available/scripts/check.sh": true,
+            "available/assets/payload.bin": true
+          }
+        },
+        {
+          "mode": "workspace-write",
+          "repetition": 3,
+          "code": 0,
+          "timedOut": false,
+          "eventCount": 27,
+          "firstReadEvent": 14,
+          "contextCalled": true,
+          "alwaysObserved": true,
+          "availableAbsentBeforeRead": true,
+          "availableObservedAfterRead": true,
+          "availableDecodedByModel": true,
+          "resourceHashesObserved": {
+            "available/SKILL.md": true,
+            "available/references/detail.md": true,
+            "available/scripts/check.sh": true,
+            "available/assets/payload.bin": true
+          }
+        }
+      ]
+    },
+    {
+      "mode": "read",
+      "manifestHash": "c972380f9ba889ef8ab2e0cde77890d4904eaeb9f3c204e7e6681e4df1e453b3",
+      "promptHash": "d281b1837abfd8ea4261880eb4f50a66bc7189d8a617bee52b5a6edd64ff0a28",
+      "configHash": "aa1446a11b65a2408d618755ae086b44b485adefaf81e259a672a092a5ddaeb7",
+      "executableHash": "e89718aa1969bfc4a471277bdc4679a3a3529293de0a309909822dfd67ddb77a",
+      "observations": 155,
+      "maxFirstRequestBytes": 22441,
+      "runs": [
+        {
+          "mode": "read",
+          "repetition": 1,
+          "code": 0,
+          "timedOut": false,
+          "eventCount": 25,
+          "firstReadEvent": 13,
+          "contextCalled": true,
+          "alwaysObserved": true,
+          "availableAbsentBeforeRead": true,
+          "availableObservedAfterRead": true,
+          "availableDecodedByModel": true,
+          "resourceHashesObserved": {
+            "available/SKILL.md": true,
+            "available/references/detail.md": true,
+            "available/scripts/check.sh": true,
+            "available/assets/payload.bin": true
+          }
+        },
+        {
+          "mode": "read",
+          "repetition": 2,
+          "code": 0,
+          "timedOut": false,
+          "eventCount": 25,
+          "firstReadEvent": 13,
+          "contextCalled": true,
+          "alwaysObserved": true,
+          "availableAbsentBeforeRead": true,
+          "availableObservedAfterRead": true,
+          "availableDecodedByModel": true,
+          "resourceHashesObserved": {
+            "available/SKILL.md": true,
+            "available/references/detail.md": true,
+            "available/scripts/check.sh": true,
+            "available/assets/payload.bin": true
+          }
+        },
+        {
+          "mode": "read",
+          "repetition": 3,
+          "code": 0,
+          "timedOut": false,
+          "eventCount": 26,
+          "firstReadEvent": 13,
+          "contextCalled": true,
+          "alwaysObserved": true,
+          "availableAbsentBeforeRead": true,
+          "availableObservedAfterRead": true,
+          "availableDecodedByModel": true,
+          "resourceHashesObserved": {
+            "available/SKILL.md": true,
+            "available/references/detail.md": true,
+            "available/scripts/check.sh": true,
+            "available/assets/payload.bin": true
+          }
+        }
+      ]
+    }
+  ],
+  "failures": [],
+  "hashes": {
+    "always/SKILL.md": "a3a2473848f0cc6b215cd689ad88a2fbbb5a9306083793833bbbd6b428878bfd",
+    "available/SKILL.md": "f7de4ceb661b4d0109613341829c8a57b8f0bd348d8bfeec53a1e8ccd62a5ca0",
+    "available/references/detail.md": "4191e95c4b6dd33cb1ac0934101092dc8ad7f57d3eeb04dbf12bce361ea3bb65",
+    "available/scripts/check.sh": "5699221fd859789d89341d2000b01bdaa1adc3930255a8109af0df8d3ad28b97",
+    "available/assets/payload.bin": "40d2af4d7ac41bb624d396eabbe5f30b8b3b70f451f7ad251cd193e02b7b9338"
+  },
+  "passed": true
+}

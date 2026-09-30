@@ -14,7 +14,7 @@ import { StdioClientTransport } from '../../../packages/mcp/node_modules/@modelc
 const args = process.argv.slice(2);
 assert.ok(args.every(arg => ['--calibrate', '--context-only'].includes(arg)) && new Set(args).size === args.length);
 const calibrate = args.includes('--calibrate');
-const operations = args.includes('--context-only') ? ['get_context'] : ['get_context', 'submit_report', 'request_question'];
+const operations = args.includes('--context-only') ? ['get_context'] : ['get_context', 'submit_report', 'request_question', 'read_skill_file'];
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'kdd-native-broker-'))), saved = { ...process.env };
 let db;
 try {
@@ -45,10 +45,17 @@ try {
   const entryPath = realpathSync(fileURLToPath(new URL('../../../packages/mcp/dist/run_main.js', import.meta.url)));
   const executable = process.env.KDD_CODEX_EXECUTABLE || '/opt/homebrew/bin/codex';
   const repositories = [{ repoId, checkoutPath: workspace, write: true }, { repoId: backendId, checkoutPath: backend, write: false }];
-  const nativeInput = { executable, model: 'fixture-codex', cwd: workspace, readableRoots: [workspace, backend],
+  const nativeInput = { executable, model: 'gpt-6-sol', effort: 'high', cwd: workspace, readableRoots: [workspace, backend],
     writableRoot: workspace, scratchDir: scratch, controlDir, protectedPaths: [source, home, clone] };
+  const skillRoot=join(root,'skills'),probeSkill=join(skillRoot,'probe');mkdirSync(probeSkill,{recursive:true});
+  writeFileSync(join(probeSkill,'SKILL.md'),'# Pinned Probe\nUnique native skill marker.\n');
+  const role=core.saveRoleRevision(controller,{expectedRevision:0,commandId:'native-probe-role',definition:{
+    name:'Probe',prompt:'Use the pinned probe skill.',runtime:'codex',model:'gpt-6-sol',effort:'high',access:'workspace-write',
+    operations:['get_context','submit_report','request_question','read_skill_file'],
+    skills:operations.includes('read_skill_file')?[{name:'Probe',mode:'Available',description:'Pinned probe',source:{kind:'local',root:skillRoot,path:'probe'}}]:[],
+  }});
   const input = { taskId: task.id, workItemId: work.ref.workItemId, runId: 'fixture-run', expectedGeneration: 0,
-    expiresAt: core.now() + 7200, operations, repositories, ownership:owner.ref };
+    expiresAt: core.now() + 7200, operations, repositories, ownership:owner.ref, role };
   const memoryChecks=[];
   let sibling;
   const draft=taskId=>({commandId:`fixture-memory-${taskId}`,entryId:null,expectedRevision:0,scope:{projectId:taskRef.projectId,taskId},applicability:{repoId:null,commit:null},kind:'rule',status:'active',title:'Fixture policy',body:'Preserve scoped memory',source:{kind:'user',ref:'fixture:explicit instruction'},author:{type:'user',id:null}});

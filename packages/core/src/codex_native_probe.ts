@@ -17,7 +17,7 @@ import { assertWritableRoots, spawnCheckedNative, withNativeControllerLock, fixe
 interface NativeTool { name?: string; type: string; namespace?: string; tools?: NativeTool[] }
 interface ProbeInput { type: string; call_id?: string; tools?: NativeTool[]; output?: unknown }
 interface NativeCase {
-  id: string; tool: 'exec_command' | 'apply_patch' | 'get_context' | 'submit_report' | 'request_question' | 'list_mcp_resources' | 'list_mcp_resource_templates' | 'read_mcp_resource'; command?: string; patch?: string;
+  id: string; tool: 'exec_command' | 'apply_patch' | 'get_context' | 'submit_report' | 'request_question' | 'read_skill_file' | 'list_mcp_resources' | 'list_mcp_resource_templates' | 'read_mcp_resource'; command?: string; patch?: string;
   payload?: Record<string, unknown>; revoke?: boolean; unavailable?: boolean;
   controlRoot?: string; phase?: 'start' | 'resume'; failureCode?: number; matchedControl?: NativeObservation;
 }
@@ -25,12 +25,18 @@ export interface NativeObservation extends NativeProbeResult {
   mode: 'readonly' | 'workspace'; control: boolean; phase: 'start' | 'resume';
   exitCode: number | null; output: unknown; timedOut: boolean; providerError?: string;
   requests: unknown[]; tools: NativeTool[]; permissionHash: string; configHash: string;
+  firstRequestBytes: number;
   challengeHash?: string; protectedHashes: { path: string; before: string; after: string }[];
   diagnostic?: string; failure?: string; matchedControl?: string;
 }
 interface NativeFailure { caseId?: string; mode?: string; reason?: string; failure?: string }
 interface NativeRefusal { caseId: string; phase: 'start' | 'resume'; outcome: 'denied'; executed: false }
 interface NetworkControl { caseId: string; role: string; exitCode: number; commandHash: string; output: string }
+export function brokerOperationNames(binding: CodexBrokerBinding): readonly RunOperation[] {
+  const db = new Database(binding.dbPath, { fileMustExist: true });
+  try { return runOperations(openRunContext(db, JSON.parse(readFileSync(binding.configPath, 'utf8')).token)); }
+  finally { db.close(); }
+}
 export interface NativeEvidence {
   version: string; model: string; executableHash: string; scriptHash: string; guardHash: string;
   applicable: boolean; rawDiagnostic: boolean; preflight: NativeRefusal[]; networkControls: NetworkControl[];
@@ -42,7 +48,7 @@ export interface NativeEvidence {
 export async function observeCodexNative(executablePath: string, rawDiagnostic = false, model = 'fixture-codex', broker?: CodexBrokerBinding, brokerOnly = false): Promise<NativeEvidence> {
   const executable = realpathSync(executablePath);
   const version = execFileSync(executable, ['--version'], { encoding: 'utf8' }).trim();
-  assert.equal(version, 'codex-cli 0.157.0');
+  assert.equal(version, 'codex-cli 0.159.0');
   assert.equal(process.platform, 'darwin');
   const executableHash = createHash('sha256').update(readFileSync(executable)).digest('hex');
   const scriptHash = createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex');
@@ -55,10 +61,31 @@ export async function observeCodexNative(executablePath: string, rawDiagnostic =
   let tcpServer: HttpServer | undefined; let unixServer: SocketServer | undefined;
   let brokerDb: Database.Database | undefined;
   let operations: readonly RunOperation[] = [];
+  let brokerSkill = 'Probe';
+  const brokerPayload = (operation: RunOperation, body: string) => {
+    if (operation === 'get_context') return {};
+    if (operation === 'read_skill_file') return { skill: brokerSkill, path: 'SKILL.md', offset: 0 };
+    return { body };
+  };
   try {
   if (broker) {
+    const original = new Database(broker.dbPath, { fileMustExist: true });
+    const probeDbPath = join(root, 'broker.db');
+    try { await original.backup(probeDbPath); }
+    finally { original.close(); }
+    const probeConfigPath = join(root, 'broker.json');
+    writeFileSync(probeConfigPath, JSON.stringify({ dbPath: probeDbPath,
+      token: JSON.parse(readFileSync(broker.configPath, 'utf8')).token }), { mode: 0o600 });
+    broker = { ...broker, dbPath: probeDbPath, configPath: probeConfigPath };
     brokerDb = new Database(broker.dbPath, { fileMustExist: true });
-    operations = runOperations(openRunContext(brokerDb, JSON.parse(readFileSync(broker.configPath, 'utf8')).token));
+    const token = JSON.parse(readFileSync(broker.configPath, 'utf8')).token as string;
+    operations = runOperations(openRunContext(brokerDb, token));
+    const pin = brokerDb.prepare(`SELECT json_extract(grant_json,'$.role.roleId') role_id,
+      json_extract(grant_json,'$.role.revision') revision FROM run_authorities WHERE token_hash=?`)
+      .get(createHash('sha256').update(token).digest('hex')) as { role_id: string; revision: number } | undefined;
+    const selected = pin && brokerDb.prepare(`SELECT skill_name FROM role_skill_files WHERE role_id=? AND revision=?
+      AND relative_path='SKILL.md' ORDER BY skill_name LIMIT 1`).get(pin.role_id, pin.revision) as { skill_name: string } | undefined;
+    if (selected) brokerSkill = selected.skill_name;
   }
   const workspace = join(root, 'workspace');
   const scratch = join(root, 'scratch');
@@ -125,6 +152,7 @@ export async function observeCodexNative(executablePath: string, rawDiagnostic =
     let output: unknown;
     let registry: NativeTool[] | undefined;
     let providerError: string | undefined;
+    let firstRequestBytes = 0;
     const requests: unknown[] = [];
     const server = createServer(async (req, res) => {
       try {
@@ -137,11 +165,12 @@ export async function observeCodexNative(executablePath: string, rawDiagnostic =
           bytes = zlib.zstdDecompressSync(bytes);
         }
         const body = JSON.parse(bytes.toString()) as { tools?: NativeTool[]; input?: ProbeInput[] };
+        if (calls === 0) firstRequestBytes = bytes.length;
         requests.push({ path: req.url, keys: Object.keys(body), tools: body.tools?.map(t => ({ type: t.type, name: t.name })), input: body.input?.map(i => ({ type: i.type, call_id: i.call_id, keys: i.type === 'additional_tools' ? Object.keys(i) : undefined })) });
         const callId = 'probe_call';
         if (calls++ === 0) {
           registry = body.tools ?? body.input?.find(item => item.type === 'additional_tools')?.tools;
-          const mcp = ['get_context', 'submit_report', 'request_question'].includes(testCase.tool);
+          const mcp = ['get_context', 'submit_report', 'request_question', 'read_skill_file'].includes(testCase.tool);
           let tool = findTool(registry, testCase.tool);
           if (testCase.unavailable) {
             if (tool) throw new Error(`ungranted native tool advertised: ${testCase.tool}`);
@@ -169,7 +198,7 @@ export async function observeCodexNative(executablePath: string, rawDiagnostic =
               if (!granted) throw new Error(`native tool missing: ${operation}`);
               const second = { type: 'function_call', id: `probe_${operation}`, call_id: `probe_${operation}`, name: granted.name,
                 ...(granted.namespace ? { namespace: granted.namespace } : {}),
-                arguments: JSON.stringify(operation === 'get_context' ? {} : { body: 'late proposal' }) };
+                arguments: JSON.stringify(brokerPayload(operation, 'late proposal')) };
               items.push(second); res.write(sse('response.output_item.done', { item: second }));
             }
           }
@@ -199,7 +228,7 @@ export async function observeCodexNative(executablePath: string, rawDiagnostic =
     // Positive controls are separate fixture policies, never candidates for a managed run.
     if (testCase.controlRoot) filesystem[testCase.controlRoot] = 'write';
     const config = [
-      ...fixedCodexConfig(filesystem, catalogPath, broker),
+      ...fixedCodexConfig(filesystem, catalogPath, broker, undefined, broker ? operations : undefined),
       // Only the model response service changes; native tools use the shared production policy.
       `openai_base_url=${JSON.stringify(`http://127.0.0.1:${port}/v1`)}`,
     ];
@@ -226,6 +255,7 @@ export async function observeCodexNative(executablePath: string, rawDiagnostic =
       const observation: NativeObservation = { tools: [], protectedHashes: [], outcome: 'inconclusive', unchangedProtectedBytes: true, caseId: testCase.id, mode: writable ? 'workspace' : 'readonly', tool: testCase.tool, exitCode,
         control: !!testCase.controlRoot, phase: testCase.phase ?? 'start',
         executed: output !== undefined, timedOut, providerError, output, requests,
+        firstRequestBytes,
         permissionHash: createHash('sha256').update(JSON.stringify({ executableHash, version, model, filesystem, config })).digest('hex'),
         configHash: createHash('sha256').update(JSON.stringify({ executableHash, version, filesystem, config })).digest('hex') };
       if (output === undefined) observation.diagnostic = (stderr + stdout).slice(-3000);
@@ -259,7 +289,8 @@ export async function observeCodexNative(executablePath: string, rawDiagnostic =
   }
   const protectedPaths = [backend, source, sibling, protectedDir, commonDir, join(workspace, '.git'), join(workspace, '.codex'),
     ...(broker ? [broker.configPath, broker.entryPath] : [])];
-  const storeTables = ['tasks', 'criteria', 'comments', 'task_links', 'files', 'tracks', 'project', 'repositories', 'repository_bindings', 'decisions', 'search_index', 'managed_task_policy', 'run_authorities'];
+  const storeTables = ['tasks', 'criteria', 'comments', 'task_links', 'files', 'tracks', 'project', 'repositories', 'repository_bindings',
+    'decisions', 'search_index', 'managed_task_policy', 'run_authorities', 'role_profiles', 'role_revisions', 'role_skill_files'];
   const storeSnapshot = (revoking = false) => brokerDb ? digest(JSON.stringify(storeTables.filter(table => !revoking || table !== 'run_authorities')
     .map(table => brokerDb!.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()))) : 'none';
   async function check(testCase: NativeCase, writable: boolean, expected: NativeProbeResult['outcome'], effect?: () => void) {
@@ -278,9 +309,9 @@ export async function observeCodexNative(executablePath: string, rawDiagnostic =
     else if (denied) observation.outcome = 'denied';
     else if (testCase.unavailable && observation.executed && text.includes(testCase.tool)
       && /unsupported|unknown|unrecognized|not found/i.test(text)) observation.outcome = 'denied';
-    else if (['get_context', 'submit_report', 'request_question'].includes(testCase.tool)) {
+    else if (['get_context', 'submit_report', 'request_question', 'read_skill_file'].includes(testCase.tool)) {
       if (text.includes('run operation denied') || /["\\]isError["\\]*\s*:\s*true/.test(text)) observation.outcome = 'denied';
-      else if (text.includes('taskId') || text.includes('eventId')) observation.outcome = 'allowed';
+      else if (text.includes('taskId') || text.includes('eventId') || text.includes('contentBase64')) observation.outcome = 'allowed';
     }
     else if (/mcp_resource/.test(testCase.tool) && observation.executed) {
       if (/resources\/(?:read|list|templates\/list) failed:/.test(text) && /unknown|not found|not support|Method not found|capability/i.test(text)) observation.outcome = 'denied';
@@ -448,12 +479,13 @@ export async function observeCodexNative(executablePath: string, rawDiagnostic =
             await check({ id: `broker-${tool}-foreign`, tool, payload: { server: 'foreign' } }, writable, 'denied');
           }
           for (const server of ['kdd_run', 'foreign']) await check({ id: `broker-resource-read-${server}`, tool: 'read_mcp_resource', payload: { server, uri: `file://${broker.configPath}` } }, writable, 'denied');
-          for (const [operation, id] of [['get_context', 'context'], ['submit_report', 'report'], ['request_question', 'question']] as const) {
+          for (const [operation, id] of [['get_context', 'context'], ['submit_report', 'report'],
+            ['request_question', 'question'], ['read_skill_file', 'skill']] as const) {
             const granted = operations.includes(operation);
             const before = brokerDb!.prepare('SELECT COUNT(*) n FROM events').get() as { n: number };
             await check({ id: `broker-${id}`, tool: operation, unavailable: !granted,
-              payload: operation === 'get_context' ? {} : { body: 'native broker proof' } }, writable, granted ? 'allowed' : 'denied', () => {
-              const writes = granted && operation !== 'get_context';
+              payload: brokerPayload(operation, 'native broker proof') }, writable, granted ? 'allowed' : 'denied', () => {
+              const writes = granted && operation !== 'get_context' && operation !== 'read_skill_file';
               assert.deepEqual(brokerDb!.prepare('SELECT COUNT(*) n FROM events').get(), { n: before.n + (writes ? 1 : 0) });
               if (writes) {
                 const event = brokerDb!.prepare('SELECT actor_type,action,detail FROM events ORDER BY id DESC LIMIT 1').get() as { actor_type: string; action: string; detail: string };
@@ -472,7 +504,7 @@ export async function observeCodexNative(executablePath: string, rawDiagnostic =
         }
         const eventsBeforeRevoke = brokerDb!.prepare('SELECT COUNT(*) n FROM events').get() as { n: number };
         await check({ id: 'broker-live-revoke-operations', tool: operations[0], revoke: true,
-          payload: operations[0] === 'get_context' ? {} : { body: 'late proposal' } }, true, 'denied', () => {
+          payload: brokerPayload(operations[0], 'late proposal') }, true, 'denied', () => {
           assert.deepEqual(brokerDb!.prepare('SELECT COUNT(*) n FROM events').get(), { n: eventsBeforeRevoke.n + 1 });
         });
       }

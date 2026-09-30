@@ -9,7 +9,8 @@ import { now } from './db.js';
 import { KddError } from './errors.js';
 import { appendEvent, mustGetTask } from './ops.js';
 import { projectOf, repositoriesOf, bindingsOf, canonicalCommonDir } from './project_store.js';
-import { assertVerifiedCodexPackage, inside, type VerifiedCodexPackage } from './codex_permissions.js';
+import { assertVerifiedCodexPackage, inside, nativeAccess, type VerifiedCodexPackage } from './codex_permissions.js';
+import { roleActiveDb, roleRevisionDb, validSkillPath, type RoleRef } from './roles.js';
 import { CAPS } from './caps.js';
 import { redact } from './agent_events.js';
 import { selectMemory, type MemoryScope, type MemoryApplicability, type MemorySource, type MemoryAuthor,
@@ -18,15 +19,18 @@ import { queryMemoryDb } from './memory_query.js';
 import { buildRunInputSnapshot, persistRunInputSnapshotDb, readRunInputSnapshotDb, runContextWireBytes, type RunInputGrant, type RunInputOptions, type RunInputSections } from './run_inputs.js';
 import type { ResultObservers } from './execution_results.js';
 import { assertRunInputsCurrentDb } from './run_inputs_current.js';
+import { assertRolePromptBudget, rolePromptDb } from './role_prompt.js';
 
-export type RunOperation = 'get_context' | 'submit_report' | 'request_question';
-const operations: readonly RunOperation[] = ['get_context', 'submit_report', 'request_question'];
+export type RunOperation = 'get_context' | 'submit_report' | 'request_question' | 'read_skill_file';
+const operations: readonly RunOperation[] = ['get_context', 'submit_report', 'request_question', 'read_skill_file'];
 export interface RunContext { readonly kind: 'run' }
 export interface IssueRunInput {
   taskId: number; workItemId: string; runId: string; expectedGeneration: number; expiresAt: number;
+  role: RoleRef;
   operations: readonly RunOperation[];
   repositories: readonly { repoId: string; checkoutPath: string; write: boolean }[];
   native: VerifiedCodexPackage; ownership?: OwnershipRef; context?: RunInputOptions; contextObservers?: ResultObservers;
+  probeBootstrap?: true;
 }
 export interface IssuedRunAuthority { authorityId: string; generation: number; token: string }
 type Grant = RunInputGrant;
@@ -107,10 +111,12 @@ function privateStore(db: Database.Database, scope: Grant['repositories'], nativ
 }
 export function issueRunAuthority(handle: ControllerHandle, supplied: IssueRunInput): IssuedRunAuthority {
   const db = controllerDb(handle);
-  shape(supplied,['taskId','workItemId','runId','expectedGeneration','expiresAt','operations','repositories','native'],['ownership','context','contextObservers']);
+  if (!supplied?.role) throw new KddError('managed role required');
+  shape(supplied,['taskId','workItemId','runId','expectedGeneration','expiresAt','operations','repositories','native','role'],['ownership','context','contextObservers','probeBootstrap']);
   if(supplied.contextObservers!==undefined)shape(supplied.contextObservers,[],['observe']);
   const {native,contextObservers,...data}=supplied;
   const input:IssueRunInput={...structuredClone(data),native,contextObservers:contextObservers?{observe:contextObservers.observe}:undefined};
+  shape(input.role,['roleId','revision'],['hash','manifestHash']);
   return db.transaction(() => {
     if (!Number.isSafeInteger(input.taskId) || input.taskId < 1
       || typeof input.workItemId !== 'string' || !input.workItemId.trim()
@@ -124,15 +130,40 @@ export function issueRunAuthority(handle: ControllerHandle, supplied: IssueRunIn
       .get(input.taskId, input.workItemId) as { generation: number }).generation;
     if (generation !== input.expectedGeneration) throw new KddError('run authority generation fence changed');
     assertVerifiedCodexPackage(input.native);
+    const role = roleRevisionDb(db, input.role);
+    const suppliedReceipt = input.role as RoleRef & { hash?: string; manifestHash?: string };
+    if (suppliedReceipt.hash !== undefined && suppliedReceipt.hash !== role.receipt.hash
+      || suppliedReceipt.manifestHash !== undefined && suppliedReceipt.manifestHash !== role.receipt.manifestHash)
+      throw new KddError('run role receipt mismatch');
+    if (!roleActiveDb(db, input.role.roleId)) throw new KddError('run role revoked');
+    if (role.definition.model !== native.model || role.definition.effort !== native.effort
+      || role.definition.access !== nativeAccess(native)) throw new KddError('run role/native mismatch');
+    if (input.operations.some(operation => !role.definition.operations.includes(operation))) throw new KddError('run operation outside role');
+    if (input.operations.includes('read_skill_file') && role.definition.skills.length === 0)
+      throw new KddError('run skill operation requires selected skills');
+    if (role.definition.skills.length && !input.operations.includes('read_skill_file'))
+      throw new KddError('selected skill requires read operation');
     const repositories = repositoryScope(db, input.repositories, input.native);
     modeledOwnership(db, input, repositories);
     privateStore(db, repositories, input.native);
+    // A brokerless token is only for bootstrapping a read-only native probe; it cannot launch a role.
+    const bootstrap = input.probeBootstrap === true && input.expectedGeneration === 0
+      && role.definition.access === 'read' && input.ownership === undefined
+      && JSON.stringify(input.operations) === JSON.stringify(['get_context', 'read_skill_file'])
+      && native.brokerConfigPath === undefined && native.brokerTools.length === 0;
+    if (input.probeBootstrap !== undefined && !bootstrap) throw new KddError('invalid native probe bootstrap');
+    if (!bootstrap && (!native.brokerConfigPath
+      || JSON.stringify(native.brokerTools) !== JSON.stringify(input.operations)))
+      throw new KddError('native broker operations differ from grant');
     const grant: Grant = { projectId: projectOf(db).project_id, taskId: input.taskId,
+      role: { roleId: input.role.roleId, revision: input.role.revision },
       workItemId: input.workItemId, runId: input.runId, generation: generation + 1,
       operations: [...input.operations], repositories, ...(input.ownership ? { ownership: { ...input.ownership } } : {}),
-      native: { readableRoots: [...input.native.readableRoots], writableRoot: input.native.writableRoot, scratchDir: input.native.scratchDir, configHash: input.native.configHash } };
+      native: { readableRoots: [...input.native.readableRoots], writableRoot: input.native.writableRoot, scratchDir: input.native.scratchDir,
+        configHash: input.native.configHash, contextWindow: input.native.contextWindow } };
     const token = randomBytes(32).toString('hex'), authorityId = randomBytes(16).toString('hex');
     const snapshot=buildRunInputSnapshot(db,grant,authorityId,input.context,input.contextObservers,[native.controlDir,...native.protectedPaths]);
+    assertRolePromptBudget(rolePromptDb(db, snapshot), native);
     assertVerifiedCodexPackage(native);
     repositoryScope(db,input.repositories,native);modeledOwnership(db,input,repositories);privateStore(db,repositories,native);
     mark(db,input.taskId);
@@ -215,7 +246,7 @@ export function openRunContext(db: Database.Database, token: string): RunContext
     const { row, grant } = lookup(db, token);
     const context = Object.freeze({ kind: 'run' as const });
     contexts.set(context, { db, token, authorityId: row.authority_id, grant }); return context;
-  }).immediate();
+  }).deferred();
 }
 
 export interface RunContextSnapshot {
@@ -237,12 +268,34 @@ function live(context: RunContext, operation?: RunOperation) {
   return { ...stored, grant };
 }
 export function runOperations(context: RunContext): readonly RunOperation[] {
-  return registered(context).db.transaction(() => Object.freeze([...live(context).grant.operations])).immediate();
+  return registered(context).db.transaction(() => Object.freeze([...live(context).grant.operations])).deferred();
 }
 export function readRunContext(context: RunContext): RunContextSnapshot {
   return registered(context).db.transaction(() => {
     const { db, authorityId } = live(context, 'get_context');
     return readRunInputSnapshotDb(db,authorityId).response;
+  }).immediate();
+}
+export function readSkillFile(context: RunContext, input: { skill: string; path: string; offset: number }): {
+  contentBase64: string; offset: number; length: number; size: number; sha256: string; mime: string;
+} {
+  return registered(context).db.transaction(() => {
+    const { db, authorityId } = live(context, 'read_skill_file');
+    try {
+      shape(input, ['skill', 'path', 'offset']);
+      if (typeof input.skill !== 'string' || !input.skill || !validSkillPath(input.path)
+        || !Number.isSafeInteger(input.offset) || input.offset < 0) throw denied();
+      const snapshot = readRunInputSnapshotDb(db, authorityId), pin = snapshot.response.inputs;
+      if (pin.schemaVersion !== 2 || !pin.role.skills.some(skill => skill.name === input.skill)) throw denied();
+      const file = db.prepare(`SELECT bytes,sha256,mime FROM role_skill_files WHERE role_id=? AND revision=?
+        AND skill_name=? AND relative_path=?`).get(pin.role.roleId, pin.role.revision, input.skill, input.path) as
+        { bytes: Buffer; sha256: string; mime: string } | undefined;
+      if (!file || createHash('sha256').update(file.bytes).digest('hex') !== file.sha256
+        || input.offset > file.bytes.length || (file.bytes.length > 0 && input.offset === file.bytes.length)) throw denied();
+      const chunk = file.bytes.subarray(input.offset, input.offset + 32768);
+      return { contentBase64: chunk.toString('base64'), offset: input.offset, length: chunk.length,
+        size: file.bytes.length, sha256: file.sha256, mime: file.mime };
+    } catch { throw new KddError('skill file denied'); }
   }).immediate();
 }
 export interface RunMemoryReadInput { entryId?: string; revision?: number; candidates?: boolean; withdrawn?: boolean }

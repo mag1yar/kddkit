@@ -6,6 +6,8 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as probe from '../src/codex_native_probe.js';
 import * as core from '../src/index.js';
 import { codexBrokerBinding, fixedCodexConfig } from '../src/codex_permissions.js';
+import { runInputFixture } from './run_inputs_fixture.js';
+import { cleanupFixtures } from './execution_fixture.js';
 
 const api = core;
 let root: string; let workspace: string; let scratch: string; let controlDir: string;
@@ -15,30 +17,153 @@ beforeEach(() => {
   for (const path of [workspace, scratch, controlDir]) mkdirSync(path);
   writeFileSync(join(root, 'foreign'), 'foreign');
 });
-afterEach(() => { vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { cleanupFixtures(); vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); });
 const input = (phase: 'start' | 'resume') => ({
   controlDir, writableRoots: [workspace, scratch], executable: process.execPath,
   args: ['-e', 'require("node:fs").writeFileSync("started","yes")'],
   cwd: workspace, env: { PATH: process.env.PATH ?? '' }, phase,
 });
+function fixtureModelExecutable(path: string): void {
+  writeFileSync(path, `#!/usr/bin/env node
+if (process.argv[2] === '--version') { console.log('codex-cli 0.159.0'); process.exit(0); }
+const reader = require('node:readline').createInterface({ input: process.stdin });
+reader.on('line', line => { const request = JSON.parse(line);
+  if (request.id === 1) console.log(JSON.stringify({ id: 1, result: {} }));
+  if (request.method === 'model/list') console.log(JSON.stringify({ id: request.id, result: {
+    data: [{ model: 'fixture-codex', supportedReasoningEfforts: [{ reasoningEffort: 'high' }] }], nextCursor: null } }));
+});
+`, { mode: 0o755 });
+  mkdirSync(join(root, '.codex'));
+  writeFileSync(join(root, '.codex/models_cache.json'), JSON.stringify({ client_version: '0.159.0',
+    fetched_at: new Date().toISOString(), models: [{ slug: 'fixture-codex', context_window: 100000,
+      effective_context_window_percent: 95 }] }));
+}
 
 it('rejects fabricated native proof instead of accepting serialized evidence', () => {
   expect(() => api.assertVerifiedCodexPackage({})).toThrow(/unverified/);
   expect(() => api.assertVerifiedCodexPackage({ executable: process.execPath, results: [{ outcome: 'allowed' }] })).toThrow(/unverified/);
 });
+it.runIf(process.platform === 'darwin')('admits only the installed Codex version to native proof', async () => {
+  execFileSync('/usr/bin/git', ['init', '-q', workspace]);
+  const executable = join(root, 'fixture-codex');
+  const previousHome = process.env.HOME; process.env.HOME = root;
+  const candidate = { executable, cwd: workspace, readableRoots: [workspace], writableRoot: workspace,
+    scratchDir: scratch, controlDir, model: 'fixture-codex', effort: 'high', protectedPaths: [join(root, 'foreign')] };
+  fixtureModelExecutable(executable);
+  vi.spyOn(probe, 'observeCodexNative').mockResolvedValue({ version: 'fixture', model: 'fixture',
+    executableHash: 'fixture', scriptHash: 'fixture', guardHash: 'fixture', applicable: true, rawDiagnostic: false,
+    attempted: 0, executed: 0, failures: [], observations: [], operations: [], preflight: [], networkControls: [] });
+  try {
+    await expect(api.preflightCodex(candidate)).rejects.toThrow('Codex native enforcement unverified');
+    for (const version of ['0.157.0', '0.160.0']) {
+      writeFileSync(executable, `#!/bin/sh\nprintf "codex-cli ${version}\\n"\n`, { mode: 0o755 });
+      await expect(api.preflightCodex(candidate)).rejects.toThrow('unsupported Codex version');
+    }
+  } finally { process.env.HOME = previousHome; }
+});
+it.runIf(process.platform === 'darwin')('pins a discovered model and effort in the verified package', async () => {
+  execFileSync('/usr/bin/git', ['init', '-q', workspace]);
+  const executable = join(root, 'fixture-codex');
+  writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === '--version') { console.log('codex-cli 0.159.0'); process.exit(0); }
+const reader = require('node:readline').createInterface({ input: process.stdin });
+reader.on('line', line => { const request = JSON.parse(line);
+  if (request.id === 1) console.log(JSON.stringify({ id: 1, result: {} }));
+  if (request.method === 'model/list') console.log(JSON.stringify({ id: request.id, result: {
+    data: [{ model: 'gpt-6-sol', supportedReasoningEfforts: [{ reasoningEffort: 'high' }] }], nextCursor: null } }));
+});
+`, { mode: 0o755 });
+  const previousHome = process.env.HOME;
+  process.env.HOME = root;
+  mkdirSync(join(root, '.codex'));
+  writeFileSync(join(root, '.codex/models_cache.json'), JSON.stringify({ client_version: '0.159.0',
+    fetched_at: new Date().toISOString(), models: [{ slug: 'gpt-6-sol', context_window: 100000,
+      effective_context_window_percent: 95 }] }));
+  vi.spyOn(probe, 'observeCodexNative').mockResolvedValue({ version: 'fixture', model: 'fixture',
+    executableHash: 'fixture', scriptHash: 'fixture', guardHash: 'fixture', applicable: true, rawDiagnostic: false,
+    attempted: 129, executed: 129, failures: [], operations: [], preflight: [], networkControls: [],
+    observations: Array.from({ length: 129 }, (_, i) => ({ caseId: String(i), mode: 'readonly',
+      tool: 'exec_command', outcome: 'denied', executed: true, unchangedProtectedBytes: true,
+      control: false, phase: 'start', exitCode: 0, output: {}, timedOut: false, requests: [], tools: [],
+      permissionHash: 'fixture', configHash: 'fixture', firstRequestBytes: 1024, protectedHashes: [] })) });
+  try {
+    const candidate = { executable, cwd: workspace, readableRoots: [workspace], writableRoot: workspace,
+      scratchDir: scratch, controlDir, model: 'gpt-6-sol', effort: 'high', protectedPaths: [join(root, 'foreign')] };
+    const packet = await api.preflightCodex(candidate);
+    expect({ model: packet.model, effort: packet.effort }).toEqual({ model: 'gpt-6-sol', effort: 'high' });
+    expect(packet.argv.join(' ')).toContain('model_reasoning_effort');
+    await expect(api.preflightCodex({ ...candidate, effort: 'ultra' })).rejects.toThrow(/effort/);
+    writeFileSync(join(root, '.codex/models_cache.json'), JSON.stringify({ client_version: '0.159.0',
+      fetched_at: new Date().toISOString(), models: [{ slug: 'gpt-6-sol', context_window: 120000,
+        effective_context_window_percent: 95 }] }));
+    expect(() => api.assertVerifiedCodexPackage(packet)).not.toThrow(); // Later cache writers cannot rewrite the captured model limit.
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 86400001);
+    expect(() => api.assertVerifiedCodexPackage(packet)).toThrow(/binding/);
+  } finally { process.env.HOME = previousHome; }
+});
 it.runIf(process.platform === 'darwin')('reports bounded matrix diagnostics while refusing incomplete native evidence', async () => {
   // Unit fixture only: no real native proof or branded package is created.
   const executable = join(root, 'fixture-codex');
-  writeFileSync(executable, '#!/bin/sh\nprintf "codex-cli 0.157.0\\n"\n', { mode: 0o755 });
+  const previousHome = process.env.HOME; process.env.HOME = root;
+  fixtureModelExecutable(executable);
   execFileSync('/usr/bin/git', ['init', '-q', workspace]);
   vi.spyOn(probe, 'observeCodexNative').mockResolvedValue({ version: 'fixture', model: 'fixture',
     executableHash: 'fixture', scriptHash: 'fixture', guardHash: 'fixture', applicable: true, rawDiagnostic: false,
     attempted: 0, executed: 0, failures: [], observations: [], operations: [], preflight: [], networkControls: [] });
-  await expect(api.preflightCodex({ executable, cwd: workspace, readableRoots: [workspace], writableRoot: workspace,
-    scratchDir: scratch, controlDir, model: 'fixture-codex', protectedPaths: [join(root, 'foreign')] }))
-    .rejects.toMatchObject({ message: 'Codex native enforcement unverified',
-      cause: { expected: 129, attempted: 0, executed: 0, applicable: true, observations: [] } });
+  try {
+    await expect(api.preflightCodex({ executable, cwd: workspace, readableRoots: [workspace], writableRoot: workspace,
+      scratchDir: scratch, controlDir, model: 'fixture-codex', effort: 'high', protectedPaths: [join(root, 'foreign')] }))
+      .rejects.toMatchObject({ message: 'Codex native enforcement unverified',
+        cause: { expected: 129, attempted: 0, executed: 0, applicable: true, observations: [] } });
+  } finally { process.env.HOME = previousHome; }
 });
+it.runIf(process.platform === 'darwin')('keeps the bound package valid when a broker credential rotates to the issued run', async () => {
+  const f = runInputFixture();
+  const executable = join(root, 'fixture-codex'); fixtureModelExecutable(executable);
+  writeFileSync(join(root, '.codex/models_cache.json'), JSON.stringify({ client_version: '0.159.0',
+    fetched_at: new Date().toISOString(), models: [{ slug: 'fixture-codex', context_window: 500000,
+      effective_context_window_percent: 95 }] }));
+  const previousHome = process.env.HOME; process.env.HOME = root;
+  const skillRoot = join(f.root, 'rotation-skill'); mkdirSync(join(skillRoot, 'guide'), { recursive: true });
+  writeFileSync(join(skillRoot, 'guide', 'SKILL.md'), '# Probe guide\n');
+  const operations = ['get_context', 'read_skill_file'] as const;
+  const skills = [{ name: 'ProbeGuide', mode: 'Always' as const, description: 'Pinned guide',
+    source: { kind: 'local' as const, root: skillRoot, path: 'guide' } }];
+  const role = core.saveRoleRevision(f.handle, { expectedRevision: 0, commandId: 'native-rotation-role', definition: {
+    name: 'Rotation', prompt: 'Read context.', runtime: 'codex', model: 'fixture-codex', effort: 'high',
+    access: 'workspace-write', operations, skills,
+  } });
+  const probeRole = core.saveRoleRevision(f.handle, { expectedRevision: 0, commandId: 'native-probe-role', definition: {
+    name: 'Probe', prompt: 'Read context.', runtime: 'codex', model: 'fixture-codex', effort: 'high',
+    access: 'read', operations, skills,
+  } });
+  const entry = join(f.home, 'run_main.js'), config = join(f.home, 'broker.json');
+  writeFileSync(entry, '// native fixture');
+  vi.spyOn(probe, 'observeCodexNative').mockImplementation(async (_executable, _diagnostic, _model, broker) => {
+    const count = broker ? 160 : 129;
+    return { version: 'fixture', model: 'fixture', executableHash: 'fixture', scriptHash: 'fixture', guardHash: 'fixture',
+      applicable: true, rawDiagnostic: false, attempted: count, executed: count, failures: [], operations: [], preflight: [], networkControls: [],
+      observations: Array.from({ length: count }, (_, i) => ({ caseId: String(i), mode: 'workspace' as const,
+        tool: 'exec_command', outcome: 'denied' as const, executed: true, unchangedProtectedBytes: true,
+        control: false, phase: 'start' as const, exitCode: 0, output: {}, timedOut: false, requests: [], tools: [],
+        permissionHash: 'fixture', configHash: 'fixture', firstRequestBytes: 1024, protectedHashes: [] })) };
+  });
+  try {
+    const candidate = { executable, cwd: f.workspace, readableRoots: [f.workspace], writableRoot: f.workspace,
+      scratchDir: f.scratch, controlDir: f.home, model: 'fixture-codex', effort: 'high', protectedPaths: [f.repo, f.home] };
+    const bootstrap = await core.preflightCodex({ ...candidate, writableRoot: undefined });
+    const first = core.issueRunAuthority(f.handle, { ...f.input, taskId: f.task('probe').id,
+      workItemId: 'native-probe', repositories: [{ repoId: f.repoId, checkoutPath: f.workspace, write: false }],
+      native: bootstrap, role: probeRole, operations, probeBootstrap: true });
+    writeFileSync(config, JSON.stringify({ dbPath: f.dbPath, token: first.token }), { mode: 0o600 });
+    const bound = await core.preflightCodex({ ...candidate, brokerConfigPath: config, brokerEntryPath: entry });
+    const second = core.issueRunAuthority(f.handle, { ...f.input, runId: 'rotation-2', native: bound, role, operations });
+    writeFileSync(config, JSON.stringify({ dbPath: f.dbPath, token: second.token }));
+    expect(() => core.assertVerifiedCodexPackage(bound)).not.toThrow();
+    expect(core.prepareRoleLaunch(f.handle, { projectId: f.projectId, authorityId: second.authorityId, native: bound }).model)
+      .toBe('fixture-codex');
+  } finally { process.env.HOME = previousHome; }
+}, 15_000);
 it('binds only a private fixed broker config, independently of credential rotation', () => {
   const config = join(controlDir, 'broker.json'), entry = join(controlDir, 'run_main.js'), db = join(controlDir, 'board.db');
   writeFileSync(entry, '// fixture'); writeFileSync(db, 'fixture');
@@ -47,6 +172,9 @@ it('binds only a private fixed broker config, independently of credential rotati
   const overrides = fixedCodexConfig({ ':minimal': 'read' }, config, binding);
   expect(JSON.stringify(overrides)).not.toContain('a'.repeat(64));
   expect(overrides.join('\n')).toContain('mcp_servers={kdd_run=');
+  expect(overrides.join('\n')).not.toContain('read_skill_file');
+  expect(fixedCodexConfig({ ':minimal': 'read' }, config, binding, 'high', ['get_context', 'read_skill_file']).join('\n'))
+    .toContain('enabled_tools=["get_context","read_skill_file"]');
   writeFileSync(config, JSON.stringify({ dbPath: realpathSync(db), token: 'b'.repeat(64) }));
   expect(codexBrokerBinding(config, entry)).toEqual(binding);
   linkSync(config, join(workspace, 'credential-alias'));
@@ -61,7 +189,7 @@ it('binds only a private fixed broker config, independently of credential rotati
 
 it('does not issue a native package for another executable or overlapping writable roots', async () => {
   const candidate = { executable: process.execPath, cwd: workspace, readableRoots: [workspace], writableRoot: workspace,
-    scratchDir: scratch, controlDir, model: 'fixture-codex', protectedPaths: [join(root, 'foreign')] };
+    scratchDir: scratch, controlDir, model: 'fixture-codex', effort: 'high', protectedPaths: [join(root, 'foreign')] };
   await expect(api.preflightCodex(candidate)).rejects.toThrow(/unsupported|Codex/);
   await expect(api.preflightCodex({ ...candidate, scratchDir: workspace })).rejects.toThrow(/overlap/);
   await expect(api.preflightCodex({ ...candidate, protectedPaths: [workspace] })).rejects.toThrow(/overlap/);
@@ -71,7 +199,7 @@ it('does not issue a native package for another executable or overlapping writab
 
 it('refuses a project overlay before execution, including a config appearing in an ancestor', async () => {
   const candidate = { executable: process.execPath, cwd: workspace, readableRoots: [workspace], writableRoot: workspace,
-    scratchDir: scratch, controlDir, model: 'fixture-codex', protectedPaths: [join(root, 'foreign')] };
+    scratchDir: scratch, controlDir, model: 'fixture-codex', effort: 'high', protectedPaths: [join(root, 'foreign')] };
   for (const location of [workspace, root]) {
     mkdirSync(join(location, '.codex'));
     writeFileSync(join(location, '.codex/config.toml'), 'sandbox_mode="danger-full-access"');

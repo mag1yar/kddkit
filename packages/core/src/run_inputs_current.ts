@@ -8,8 +8,9 @@ import {projectOf} from './project_store.js';
 import {appendEvent} from './ops.js';
 import {now} from './db.js';
 import {KddError} from './errors.js';
+import {roleActiveDb} from './roles.js';
 export type RunInputReason='requirements_changed'|'membership_changed'|'work_item_changed'|'ownership_changed'|
-  'dependency_changed'|'readiness_expired'|'memory_changed'|'rules_changed'|'repository_changed'|'snapshot_missing';
+  'dependency_changed'|'readiness_expired'|'memory_changed'|'rules_changed'|'repository_changed'|'role_changed'|'snapshot_missing';
 export interface RunInputChange {
   reason:RunInputReason;taskId?:number;entryId?:string;resultId?:string;repoId?:string;
   previous?:Pick<MemoryRecord,'revision'|'hash'>|null;current?:Pick<MemoryRecord,'revision'|'hash'>|null;
@@ -19,6 +20,7 @@ export type RunInputStatus={status:'current';authorityId:string;inputHash:string
 export function runInputChangesDb(db:Database.Database,snapshot:RunInputSnapshot):RunInputChange[]{
   if(!db.inTransaction)throw new KddError('run input check requires transaction');
   const {response,validation}=snapshot,inputs=response.inputs,changes:RunInputChange[]=[];
+  if(inputs.schemaVersion===2 && !roleActiveDb(db,inputs.role.roleId))changes.push({reason:'role_changed'});
   const memoryRef=(record:MemoryRecord)=>({revision:record.revision,hash:record.hash});
   for(const required of inputs.requirements){
     try{

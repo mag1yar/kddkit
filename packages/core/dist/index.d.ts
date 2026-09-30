@@ -27,6 +27,9 @@ declare const CAPS: {
     readonly recallTitleChars: 60;
     readonly trackDescChars: 200;
     readonly fileBytes: number;
+    readonly skillFileBytes: number;
+    readonly skillFileCount: 128;
+    readonly skillTotalBytes: number;
     readonly agentFieldChars: 4096;
     readonly agentDetailItems: 64;
     readonly agentDetailBytes: 65536;
@@ -1100,63 +1103,49 @@ interface TaskBrief {
 }
 declare function taskBrief(db: Database.Database, decisionsDir: string, id: number): TaskBrief;
 
-/** A successful scan is not a launch permit: start/resume must scan again under the controller lock. */
-declare function assertWritableRoots(roots: readonly string[]): readonly string[];
-/** Trusted controller filesystem/config mutations must use this same protected project directory. */
-declare function withNativeControllerLock<T>(controlDir: string, action: () => T | Promise<T>): Promise<T>;
-interface NativeLaunchInput {
-    controlDir: string;
-    writableRoots: readonly string[];
-    executable: string;
-    args: readonly string[];
-    cwd: string;
-    env: Readonly<Record<string, string>>;
-    phase: 'start' | 'resume';
-    verified?: VerifiedCodexPackage;
-}
-/** Trusted-host primitive; the runtime adapter must bind its arguments to the verified native package. */
-declare function spawnCheckedNative(input: NativeLaunchInput): Promise<ChildProcess>;
-interface CodexPermissionInput {
-    executable: string;
-    cwd: string;
-    controlDir: string;
+type SkillSource = {
+    kind: 'local';
+    root: string;
+    path: string;
+} | {
+    kind: 'repo';
+    repoId: string;
+    checkoutPath: string;
+    commit: string;
+    path: string;
+};
+interface RoleDefinition {
+    name: string;
+    prompt: string;
+    runtime: 'codex';
     model: string;
-    readableRoots: readonly string[];
-    writableRoot?: string;
-    scratchDir: string;
-    protectedPaths: readonly string[];
-    brokerConfigPath?: string;
-    brokerEntryPath?: string;
+    effort: string;
+    access: 'read' | 'workspace-write';
+    operations: readonly RunOperation[];
+    skills: readonly {
+        name: string;
+        mode: 'Always' | 'Available';
+        description: string;
+        source: SkillSource;
+    }[];
 }
-interface NativeProbeResult {
-    caseId: string;
-    tool: string;
-    outcome: 'allowed' | 'denied' | 'inconclusive';
-    executed: boolean;
-    unchangedProtectedBytes: boolean;
+interface RoleRef {
+    roleId: string;
+    revision: number;
 }
-interface CodexBrokerBinding {
-    configPath: string;
-    entryPath: string;
-    dbPath: string;
-    nodePath: string;
+interface RoleReceipt extends RoleRef {
+    hash: string;
+    manifestHash: string;
 }
-interface VerifiedCodexPackage {
-    readonly executable: string;
-    readonly version: string;
-    readonly cwd: string;
-    readonly controlDir: string;
-    readonly readableRoots: readonly string[];
-    readonly writableRoot?: string;
-    readonly scratchDir: string;
-    readonly protectedPaths: readonly string[];
-    readonly argv: readonly string[];
-    readonly env: Readonly<Record<string, string>>;
-    readonly configHash: string;
-    readonly results: readonly NativeProbeResult[];
-}
-declare function assertVerifiedCodexPackage(packet: unknown): asserts packet is VerifiedCodexPackage;
-declare function preflightCodex(input: CodexPermissionInput): Promise<VerifiedCodexPackage>;
+declare function roleRevision(handle: ControllerHandle, ref: RoleRef): RoleDefinition & RoleReceipt;
+declare function currentRoleRevision(handle: ControllerHandle, roleId: string): RoleDefinition & RoleReceipt;
+declare function revokeRole(handle: ControllerHandle, roleId: string): void;
+declare function saveRoleRevision(handle: ControllerHandle, input: {
+    roleId?: string;
+    expectedRevision: number;
+    commandId: string;
+    definition: RoleDefinition;
+}): RoleReceipt;
 
 type ResultSource = {
     kind: 'manual';
@@ -1376,8 +1365,7 @@ interface DependencyContextInput {
         body: string;
     };
 }
-interface RunInputSections {
-    schemaVersion: 1;
+interface RunInputBase {
     authorityId: string;
     inputHash: string;
     createdAt: number;
@@ -1403,6 +1391,27 @@ interface RunInputSections {
     operations: RunOperation[];
     nativeConfigHash: string;
 }
+interface RunRolePin extends RoleRef {
+    hash: string;
+    manifestHash: string;
+    model: string;
+    effort: string;
+    contextWindow: number;
+    skills: {
+        name: string;
+        mode: 'Always' | 'Available';
+        manifestHash: string;
+    }[];
+    operations: RunOperation[];
+    nativeConfigHash: string;
+}
+type RunInputSections = (RunInputBase & {
+    schemaVersion: 1;
+    role?: never;
+}) | (RunInputBase & {
+    schemaVersion: 2;
+    role: RunRolePin;
+});
 interface RunInputValidation {
     repositories: MemoryRepoVersion[];
     ownership: OwnershipRef | null;
@@ -1427,7 +1436,7 @@ interface RunInputSnapshot {
 }
 declare function runInputSnapshot(handle: ControllerHandle, ref: RunInputRef): RunInputSnapshot;
 
-type RunOperation = 'get_context' | 'submit_report' | 'request_question';
+type RunOperation = 'get_context' | 'submit_report' | 'request_question' | 'read_skill_file';
 interface RunContext {
     readonly kind: 'run';
 }
@@ -1437,6 +1446,7 @@ interface IssueRunInput {
     runId: string;
     expectedGeneration: number;
     expiresAt: number;
+    role: RoleRef;
     operations: readonly RunOperation[];
     repositories: readonly {
         repoId: string;
@@ -1447,6 +1457,7 @@ interface IssueRunInput {
     ownership?: OwnershipRef;
     context?: RunInputOptions;
     contextObservers?: ResultObservers;
+    probeBootstrap?: true;
 }
 interface IssuedRunAuthority {
     authorityId: string;
@@ -1483,6 +1494,18 @@ interface RunContextSnapshot {
 }
 declare function runOperations(context: RunContext): readonly RunOperation[];
 declare function readRunContext(context: RunContext): RunContextSnapshot;
+declare function readSkillFile(context: RunContext, input: {
+    skill: string;
+    path: string;
+    offset: number;
+}): {
+    contentBase64: string;
+    offset: number;
+    length: number;
+    size: number;
+    sha256: string;
+    mime: string;
+};
 interface RunMemoryReadInput {
     entryId?: string;
     revision?: number;
@@ -1494,6 +1517,72 @@ declare function recallRunMemory(context: RunContext, query: string, options?: M
 declare function runMemoryRules(context: RunContext): MemoryRecord[];
 declare const submitRunReport: (context: RunContext, body: string) => number;
 declare const requestRunQuestion: (context: RunContext, body: string) => number;
+
+/** A successful scan is not a launch permit: start/resume must scan again under the controller lock. */
+declare function assertWritableRoots(roots: readonly string[]): readonly string[];
+/** Trusted controller filesystem/config mutations must use this same protected project directory. */
+declare function withNativeControllerLock<T>(controlDir: string, action: () => T | Promise<T>): Promise<T>;
+interface NativeLaunchInput {
+    controlDir: string;
+    writableRoots: readonly string[];
+    executable: string;
+    args: readonly string[];
+    cwd: string;
+    env: Readonly<Record<string, string>>;
+    phase: 'start' | 'resume';
+    verified?: VerifiedCodexPackage;
+    beforeSpawn?: () => void;
+}
+/** Trusted-host primitive; the runtime adapter must bind its arguments to the verified native package. */
+declare function spawnCheckedNative(input: NativeLaunchInput): Promise<ChildProcess>;
+interface CodexPermissionInput {
+    executable: string;
+    cwd: string;
+    controlDir: string;
+    model: string;
+    effort: string;
+    readableRoots: readonly string[];
+    writableRoot?: string;
+    scratchDir: string;
+    protectedPaths: readonly string[];
+    brokerConfigPath?: string;
+    brokerEntryPath?: string;
+}
+interface NativeProbeResult {
+    caseId: string;
+    tool: string;
+    outcome: 'allowed' | 'denied' | 'inconclusive';
+    executed: boolean;
+    unchangedProtectedBytes: boolean;
+    firstRequestBytes?: number;
+}
+interface CodexBrokerBinding {
+    configPath: string;
+    entryPath: string;
+    dbPath: string;
+    nodePath: string;
+}
+interface VerifiedCodexPackage {
+    readonly executable: string;
+    readonly version: string;
+    readonly cwd: string;
+    readonly model: string;
+    readonly effort: string;
+    readonly contextWindow: number;
+    readonly brokerConfigPath?: string;
+    readonly brokerTools: readonly RunOperation[];
+    readonly controlDir: string;
+    readonly readableRoots: readonly string[];
+    readonly writableRoot?: string;
+    readonly scratchDir: string;
+    readonly protectedPaths: readonly string[];
+    readonly argv: readonly string[];
+    readonly env: Readonly<Record<string, string>>;
+    readonly configHash: string;
+    readonly results: readonly NativeProbeResult[];
+}
+declare function assertVerifiedCodexPackage(packet: unknown): asserts packet is VerifiedCodexPackage;
+declare function preflightCodex(input: CodexPermissionInput): Promise<VerifiedCodexPackage>;
 
 interface NativeTool {
     name?: string;
@@ -1513,6 +1602,7 @@ interface NativeObservation extends NativeProbeResult {
     tools: NativeTool[];
     permissionHash: string;
     configHash: string;
+    firstRequestBytes: number;
     challengeHash?: string;
     protectedHashes: {
         path: string;
@@ -1653,7 +1743,7 @@ declare function finishHandoff(handle: ControllerHandle, input: {
     handoffId: string;
 }, observer?: StopObserver): Promise<HandoffOutcome>;
 
-type RunInputReason = 'requirements_changed' | 'membership_changed' | 'work_item_changed' | 'ownership_changed' | 'dependency_changed' | 'readiness_expired' | 'memory_changed' | 'rules_changed' | 'repository_changed' | 'snapshot_missing';
+type RunInputReason = 'requirements_changed' | 'membership_changed' | 'work_item_changed' | 'ownership_changed' | 'dependency_changed' | 'readiness_expired' | 'memory_changed' | 'rules_changed' | 'repository_changed' | 'role_changed' | 'snapshot_missing';
 interface RunInputChange {
     reason: RunInputReason;
     taskId?: number;
@@ -1677,4 +1767,19 @@ type RunInputStatus = {
 };
 declare function checkRunInputs(handle: ControllerHandle, ref: RunInputRef): RunInputStatus;
 
-export { type Actor, type AgentEvent, type AgentEventKind, type AttentionInbox, type AttentionItem, type AttentionReason, type AuthorityBinding, type AutoTick, BUG_BODY_TEMPLATE, type BindingKind, type BriefSection, CAPS, type CodexPermissionInput, type Comment, type ControllerHandle, type CreateSubtasksInput, type CreationSource, type Criterion, DEFAULT_TTL, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type DependencyBinding, type DependencyInput, type DependencyKind, type DependencyProjection, type DependencyReason, type EventRow, type EvidenceObservation, type EvidenceRequest, type ExecutionMode, type FileRow, type HandoffOutcome, type HandoffReceipt, type HandoffRecord, type IssueRunInput, type IssuedRunAuthority, KINDS, KddError, type KillFn, type KillOutcome, type Kind, type LaunchIntent, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, type ManualProvenance, type ManualSession, type MemoryApplicability, type MemoryAuthor, type MemoryDraft, type MemoryEvidenceObservation, type MemoryEvidenceRequest, type MemoryHit, type MemoryImportInput, type MemoryKind, type MemoryObservers, type MemoryOperation, type MemoryReadOptions, type MemoryRecallOptions, type MemoryReceipt, type MemoryRecord, type MemoryRepoVersion, type MemoryRevisionRef, type MemoryScope, type MemorySource, type MemoryStatus, type MemoryView, type MemoryWriteInput, type NativeEvidence, type NativeLaunchInput, type NativeProbeResult, type NextAction, type OutputRequirement, type OwnershipRecord, type OwnershipRef, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ProjectRecord, type PublishResultInput, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RepositoryAccess, type RepositoryBinding, type RepositoryRecord, type ReserveWorkItemInput, type ResultBinding, type ResultObservers, type ResultPayload, type ResultRecord, type ResultSource, type RunContext, type RunContextSnapshot, type RunInputChange, type RunInputOptions, type RunInputReason, type RunInputRef, type RunInputSections, type RunInputSnapshot, type RunInputStatus, type RunMemoryReadInput, type RunOperation, type RunResult, STATUSES, type SessionHandoff, type SpawnFn, type Status, type StopObservation, type StopObserver, type StopResult, type SubtaskDraft, type SubtaskPlanInput, TICK_INTERVALS, TRANSITIONS, type Task, type TaskBrief, type TaskDetailCapped, type TaskListRow, type TaskRef, type TickResult, type TickRun, type Track, type UpdateChannel, type VerifiedCodexPackage, type WorkItemDefinition, type WorkItemInput, type WorkItemKind, type WorkItemRecord, type WorkItemRef, type WorkItemState, _cacheUntil, _resetCache, addCriterion, addDecision, addRepository, addTask, agentId, appendAgentEvent, appendEvent, appendTaskMutationEvent, archiveTask, assertLegacyDecisionSource, assertLegacyTaskMutation, assertRunAuthorityBinding, assertVerifiedCodexPackage, assertWritableRoots, attachFile, attentionData, authorOf, beginHandoff, bindRepository, bindingsOf, blockTask, boardData, canSyncLegacyDecisions, canonicalCommonDir, canonicalProjectPath, capDetail, capText, checkMove, checkRunInputs, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, completeWorkItem, contentHash, createSubtaskPlan, createSubtasks, createTrack, createWorkItem, decisionDetail, deleteTrack, detachFile, editTask, editTrack, endWorkItem, ensureWorktree, expiredLeases, exportBoard, filePath, filesDir, finishHandoff, getAutoTick, getFile, getLastRun, getReminded, handoff, headCommit, importMemory, initializeProjectStore, inspectDependencies, invalidateResult, isInlineMime, issueRunAuthority, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listFiles, listMemory, listProjectCheckouts, listProjects, listSubtasks, listTracks, logError, lookupProjectStore, manualSessionFromEnv, maxWorkers, maxWorkersEnvLocked, memoryEntry, memoryHistory, memoryRules, moveTask, mustGetTask, mustGetTrack, normalizeSessionId, normalizeSourceTasks, now, observeCodexNative, openController, openDb, openRunContext, ownership, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, preflightCodex, projectOf, projectPathOf, projectToplevelOf, protectTask, pruneAgentEvents, publishResult, readRunContext, readRunMemory, reapExpired, rebindRepository, rebuild, recall, recallMemory, recallRunMemory, reclaimExpired, recordFailedAttempt, recordLaunchIntent, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, repositoriesOf, requestRunQuestion, reserveWorkItem, resolveDbPath, resolveDecisionsDir, resolveDependencies, resolveToplevel, result, reviseWorkItem, revokeRunAuthority, runInputSnapshot, runMemoryRules, runOperations, runProduced, sanitizeQuery, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, setReminded, setWorkItemWaiting, slugify, spawnCheckedNative, statusDigest, stopWorkers, storeIdentity, submitRunReport, sweepWorktrees, syncIndex, syncedTaskDetail, taskBranchHead, taskBrief, taskContractHash, taskDetail, taskDetailCapped, taskWorkItems, tick, unarchiveTask, unblockTask, unsubmitted, updateDisposition, versionChannel, withNativeControllerLock, workItem, worktreePath, writeMemory };
+interface RoleLaunchPermit {
+    readonly prompt: string;
+    readonly promptHash: string;
+    readonly model: string;
+    readonly effort: string;
+    readonly native: VerifiedCodexPackage;
+}
+declare function prepareRoleLaunch(handle: ControllerHandle, input: {
+    projectId: string;
+    authorityId: string;
+    native: VerifiedCodexPackage;
+    outputReserveTokens?: number;
+}): RoleLaunchPermit;
+declare function spawnCheckedRoleRun(permit: RoleLaunchPermit): Promise<ChildProcess>;
+
+export { type Actor, type AgentEvent, type AgentEventKind, type AttentionInbox, type AttentionItem, type AttentionReason, type AuthorityBinding, type AutoTick, BUG_BODY_TEMPLATE, type BindingKind, type BriefSection, CAPS, type CodexPermissionInput, type Comment, type ControllerHandle, type CreateSubtasksInput, type CreationSource, type Criterion, DEFAULT_TTL, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type DependencyBinding, type DependencyInput, type DependencyKind, type DependencyProjection, type DependencyReason, type EventRow, type EvidenceObservation, type EvidenceRequest, type ExecutionMode, type FileRow, type HandoffOutcome, type HandoffReceipt, type HandoffRecord, type IssueRunInput, type IssuedRunAuthority, KINDS, KddError, type KillFn, type KillOutcome, type Kind, type LaunchIntent, MAX_FAILED_ATTEMPTS, MAX_WORKERS_CAP, MIGRATIONS, type ManualProvenance, type ManualSession, type MemoryApplicability, type MemoryAuthor, type MemoryDraft, type MemoryEvidenceObservation, type MemoryEvidenceRequest, type MemoryHit, type MemoryImportInput, type MemoryKind, type MemoryObservers, type MemoryOperation, type MemoryReadOptions, type MemoryRecallOptions, type MemoryReceipt, type MemoryRecord, type MemoryRepoVersion, type MemoryRevisionRef, type MemoryScope, type MemorySource, type MemoryStatus, type MemoryView, type MemoryWriteInput, type NativeEvidence, type NativeLaunchInput, type NativeProbeResult, type NextAction, type OutputRequirement, type OwnershipRecord, type OwnershipRef, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type ParsedEvent, type Priority, type ProjectRecord, type PublishResultInput, type ReapResult, type RecallHit, type ReclaimedLease, type Release, type ReleaseInfo, type RepositoryAccess, type RepositoryBinding, type RepositoryRecord, type ReserveWorkItemInput, type ResultBinding, type ResultObservers, type ResultPayload, type ResultRecord, type ResultSource, type RoleDefinition, type RoleLaunchPermit, type RoleReceipt, type RoleRef, type RunContext, type RunContextSnapshot, type RunInputChange, type RunInputOptions, type RunInputReason, type RunInputRef, type RunInputSections, type RunInputSnapshot, type RunInputStatus, type RunMemoryReadInput, type RunOperation, type RunResult, type RunRolePin, STATUSES, type SessionHandoff, type SkillSource, type SpawnFn, type Status, type StopObservation, type StopObserver, type StopResult, type SubtaskDraft, type SubtaskPlanInput, TICK_INTERVALS, TRANSITIONS, type Task, type TaskBrief, type TaskDetailCapped, type TaskListRow, type TaskRef, type TickResult, type TickRun, type Track, type UpdateChannel, type VerifiedCodexPackage, type WorkItemDefinition, type WorkItemInput, type WorkItemKind, type WorkItemRecord, type WorkItemRef, type WorkItemState, _cacheUntil, _resetCache, addCriterion, addDecision, addRepository, addTask, agentId, appendAgentEvent, appendEvent, appendTaskMutationEvent, archiveTask, assertLegacyDecisionSource, assertLegacyTaskMutation, assertRunAuthorityBinding, assertVerifiedCodexPackage, assertWritableRoots, attachFile, attentionData, authorOf, beginHandoff, bindRepository, bindingsOf, blockTask, boardData, canSyncLegacyDecisions, canonicalCommonDir, canonicalProjectPath, capDetail, capText, checkMove, checkRunInputs, checkpointWal, claimNext, claimTask, closeDb, commentTask, compareVersions, completeWorkItem, contentHash, createSubtaskPlan, createSubtasks, createTrack, createWorkItem, currentRoleRevision, decisionDetail, deleteTrack, detachFile, editTask, editTrack, endWorkItem, ensureWorktree, expiredLeases, exportBoard, filePath, filesDir, finishHandoff, getAutoTick, getFile, getLastRun, getReminded, handoff, headCommit, importMemory, initializeProjectStore, inspectDependencies, invalidateResult, isInlineMime, issueRunAuthority, kddHome, kddVersion, lastAgentEventKind, linkTasks, listAgentEvents, listCriteria, listFiles, listMemory, listProjectCheckouts, listProjects, listSubtasks, listTracks, logError, lookupProjectStore, manualSessionFromEnv, maxWorkers, maxWorkersEnvLocked, memoryEntry, memoryHistory, memoryRules, moveTask, mustGetTask, mustGetTrack, normalizeSessionId, normalizeSourceTasks, now, observeCodexNative, openController, openDb, openRunContext, ownership, parseClaudeStreamLine, parseDecisionMd, parseRepoUrl, placeTask, preflightCodex, prepareRoleLaunch, projectOf, projectPathOf, projectToplevelOf, protectTask, pruneAgentEvents, publishResult, readRunContext, readRunMemory, readSkillFile, reapExpired, rebindRepository, rebuild, recall, recallMemory, recallRunMemory, reclaimExpired, recordFailedAttempt, recordLaunchIntent, redact, releaseClaim, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, repositoriesOf, requestRunQuestion, reserveWorkItem, resolveDbPath, resolveDecisionsDir, resolveDependencies, resolveToplevel, result, reviseWorkItem, revokeRole, revokeRunAuthority, roleRevision, runInputSnapshot, runMemoryRules, runOperations, runProduced, sanitizeQuery, saveRoleRevision, setAutoTick, setCriterionChecked, setLastRun, setProjectToplevel, setReminded, setWorkItemWaiting, slugify, spawnCheckedNative, spawnCheckedRoleRun, statusDigest, stopWorkers, storeIdentity, submitRunReport, sweepWorktrees, syncIndex, syncedTaskDetail, taskBranchHead, taskBrief, taskContractHash, taskDetail, taskDetailCapped, taskWorkItems, tick, unarchiveTask, unblockTask, unsubmitted, updateDisposition, versionChannel, withNativeControllerLock, workItem, worktreePath, writeMemory };

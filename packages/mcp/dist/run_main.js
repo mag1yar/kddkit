@@ -405,11 +405,11 @@ var require_codegen = __commonJS({
         const rhs = this.rhs === void 0 ? "" : ` = ${this.rhs}`;
         return `${varKind} ${this.name}${rhs};` + _n;
       }
-      optimizeNames(names, constants2) {
+      optimizeNames(names, constants) {
         if (!names[this.name.str])
           return;
         if (this.rhs)
-          this.rhs = optimizeExpr(this.rhs, names, constants2);
+          this.rhs = optimizeExpr(this.rhs, names, constants);
         return this;
       }
       get names() {
@@ -426,10 +426,10 @@ var require_codegen = __commonJS({
       render({ _n }) {
         return `${this.lhs} = ${this.rhs};` + _n;
       }
-      optimizeNames(names, constants2) {
+      optimizeNames(names, constants) {
         if (this.lhs instanceof code_1.Name && !names[this.lhs.str] && !this.sideEffects)
           return;
-        this.rhs = optimizeExpr(this.rhs, names, constants2);
+        this.rhs = optimizeExpr(this.rhs, names, constants);
         return this;
       }
       get names() {
@@ -490,8 +490,8 @@ var require_codegen = __commonJS({
       optimizeNodes() {
         return `${this.code}` ? this : void 0;
       }
-      optimizeNames(names, constants2) {
-        this.code = optimizeExpr(this.code, names, constants2);
+      optimizeNames(names, constants) {
+        this.code = optimizeExpr(this.code, names, constants);
         return this;
       }
       get names() {
@@ -520,12 +520,12 @@ var require_codegen = __commonJS({
         }
         return nodes.length > 0 ? this : void 0;
       }
-      optimizeNames(names, constants2) {
+      optimizeNames(names, constants) {
         const { nodes } = this;
         let i = nodes.length;
         while (i--) {
           const n = nodes[i];
-          if (n.optimizeNames(names, constants2))
+          if (n.optimizeNames(names, constants))
             continue;
           subtractNames(names, n.names);
           nodes.splice(i, 1);
@@ -578,12 +578,12 @@ var require_codegen = __commonJS({
           return void 0;
         return this;
       }
-      optimizeNames(names, constants2) {
+      optimizeNames(names, constants) {
         var _a;
-        this.else = (_a = this.else) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants2);
-        if (!(super.optimizeNames(names, constants2) || this.else))
+        this.else = (_a = this.else) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants);
+        if (!(super.optimizeNames(names, constants) || this.else))
           return;
-        this.condition = optimizeExpr(this.condition, names, constants2);
+        this.condition = optimizeExpr(this.condition, names, constants);
         return this;
       }
       get names() {
@@ -606,10 +606,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.iteration})` + super.render(opts);
       }
-      optimizeNames(names, constants2) {
-        if (!super.optimizeNames(names, constants2))
+      optimizeNames(names, constants) {
+        if (!super.optimizeNames(names, constants))
           return;
-        this.iteration = optimizeExpr(this.iteration, names, constants2);
+        this.iteration = optimizeExpr(this.iteration, names, constants);
         return this;
       }
       get names() {
@@ -645,10 +645,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.varKind} ${this.name} ${this.loop} ${this.iterable})` + super.render(opts);
       }
-      optimizeNames(names, constants2) {
-        if (!super.optimizeNames(names, constants2))
+      optimizeNames(names, constants) {
+        if (!super.optimizeNames(names, constants))
           return;
-        this.iterable = optimizeExpr(this.iterable, names, constants2);
+        this.iterable = optimizeExpr(this.iterable, names, constants);
         return this;
       }
       get names() {
@@ -690,11 +690,11 @@ var require_codegen = __commonJS({
         (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNodes();
         return this;
       }
-      optimizeNames(names, constants2) {
+      optimizeNames(names, constants) {
         var _a, _b;
-        super.optimizeNames(names, constants2);
-        (_a = this.catch) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants2);
-        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names, constants2);
+        super.optimizeNames(names, constants);
+        (_a = this.catch) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants);
+        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names, constants);
         return this;
       }
       get names() {
@@ -995,7 +995,7 @@ var require_codegen = __commonJS({
     function addExprNames(names, from) {
       return from instanceof code_1._CodeOrName ? addNames(names, from.names) : names;
     }
-    function optimizeExpr(expr, names, constants2) {
+    function optimizeExpr(expr, names, constants) {
       if (expr instanceof code_1.Name)
         return replaceName(expr);
       if (!canOptimize(expr))
@@ -1010,14 +1010,14 @@ var require_codegen = __commonJS({
         return items;
       }, []));
       function replaceName(n) {
-        const c = constants2[n.str];
+        const c = constants[n.str];
         if (c === void 0 || names[n.str] !== 1)
           return n;
         delete names[n.str];
         return c;
       }
       function canOptimize(e) {
-        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants2[c.str] !== void 0);
+        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants[c.str] !== void 0);
       }
     }
     function subtractNames(names, from) {
@@ -1056,10 +1056,10 @@ var require_util = __commonJS({
     var codegen_1 = require_codegen();
     var code_1 = require_code();
     function toHash(arr) {
-      const hash = {};
+      const hash2 = {};
       for (const item of arr)
-        hash[item] = true;
-      return hash;
+        hash2[item] = true;
+      return hash2;
     }
     exports.toHash = toHash;
     function alwaysValidSchema(it, schema) {
@@ -3643,49 +3643,49 @@ var require_fast_uri = __commonJS({
       schemelessOptions.skipEscape = true;
       return serialize(resolved, schemelessOptions);
     }
-    function resolveComponent(base, relative3, options, skipNormalization) {
+    function resolveComponent(base, relative4, options, skipNormalization) {
       const target = {};
       if (!skipNormalization) {
         base = parse3(serialize(base, options), options);
-        relative3 = parse3(serialize(relative3, options), options);
+        relative4 = parse3(serialize(relative4, options), options);
       }
       options = options || {};
-      if (!options.tolerant && relative3.scheme) {
-        target.scheme = relative3.scheme;
-        target.userinfo = relative3.userinfo;
-        target.host = relative3.host;
-        target.port = relative3.port;
-        target.path = removeDotSegments(relative3.path || "");
-        target.query = relative3.query;
+      if (!options.tolerant && relative4.scheme) {
+        target.scheme = relative4.scheme;
+        target.userinfo = relative4.userinfo;
+        target.host = relative4.host;
+        target.port = relative4.port;
+        target.path = removeDotSegments(relative4.path || "");
+        target.query = relative4.query;
       } else {
-        if (relative3.userinfo !== void 0 || relative3.host !== void 0 || relative3.port !== void 0) {
-          target.userinfo = relative3.userinfo;
-          target.host = relative3.host;
-          target.port = relative3.port;
-          target.path = removeDotSegments(relative3.path || "");
-          target.query = relative3.query;
+        if (relative4.userinfo !== void 0 || relative4.host !== void 0 || relative4.port !== void 0) {
+          target.userinfo = relative4.userinfo;
+          target.host = relative4.host;
+          target.port = relative4.port;
+          target.path = removeDotSegments(relative4.path || "");
+          target.query = relative4.query;
         } else {
-          if (!relative3.path) {
+          if (!relative4.path) {
             target.path = base.path;
-            if (relative3.query !== void 0) {
-              target.query = relative3.query;
+            if (relative4.query !== void 0) {
+              target.query = relative4.query;
             } else {
               target.query = base.query;
             }
           } else {
-            if (relative3.path[0] === "/") {
-              target.path = removeDotSegments(relative3.path);
+            if (relative4.path[0] === "/") {
+              target.path = removeDotSegments(relative4.path);
             } else {
               if ((base.userinfo !== void 0 || base.host !== void 0 || base.port !== void 0) && !base.path) {
-                target.path = "/" + relative3.path;
+                target.path = "/" + relative4.path;
               } else if (!base.path) {
-                target.path = relative3.path;
+                target.path = relative4.path;
               } else {
-                target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative3.path;
+                target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative4.path;
               }
               target.path = removeDotSegments(target.path);
             }
-            target.query = relative3.query;
+            target.query = relative4.query;
           }
           target.userinfo = base.userinfo;
           target.host = base.host;
@@ -3693,7 +3693,7 @@ var require_fast_uri = __commonJS({
         }
         target.scheme = base.scheme;
       }
-      target.fragment = relative3.fragment;
+      target.fragment = relative4.fragment;
       return target;
     }
     function equal(uriA, uriB, options) {
@@ -6885,7 +6885,7 @@ var require_dist = __commonJS({
 });
 
 // src/run_main.ts
-import { isAbsolute as isAbsolute7 } from "path";
+import { isAbsolute as isAbsolute8 } from "path";
 
 // src/run_server.ts
 import Database6 from "better-sqlite3";
@@ -21110,23 +21110,25 @@ import Database from "better-sqlite3";
 import { execFileSync } from "child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "fs";
 import Database3 from "better-sqlite3";
-import { createHash as createHash9, randomBytes as randomBytes2 } from "crypto";
+import { createHash as createHash10, randomBytes as randomBytes2 } from "crypto";
 import { createHash as createHash2 } from "crypto";
 import { readFileSync as readFileSync2, statSync } from "fs";
 import { isAbsolute } from "path";
 import { execFileSync as execFileSync4 } from "child_process";
 import { realpathSync as realpathSync4 } from "fs";
 import { isAbsolute as isAbsolute3 } from "path";
-import { createHash as createHash8 } from "crypto";
-import { constants, openSync, closeSync, fstatSync, lstatSync as lstatSync3, realpathSync as realpathSync8, readFileSync as readFileSync8, existsSync as existsSync8 } from "fs";
-import { isAbsolute as isAbsolute5, dirname as dirname7, resolve as resolve4, relative as relative2 } from "path";
+import { createHash as createHash5 } from "crypto";
+import { isAbsolute as isAbsolute4, join as join5, relative } from "path";
+import { createHash as createHash9 } from "crypto";
+import { constants as constants2, openSync as openSync2, closeSync as closeSync2, fstatSync as fstatSync2, lstatSync as lstatSync4, realpathSync as realpathSync9, readFileSync as readFileSync9, existsSync as existsSync8 } from "fs";
+import { isAbsolute as isAbsolute6, dirname as dirname7, resolve as resolve4, relative as relative3 } from "path";
 import Database4 from "better-sqlite3";
-import { basename as basename3, dirname as dirname5, extname, join as join6 } from "path";
-import { dirname as dirname6, isAbsolute as isAbsolute4, join as join8, relative, resolve as resolve3, sep } from "path";
+import { basename as basename3, dirname as dirname5, extname, join as join7 } from "path";
+import { dirname as dirname6, isAbsolute as isAbsolute5, join as join9, relative as relative2, resolve as resolve3, sep as sep2 } from "path";
 import Database5 from "better-sqlite3";
-import { createHash as createHash10, randomBytes as randomBytes3 } from "crypto";
-import { lstatSync as lstatSync4, realpathSync as realpathSync9 } from "fs";
-import { isAbsolute as isAbsolute6 } from "path";
+import { createHash as createHash12, randomBytes as randomBytes3 } from "crypto";
+import { lstatSync as lstatSync5, realpathSync as realpathSync10 } from "fs";
+import { isAbsolute as isAbsolute7 } from "path";
 var CAPS = {
   briefBytes: 4096,
   // JSON/MCP payload для детерминированного resume-пакета
@@ -21176,6 +21178,9 @@ var CAPS = {
   // сотни КБ одной строкой в базу, которую шарят все worktree проекта.
   fileBytes: 20 * 1024 * 1024,
   // потолок вложения: доска личная, но 20 MB картинки хватает всем
+  skillFileBytes: 1024 * 1024,
+  skillFileCount: 128,
+  skillTotalBytes: 8 * 1024 * 1024,
   agentFieldChars: 4096,
   // строковый лист в detail (вывод тула, аргумент, текст ответа)
   agentDetailItems: 64,
@@ -21576,6 +21581,51 @@ CREATE TRIGGER run_input_snapshots_immutable_update BEFORE UPDATE ON run_input_s
 BEGIN SELECT RAISE(ABORT,'immutable run input snapshot'); END;
 CREATE TRIGGER run_input_snapshots_immutable_delete BEFORE DELETE ON run_input_snapshots
 BEGIN SELECT RAISE(ABORT,'immutable run input snapshot'); END;
+  `,
+  // v18: immutable role revisions and pinned skill bytes live in the project store.
+  `
+CREATE TABLE role_profiles (
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, name TEXT NOT NULL,
+  current_revision INTEGER NOT NULL CHECK(typeof(current_revision)='integer' AND current_revision > 0),
+  revoked_at INTEGER CHECK(revoked_at IS NULL OR (typeof(revoked_at)='integer' AND revoked_at > 0))
+);
+CREATE TABLE role_revisions (
+  role_id TEXT NOT NULL REFERENCES role_profiles(id),
+  revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision > 0),
+  definition_json TEXT NOT NULL CHECK(json_valid(definition_json)),
+  hash TEXT NOT NULL CHECK(length(hash)=64 AND hash NOT GLOB '*[^0-9a-f]*'),
+  manifest_hash TEXT NOT NULL CHECK(length(manifest_hash)=64 AND manifest_hash NOT GLOB '*[^0-9a-f]*'),
+  created_at INTEGER NOT NULL,
+  command_id TEXT NOT NULL UNIQUE CHECK(length(trim(command_id))>0),
+  command_hash TEXT NOT NULL CHECK(length(command_hash)=64 AND command_hash NOT GLOB '*[^0-9a-f]*'),
+  PRIMARY KEY(role_id, revision)
+);
+CREATE TABLE role_skill_files (
+  role_id TEXT NOT NULL, revision INTEGER NOT NULL,
+  skill_name TEXT NOT NULL, relative_path TEXT NOT NULL,
+  sha256 TEXT NOT NULL CHECK(length(sha256)=64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
+  mime TEXT NOT NULL, bytes BLOB NOT NULL CHECK(length(bytes)<=1048576),
+  PRIMARY KEY(role_id,revision,skill_name,relative_path),
+  FOREIGN KEY(role_id,revision) REFERENCES role_revisions(role_id,revision)
+);
+CREATE TRIGGER role_profiles_immutable BEFORE UPDATE OF id,project_id,name ON role_profiles
+BEGIN SELECT RAISE(ABORT,'immutable role identity'); END;
+CREATE TRIGGER role_profiles_no_delete BEFORE DELETE ON role_profiles
+BEGIN SELECT RAISE(ABORT,'immutable role identity'); END;
+CREATE TRIGGER role_profiles_current BEFORE UPDATE OF current_revision ON role_profiles
+WHEN NEW.current_revision<>OLD.current_revision+1
+BEGIN SELECT RAISE(ABORT,'role revision must advance once'); END;
+CREATE TRIGGER role_profiles_no_unrevoke BEFORE UPDATE OF revoked_at ON role_profiles
+WHEN OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NOT OLD.revoked_at
+BEGIN SELECT RAISE(ABORT,'role revocation is final'); END;
+CREATE TRIGGER role_revisions_immutable_update BEFORE UPDATE ON role_revisions
+BEGIN SELECT RAISE(ABORT,'immutable role revision'); END;
+CREATE TRIGGER role_revisions_immutable_delete BEFORE DELETE ON role_revisions
+BEGIN SELECT RAISE(ABORT,'immutable role revision'); END;
+CREATE TRIGGER role_skill_files_immutable_update BEFORE UPDATE ON role_skill_files
+BEGIN SELECT RAISE(ABORT,'immutable skill file'); END;
+CREATE TRIGGER role_skill_files_immutable_delete BEFORE DELETE ON role_skill_files
+BEGIN SELECT RAISE(ABORT,'immutable skill file'); END;
   `
 ];
 function projectOf(db) {
@@ -21906,15 +21956,65 @@ function selectMemory(db, view, options = {}, historyEntryId, revision) {
   if (historyEntryId !== void 0 && !rows.length) throw new KddError("memory record unavailable");
   return rows.map((row) => memoryRecordDb(db, row.id, row.revision));
 }
+var hash = (bytes2) => createHash5("sha256").update(bytes2).digest("hex");
+var denied = (reason) => new KddError(`role revision denied: ${reason}`);
+function validSkillPath(path) {
+  return typeof path === "string" && !!path && !isAbsolute4(path) && !path.includes("\\") && !path.includes("\0") && !path.split("/").some((part) => !part || part === "." || part === "..");
+}
+function manifestHash(definition, files) {
+  return digest({
+    skills: definition.skills.map((skill) => ({ name: skill.name, mode: skill.mode, source: skill.source })),
+    files: [...files].sort((a, b) => {
+      if (a.skill !== b.skill) return a.skill < b.skill ? -1 : 1;
+      if (a.path !== b.path) return a.path < b.path ? -1 : 1;
+      return 0;
+    }).map((file) => ({ skill: file.skill, path: file.path, sha256: file.sha256, mime: file.mime, size: file.bytes.length }))
+  });
+}
+function roleFilesDb(db, ref) {
+  return db.prepare("SELECT skill_name,relative_path,bytes,sha256,mime FROM role_skill_files WHERE role_id=? AND revision=? ORDER BY skill_name,relative_path").all(ref.roleId, ref.revision).map((row) => {
+    if (hash(row.bytes) !== row.sha256) throw denied("stored skill bytes changed");
+    return { skill: row.skill_name, path: row.relative_path, bytes: row.bytes, sha256: row.sha256, mime: row.mime };
+  });
+}
+function roleRevisionDb(db, ref) {
+  if (!ref || typeof ref.roleId !== "string" || !Number.isSafeInteger(ref.revision) || ref.revision < 1) throw denied("invalid role ref");
+  const row = db.prepare("SELECT p.project_id,r.definition_json,r.hash,r.manifest_hash FROM role_revisions r JOIN role_profiles p ON p.id=r.role_id WHERE r.role_id=? AND r.revision=?").get(ref.roleId, ref.revision);
+  if (!row || row.project_id !== projectOf(db).project_id) throw denied("unknown role revision");
+  const definition = JSON.parse(row.definition_json);
+  const files = roleFilesDb(db, ref), manifest = manifestHash(definition, files);
+  if (manifest !== row.manifest_hash || digest({ definition, manifestHash: manifest }) !== row.hash) throw denied("role revision changed");
+  return { definition, receipt: { ...ref, hash: row.hash, manifestHash: manifest } };
+}
+function roleActiveDb(db, roleId) {
+  return !!db.prepare("SELECT 1 FROM role_profiles WHERE id=? AND project_id=? AND revoked_at IS NULL").get(roleId, projectOf(db).project_id);
+}
 var filesDir = (dbPath) => {
   if (dbPath === ":memory:") throw new KddError("attachments need a real board file, not :memory:");
-  return join6(dirname5(dbPath), "files");
+  return join7(dirname5(dbPath), "files");
 };
 function inside(parent, path) {
-  const suffix = relative(parent, path);
-  return suffix === "" || suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute4(suffix);
+  const suffix = relative2(parent, path);
+  return suffix === "" || suffix !== ".." && !suffix.startsWith(`..${sep2}`) && !isAbsolute5(suffix);
 }
-var denied = () => new KddError("run input snapshot denied");
+var denied2 = () => new KddError("run input snapshot denied");
+function rolePinDb(db, grant) {
+  if (!grant.role || !Number.isSafeInteger(grant.native.contextWindow) || grant.native.contextWindow < 1) throw denied2();
+  const { definition, receipt: receipt2 } = roleRevisionDb(db, grant.role), files = roleFilesDb(db, grant.role);
+  return {
+    ...receipt2,
+    model: definition.model,
+    effort: definition.effort,
+    contextWindow: grant.native.contextWindow,
+    skills: definition.skills.map((skill) => ({
+      name: skill.name,
+      mode: skill.mode,
+      manifestHash: digest(files.filter((file) => file.skill === skill.name).map((file) => ({ path: file.path, sha256: file.sha256, mime: file.mime, size: file.bytes.length })))
+    })),
+    operations: [...grant.operations],
+    nativeConfigHash: grant.native.configHash
+  };
+}
 function runInputHash(snapshot2) {
   return digest({ ...snapshot2, inputHash: void 0, response: {
     ...snapshot2.response,
@@ -21922,16 +22022,16 @@ function runInputHash(snapshot2) {
   } });
 }
 function readRunInputSnapshotDb(db, authorityId) {
-  if (!db.inTransaction || typeof authorityId !== "string" || !/^[0-9a-f]{32}$/.test(authorityId)) throw denied();
+  if (!db.inTransaction || typeof authorityId !== "string" || !/^[0-9a-f]{32}$/.test(authorityId)) throw denied2();
   try {
     const row = db.prepare("SELECT * FROM run_input_snapshots WHERE authority_id=?").get(authorityId);
     const authority = db.prepare("SELECT * FROM run_authorities WHERE authority_id=?").get(authorityId);
-    if (!row || !authority) throw denied();
+    if (!row || !authority) throw denied2();
     const snapshot2 = JSON.parse(row.payload_json), grant = JSON.parse(authority.grant_json);
     shape(snapshot2, ["authorityId", "inputHash", "createdAt", "response", "validation"]);
     const { response: r, validation: v } = snapshot2, inputs = r.inputs;
     shape(v, ["repositories", "ownership", "inputResults", "artifacts"]);
-    shape(inputs, [
+    const baseKeys = [
       "schemaVersion",
       "authorityId",
       "inputHash",
@@ -21945,9 +22045,12 @@ function readRunInputSnapshotDb(db, authorityId) {
       "repositories",
       "operations",
       "nativeConfigHash"
-    ]);
+    ];
+    if (inputs.schemaVersion === 2) shape(inputs, [...baseKeys, "role"]);
+    else if (inputs.schemaVersion === 1) shape(inputs, baseKeys);
+    else throw denied2();
     integer2(snapshot2.createdAt, 0);
-    if (snapshot2.authorityId !== authorityId || inputs.authorityId !== authorityId || inputs.schemaVersion !== 1 || row.created_at !== snapshot2.createdAt || inputs.createdAt !== snapshot2.createdAt || snapshot2.inputHash !== row.input_hash || inputs.inputHash !== row.input_hash || runInputHash(snapshot2) !== row.input_hash || r.projectId !== projectOf(db).project_id || grant.projectId !== r.projectId || r.taskId !== authority.task_id || grant.taskId !== r.taskId || r.workItemId !== authority.work_item_id || grant.workItemId !== r.workItemId || r.runId !== authority.run_id || grant.runId !== r.runId || r.generation !== authority.generation || grant.generation !== r.generation || digest(inputs.operations) !== digest(grant.operations) || inputs.nativeConfigHash !== grant.native.configHash || ![
+    if (snapshot2.authorityId !== authorityId || inputs.authorityId !== authorityId || row.created_at !== snapshot2.createdAt || inputs.createdAt !== snapshot2.createdAt || snapshot2.inputHash !== row.input_hash || inputs.inputHash !== row.input_hash || runInputHash(snapshot2) !== row.input_hash || r.projectId !== projectOf(db).project_id || grant.projectId !== r.projectId || r.taskId !== authority.task_id || grant.taskId !== r.taskId || r.workItemId !== authority.work_item_id || grant.workItemId !== r.workItemId || r.runId !== authority.run_id || grant.runId !== r.runId || r.generation !== authority.generation || grant.generation !== r.generation || digest(inputs.operations) !== digest(grant.operations) || inputs.nativeConfigHash !== grant.native.configHash || ![
       inputs.requirements,
       inputs.rules,
       inputs.knowledge,
@@ -21956,45 +22059,48 @@ function readRunInputSnapshotDb(db, authorityId) {
       v.repositories,
       v.inputResults,
       v.artifacts
-    ].every(Array.isArray)) throw denied();
+    ].every(Array.isArray)) throw denied2();
+    if (inputs.schemaVersion === 2) {
+      if (!grant.role || digest(grant.role) !== digest({ roleId: inputs.role.roleId, revision: inputs.role.revision }) || digest(inputs.role) !== digest(rolePinDb(db, grant))) throw denied2();
+    } else if (grant.role) throw denied2();
     return snapshot2;
   } catch {
-    throw denied();
+    throw denied2();
   }
 }
 function safeContext(value) {
   const encoded = JSON.stringify(value);
   if (redact(encoded) !== encoded || Buffer.from(encoded).toString("utf8") !== encoded) throw new KddError("private or malformed run input");
 }
-function readRunArtifact(db, path, hash, maxBytes, privateRoots, checkouts) {
+function readRunArtifact(db, path, hash2, maxBytes, privateRoots, checkouts) {
   try {
-    if (!isAbsolute5(path) || resolve4(path) !== path || realpathSync8(path) !== path || !/^[0-9a-f]{64}$/.test(hash)) throw denied();
+    if (!isAbsolute6(path) || resolve4(path) !== path || realpathSync9(path) !== path || !/^[0-9a-f]{64}$/.test(hash2)) throw denied2();
     for (let ancestor = path; ; ancestor = dirname7(ancestor)) {
-      if (lstatSync3(ancestor).isSymbolicLink()) throw denied();
+      if (lstatSync4(ancestor).isSymbolicLink()) throw denied2();
       if (dirname7(ancestor) === ancestor) break;
     }
-    const fileRoot = filesDir(db.name), stored = existsSync8(fileRoot) && realpathSync8(fileRoot) === fileRoot && inside(fileRoot, path);
-    if (memoryPrivatePath(stored ? relative2(fileRoot, path) : path) || privateRoots.some((root) => inside(root, path) && !(stored && root !== fileRoot && inside(root, fileRoot)) && !checkouts.some((checkout) => root !== checkout && inside(root, checkout) && inside(checkout, path) && !memoryPrivatePath(relative2(checkout, path))))) throw denied();
-    const before = lstatSync3(path);
-    if (!before.isFile() || before.nlink !== 1 || before.size > maxBytes) throw denied();
+    const fileRoot = filesDir(db.name), stored = existsSync8(fileRoot) && realpathSync9(fileRoot) === fileRoot && inside(fileRoot, path);
+    if (memoryPrivatePath(stored ? relative3(fileRoot, path) : path) || privateRoots.some((root) => inside(root, path) && !(stored && root !== fileRoot && inside(root, fileRoot)) && !checkouts.some((checkout) => root !== checkout && inside(root, checkout) && inside(checkout, path) && !memoryPrivatePath(relative3(checkout, path))))) throw denied2();
+    const before = lstatSync4(path);
+    if (!before.isFile() || before.nlink !== 1 || before.size > maxBytes) throw denied2();
     for (const privatePath of [db.name, db.name + "-wal", db.name + "-shm"]) {
-      if (path === privatePath) throw denied();
+      if (path === privatePath) throw denied2();
       if (existsSync8(privatePath)) {
-        const s = lstatSync3(privatePath);
-        if (s.dev === before.dev && s.ino === before.ino) throw denied();
+        const s = lstatSync4(privatePath);
+        if (s.dev === before.dev && s.ino === before.ino) throw denied2();
       }
     }
-    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const fd = openSync2(path, constants2.O_RDONLY | constants2.O_NOFOLLOW);
     try {
-      const file = fstatSync(fd);
-      if (file.dev !== before.dev || file.ino !== before.ino || !file.isFile() || file.nlink !== 1 || file.size > maxBytes) throw denied();
-      const bytes2 = readFileSync8(fd), after = fstatSync(fd), current = lstatSync3(path);
-      if (bytes2.length !== file.size || after.dev !== file.dev || after.ino !== file.ino || after.nlink !== 1 || after.size !== file.size || after.mtimeMs !== file.mtimeMs || after.ctimeMs !== file.ctimeMs || current.dev !== file.dev || current.ino !== file.ino || current.isSymbolicLink() || createHash8("sha256").update(bytes2).digest("hex") !== hash) throw denied();
+      const file = fstatSync2(fd);
+      if (file.dev !== before.dev || file.ino !== before.ino || !file.isFile() || file.nlink !== 1 || file.size > maxBytes) throw denied2();
+      const bytes2 = readFileSync9(fd), after = fstatSync2(fd), current = lstatSync4(path);
+      if (bytes2.length !== file.size || after.dev !== file.dev || after.ino !== file.ino || after.nlink !== 1 || after.size !== file.size || after.mtimeMs !== file.mtimeMs || after.ctimeMs !== file.ctimeMs || current.dev !== file.dev || current.ino !== file.ino || current.isSymbolicLink() || createHash9("sha256").update(bytes2).digest("hex") !== hash2) throw denied2();
       const body = new TextDecoder("utf-8", { fatal: true }).decode(bytes2);
       safeContext(body);
       return body;
     } finally {
-      closeSync(fd);
+      closeSync2(fd);
     }
   } catch {
     throw new KddError("unsafe or changed run input artifact");
@@ -22003,6 +22109,7 @@ function readRunArtifact(db, path, hash, maxBytes, privateRoots, checkouts) {
 function runInputChangesDb(db, snapshot2) {
   if (!db.inTransaction) throw new KddError("run input check requires transaction");
   const { response, validation } = snapshot2, inputs = response.inputs, changes = [];
+  if (inputs.schemaVersion === 2 && !roleActiveDb(db, inputs.role.roleId)) changes.push({ reason: "role_changed" });
   const memoryRef = (record2) => ({ revision: record2.revision, hash: record2.hash });
   for (const required2 of inputs.requirements) {
     try {
@@ -22114,7 +22221,7 @@ function scopedTask(db, ref) {
 function contractHash(db, ref) {
   const task = scopedTask(db, ref);
   const criteria = db.prepare("SELECT id,text FROM criteria WHERE task_id=? ORDER BY id").all(task.id);
-  return createHash9("sha256").update(JSON.stringify({
+  return createHash10("sha256").update(JSON.stringify({
     projectId: ref.projectId,
     taskId: task.id,
     title: task.title,
@@ -22126,7 +22233,7 @@ function canonical(value) {
   const sort = (v) => Array.isArray(v) ? v.map(sort) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sort(v[k])])) : v;
   return JSON.stringify(sort(value));
 }
-var digest = (value) => createHash9("sha256").update(canonical(value)).digest("hex");
+var digest = (value) => createHash10("sha256").update(canonical(value)).digest("hex");
 function strings(value) {
   if (!Array.isArray(value)) throw new KddError("invalid strings");
   value.forEach(text);
@@ -22192,27 +22299,27 @@ function liveOwner(db, ref) {
 var LEGACY_EXECUTION_SQL = `execution_mode='manual'
   AND NOT EXISTS (SELECT 1 FROM managed_task_policy p WHERE p.task_id=tasks.id)
   AND NOT EXISTS (SELECT 1 FROM execution_handoffs h WHERE h.task_id=tasks.id AND h.completed_at IS NULL)`;
-var operations = ["get_context", "submit_report", "request_question"];
+var operations = ["get_context", "submit_report", "request_question", "read_skill_file"];
 var contexts = /* @__PURE__ */ new WeakMap();
-var denied2 = () => new KddError("run authority denied");
-var tokenHash = (token) => createHash10("sha256").update(token).digest("hex");
+var denied4 = () => new KddError("run authority denied");
+var tokenHash = (token) => createHash12("sha256").update(token).digest("hex");
 function modeledOwnership(db, input, scope) {
   const modeled = db.prepare("SELECT 1 FROM work_items WHERE id=?").get(input.workItemId);
   if (!modeled) {
-    if (input.ownership !== void 0) throw denied2();
+    if (input.ownership !== void 0) throw denied4();
     return;
   }
   if (!input.ownership) throw new KddError("modeled work requires ownership");
   const owner = liveOwner(db, input.ownership);
   const item = scopedWorkItem(db, { projectId: input.ownership.projectId, workItemId: input.workItemId });
-  if (owner.work_item_id !== input.workItemId || item.task.taskId !== input.taskId) throw denied2();
+  if (owner.work_item_id !== input.workItemId || item.task.taskId !== input.taskId) throw denied4();
   if (scope.some((repo) => repo.write && (!owner.write_access || item.definition.repoId === null || item.definition.repoId !== repo.repoId))) {
     throw new KddError("ownership writable repository mismatch");
   }
 }
 function canonicalCheckout(path) {
-  if (typeof path !== "string" || !isAbsolute6(path) || !lstatSync4(path).isDirectory()) throw new KddError("invalid repository scope");
-  return realpathSync9(path);
+  if (typeof path !== "string" || !isAbsolute7(path) || !lstatSync5(path).isDirectory()) throw new KddError("invalid repository scope");
+  return realpathSync10(path);
 }
 function repositoryScope(db, input, native) {
   if (!Array.isArray(input) || !input.length) throw new KddError("empty repository scope");
@@ -22230,43 +22337,43 @@ function repositoryScope(db, input, native) {
 }
 function privateStore(db, scope, native) {
   if (db.memory) return;
-  const path = realpathSync9(db.name);
+  const path = realpathSync10(db.name);
   if (db.name !== path) throw new KddError("project store alias denied");
   if (scope.some((resource) => inside(resource.checkoutPath, path) || inside(resource.commonDir, path))) throw new KddError("native repository scope exposes project store");
   const writableRoots = [canonicalCheckout(native.scratchDir), ...native.writableRoot ? [canonicalCheckout(native.writableRoot)] : []];
   for (const file of [path, `${path}-wal`, `${path}-shm`]) {
     if (writableRoots.some((root) => inside(root, file))) throw new KddError("native writable scope exposes project store");
     try {
-      if (!lstatSync4(file).isFile() || lstatSync4(file).nlink !== 1) throw new KddError("project store alias denied");
+      if (!lstatSync5(file).isFile() || lstatSync5(file).nlink !== 1) throw new KddError("project store alias denied");
     } catch (error2) {
       if (error2.code !== "ENOENT") throw error2;
     }
   }
 }
 function currentAuthority(db, row) {
-  if (!row || row.revoked_at !== null || !Number.isFinite(row.expires_at) || row.expires_at <= now()) throw denied2();
+  if (!row || row.revoked_at !== null || !Number.isFinite(row.expires_at) || row.expires_at <= now()) throw denied4();
   let grant;
   try {
     grant = JSON.parse(row.grant_json);
   } catch {
-    throw denied2();
+    throw denied4();
   }
   const latest = db.prepare("SELECT MAX(generation) generation FROM run_authorities WHERE task_id=? AND work_item_id=?").get(row.task_id, row.work_item_id).generation;
-  if (!grant || !Array.isArray(grant.operations) || !grant.operations.length || new Set(grant.operations).size !== grant.operations.length || grant.operations.some((operation) => !operations.includes(operation)) || grant.projectId !== projectOf(db).project_id || grant.taskId !== row.task_id || grant.workItemId !== row.work_item_id || grant.runId !== row.run_id || grant.generation !== row.generation || latest !== row.generation || !db.prepare("SELECT task_id FROM managed_task_policy WHERE task_id=?").get(row.task_id)) throw denied2();
+  if (!grant || !Array.isArray(grant.operations) || !grant.operations.length || new Set(grant.operations).size !== grant.operations.length || grant.operations.some((operation) => !operations.includes(operation)) || grant.projectId !== projectOf(db).project_id || grant.taskId !== row.task_id || grant.workItemId !== row.work_item_id || grant.runId !== row.run_id || grant.generation !== row.generation || latest !== row.generation || !db.prepare("SELECT task_id FROM managed_task_policy WHERE task_id=?").get(row.task_id)) throw denied4();
   mustGetTask(db, row.task_id);
   try {
     const repositories = repositoryScope(db, grant.repositories, grant.native);
-    if (JSON.stringify(repositories) !== JSON.stringify(grant.repositories)) throw denied2();
+    if (JSON.stringify(repositories) !== JSON.stringify(grant.repositories)) throw denied4();
     modeledOwnership(db, grant, repositories);
     privateStore(db, repositories, grant.native);
     assertRunInputsCurrentDb(db, row.authority_id);
   } catch {
-    throw denied2();
+    throw denied4();
   }
   return { row, grant };
 }
 function lookup(db, token) {
-  if (typeof token !== "string" || !/^[0-9a-f]{64}$/.test(token)) throw denied2();
+  if (typeof token !== "string" || !/^[0-9a-f]{64}$/.test(token)) throw denied4();
   const row = db.prepare("SELECT * FROM run_authorities WHERE token_hash=?").get(tokenHash(token));
   return currentAuthority(db, row);
 }
@@ -22276,25 +22383,50 @@ function openRunContext(db, token) {
     const context = Object.freeze({ kind: "run" });
     contexts.set(context, { db, token, authorityId: row.authority_id, grant });
     return context;
-  }).immediate();
+  }).deferred();
 }
 function registered(context) {
   const stored = typeof context === "object" && context !== null ? contexts.get(context) : void 0;
-  if (!stored?.db.open) throw denied2();
+  if (!stored?.db.open) throw denied4();
   return stored;
 }
 function live(context, operation) {
   const stored = registered(context), { row, grant } = lookup(stored.db, stored.token);
-  if (row.authority_id !== stored.authorityId || JSON.stringify(grant) !== JSON.stringify(stored.grant) || operation && !grant.operations.includes(operation)) throw denied2();
+  if (row.authority_id !== stored.authorityId || JSON.stringify(grant) !== JSON.stringify(stored.grant) || operation && !grant.operations.includes(operation)) throw denied4();
   return { ...stored, grant };
 }
 function runOperations(context) {
-  return registered(context).db.transaction(() => Object.freeze([...live(context).grant.operations])).immediate();
+  return registered(context).db.transaction(() => Object.freeze([...live(context).grant.operations])).deferred();
 }
 function readRunContext(context) {
   return registered(context).db.transaction(() => {
     const { db, authorityId } = live(context, "get_context");
     return readRunInputSnapshotDb(db, authorityId).response;
+  }).immediate();
+}
+function readSkillFile(context, input) {
+  return registered(context).db.transaction(() => {
+    const { db, authorityId } = live(context, "read_skill_file");
+    try {
+      shape(input, ["skill", "path", "offset"]);
+      if (typeof input.skill !== "string" || !input.skill || !validSkillPath(input.path) || !Number.isSafeInteger(input.offset) || input.offset < 0) throw denied4();
+      const snapshot2 = readRunInputSnapshotDb(db, authorityId), pin2 = snapshot2.response.inputs;
+      if (pin2.schemaVersion !== 2 || !pin2.role.skills.some((skill) => skill.name === input.skill)) throw denied4();
+      const file = db.prepare(`SELECT bytes,sha256,mime FROM role_skill_files WHERE role_id=? AND revision=?
+        AND skill_name=? AND relative_path=?`).get(pin2.role.roleId, pin2.role.revision, input.skill, input.path);
+      if (!file || createHash12("sha256").update(file.bytes).digest("hex") !== file.sha256 || input.offset > file.bytes.length || file.bytes.length > 0 && input.offset === file.bytes.length) throw denied4();
+      const chunk = file.bytes.subarray(input.offset, input.offset + 32768);
+      return {
+        contentBase64: chunk.toString("base64"),
+        offset: input.offset,
+        length: chunk.length,
+        size: file.bytes.length,
+        sha256: file.sha256,
+        mime: file.mime
+      };
+    } catch {
+      throw new KddError("skill file denied");
+    }
   }).immediate();
 }
 function runEvent(context, operation, body) {
@@ -22363,6 +22495,11 @@ function createRunServer(context) {
     inputSchema: external_exports.object({}).strict(),
     annotations: { ...annotations, readOnlyHint: true, idempotentHint: true }
   }, async () => result(() => readRunContext(context)));
+  if (granted.includes("read_skill_file")) server.registerTool("read_skill_file", {
+    description: "Read one pinned skill file chunk for this run",
+    inputSchema: external_exports.object({ skill: external_exports.string(), path: external_exports.string(), offset: external_exports.number().int().nonnegative() }).strict(),
+    annotations: { ...annotations, readOnlyHint: true, idempotentHint: true }
+  }, async (input) => result(() => readSkillFile(context, input)));
   if (granted.includes("submit_report")) server.registerTool("submit_report", {
     description: "Record an untrusted report for this run",
     inputSchema: body,
@@ -22400,7 +22537,7 @@ async function startRunServer(configPath) {
 
 // src/run_main.ts
 var args = process.argv.slice(2);
-if (args.length !== 2 || args[0] !== "--config" || !isAbsolute7(args[1])) {
+if (args.length !== 2 || args[0] !== "--config" || !isAbsolute8(args[1])) {
   console.error("run broker startup denied");
   process.exit(1);
 }

@@ -20,7 +20,7 @@ try {
   git(source, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture');
   git(root, 'clone', '--no-hardlinks', '-q', source, workspace);
   git(backend, 'init', '-q');
-  const packet = await preflightCodex({ executable: '/opt/homebrew/bin/codex', model: 'fixture-codex', cwd: workspace,
+  const packet = await preflightCodex({ executable: '/opt/homebrew/bin/codex', model: 'gpt-6-sol', effort: 'high', cwd: workspace,
     controlDir, readableRoots: [workspace, backend], writableRoot: workspace, scratchDir: scratch, protectedPaths: [source, privateFile] });
   assertVerifiedCodexPackage(packet); checks.push('actual-package-issued');
   assert.ok(Object.isFrozen(packet) && Object.isFrozen(packet.argv) && Object.isFrozen(packet.env)

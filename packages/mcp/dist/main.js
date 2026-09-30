@@ -21117,23 +21117,23 @@ import Database3 from "better-sqlite3";
 import { realpathSync as realpathSync2 } from "fs";
 import { createHash as createHash3 } from "crypto";
 import Database4 from "better-sqlite3";
-import { existsSync as existsSync4, readFileSync as readFileSync4, readdirSync as readdirSync4, realpathSync as realpathSync5 } from "fs";
-import { dirname as dirname4, join as join5 } from "path";
-import { createHash as createHash5 } from "crypto";
+import { existsSync as existsSync4, readFileSync as readFileSync5, readdirSync as readdirSync5, realpathSync as realpathSync6 } from "fs";
+import { dirname as dirname4, join as join6 } from "path";
+import { createHash as createHash6 } from "crypto";
 import {
   existsSync as existsSync5,
   mkdirSync as mkdirSync4,
-  readFileSync as readFileSync5,
+  readFileSync as readFileSync6,
   renameSync as renameSync3,
   rmSync as rmSync3,
   statSync as statSync2,
   writeFileSync as writeFileSync3
 } from "fs";
-import { basename as basename3, dirname as dirname5, extname, join as join6 } from "path";
+import { basename as basename3, dirname as dirname5, extname, join as join7 } from "path";
 import Database5 from "better-sqlite3";
-import { execFileSync as execFileSync8 } from "child_process";
-import { existsSync as existsSync11, readFileSync as readFileSync11, readdirSync as readdirSync7, realpathSync as realpathSync12 } from "fs";
-import { dirname as dirname10, join as join11 } from "path";
+import { execFileSync as execFileSync9 } from "child_process";
+import { existsSync as existsSync11, readFileSync as readFileSync13, readdirSync as readdirSync8, realpathSync as realpathSync13 } from "fs";
+import { dirname as dirname10, join as join12 } from "path";
 var CAPS = {
   briefBytes: 4096,
   // JSON/MCP payload для детерминированного resume-пакета
@@ -21183,6 +21183,9 @@ var CAPS = {
   // сотни КБ одной строкой в базу, которую шарят все worktree проекта.
   fileBytes: 20 * 1024 * 1024,
   // потолок вложения: доска личная, но 20 MB картинки хватает всем
+  skillFileBytes: 1024 * 1024,
+  skillFileCount: 128,
+  skillTotalBytes: 8 * 1024 * 1024,
   agentFieldChars: 4096,
   // строковый лист в detail (вывод тула, аргумент, текст ответа)
   agentDetailItems: 64,
@@ -21591,6 +21594,51 @@ CREATE TRIGGER run_input_snapshots_immutable_update BEFORE UPDATE ON run_input_s
 BEGIN SELECT RAISE(ABORT,'immutable run input snapshot'); END;
 CREATE TRIGGER run_input_snapshots_immutable_delete BEFORE DELETE ON run_input_snapshots
 BEGIN SELECT RAISE(ABORT,'immutable run input snapshot'); END;
+  `,
+  // v18: immutable role revisions and pinned skill bytes live in the project store.
+  `
+CREATE TABLE role_profiles (
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, name TEXT NOT NULL,
+  current_revision INTEGER NOT NULL CHECK(typeof(current_revision)='integer' AND current_revision > 0),
+  revoked_at INTEGER CHECK(revoked_at IS NULL OR (typeof(revoked_at)='integer' AND revoked_at > 0))
+);
+CREATE TABLE role_revisions (
+  role_id TEXT NOT NULL REFERENCES role_profiles(id),
+  revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision > 0),
+  definition_json TEXT NOT NULL CHECK(json_valid(definition_json)),
+  hash TEXT NOT NULL CHECK(length(hash)=64 AND hash NOT GLOB '*[^0-9a-f]*'),
+  manifest_hash TEXT NOT NULL CHECK(length(manifest_hash)=64 AND manifest_hash NOT GLOB '*[^0-9a-f]*'),
+  created_at INTEGER NOT NULL,
+  command_id TEXT NOT NULL UNIQUE CHECK(length(trim(command_id))>0),
+  command_hash TEXT NOT NULL CHECK(length(command_hash)=64 AND command_hash NOT GLOB '*[^0-9a-f]*'),
+  PRIMARY KEY(role_id, revision)
+);
+CREATE TABLE role_skill_files (
+  role_id TEXT NOT NULL, revision INTEGER NOT NULL,
+  skill_name TEXT NOT NULL, relative_path TEXT NOT NULL,
+  sha256 TEXT NOT NULL CHECK(length(sha256)=64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
+  mime TEXT NOT NULL, bytes BLOB NOT NULL CHECK(length(bytes)<=1048576),
+  PRIMARY KEY(role_id,revision,skill_name,relative_path),
+  FOREIGN KEY(role_id,revision) REFERENCES role_revisions(role_id,revision)
+);
+CREATE TRIGGER role_profiles_immutable BEFORE UPDATE OF id,project_id,name ON role_profiles
+BEGIN SELECT RAISE(ABORT,'immutable role identity'); END;
+CREATE TRIGGER role_profiles_no_delete BEFORE DELETE ON role_profiles
+BEGIN SELECT RAISE(ABORT,'immutable role identity'); END;
+CREATE TRIGGER role_profiles_current BEFORE UPDATE OF current_revision ON role_profiles
+WHEN NEW.current_revision<>OLD.current_revision+1
+BEGIN SELECT RAISE(ABORT,'role revision must advance once'); END;
+CREATE TRIGGER role_profiles_no_unrevoke BEFORE UPDATE OF revoked_at ON role_profiles
+WHEN OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NOT OLD.revoked_at
+BEGIN SELECT RAISE(ABORT,'role revocation is final'); END;
+CREATE TRIGGER role_revisions_immutable_update BEFORE UPDATE ON role_revisions
+BEGIN SELECT RAISE(ABORT,'immutable role revision'); END;
+CREATE TRIGGER role_revisions_immutable_delete BEFORE DELETE ON role_revisions
+BEGIN SELECT RAISE(ABORT,'immutable role revision'); END;
+CREATE TRIGGER role_skill_files_immutable_update BEFORE UPDATE ON role_skill_files
+BEGIN SELECT RAISE(ABORT,'immutable skill file'); END;
+CREATE TRIGGER role_skill_files_immutable_delete BEFORE DELETE ON role_skill_files
+BEGIN SELECT RAISE(ABORT,'immutable skill file'); END;
   `
 ];
 function projectOf(db) {
@@ -21912,8 +21960,8 @@ function resolveDbPath(cwd = process.cwd()) {
   }
   const registered2 = lookupProjectStore(realpathSync2(common), kddHome());
   if (registered2) return registered2;
-  const hash = createHash("sha256").update(common).digest("hex").slice(0, 16);
-  return { dbPath: join3(kddHome(), hash, "kdd.db"), projectPath: common };
+  const hash2 = createHash("sha256").update(common).digest("hex").slice(0, 16);
+  return { dbPath: join3(kddHome(), hash2, "kdd.db"), projectPath: common };
 }
 function resolveDecisionsDir(cwd = process.cwd()) {
   if (process.env.KDD_DECISIONS_DIR) return process.env.KDD_DECISIONS_DIR;
@@ -22079,7 +22127,7 @@ function parseDecisionMd(raw) {
 function syncIndex(db, decisionsDir) {
   db.transaction(() => {
     if (canSyncLegacyDecisions(db, decisionsDir)) {
-      const files = existsSync4(decisionsDir) ? readdirSync4(decisionsDir).filter((f) => f.endsWith(".md")) : [];
+      const files = existsSync4(decisionsDir) ? readdirSync5(decisionsDir).filter((f) => f.endsWith(".md")) : [];
       const inDb = new Map(
         db.prepare(
           `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`
@@ -22089,9 +22137,9 @@ function syncIndex(db, decisionsDir) {
       for (const f of files) {
         const slug = f.slice(0, -3);
         seen.add(slug);
-        const path = join5(decisionsDir, f);
-        if (!canSyncLegacyDecisions(db, dirname4(realpathSync5(path)))) continue;
-        const doc = parseDecisionMd(readFileSync4(path, "utf8"));
+        const path = join6(decisionsDir, f);
+        if (!canSyncLegacyDecisions(db, dirname4(realpathSync6(path)))) continue;
+        const doc = parseDecisionMd(readFileSync5(path, "utf8"));
         const title = doc.title || slug;
         const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
         const sourceTasks = JSON.stringify(doc.sourceTasks);
@@ -22204,9 +22252,9 @@ var MIME = {
 };
 var filesDir = (dbPath) => {
   if (dbPath === ":memory:") throw new KddError("attachments need a real board file, not :memory:");
-  return join6(dirname5(dbPath), "files");
+  return join7(dirname5(dbPath), "files");
 };
-var filePath = (dbPath, f) => join6(filesDir(dbPath), `${f.sha256}.${f.ext}`);
+var filePath = (dbPath, f) => join7(filesDir(dbPath), `${f.sha256}.${f.ext}`);
 function listFiles(db, taskId) {
   return db.prepare(`SELECT * FROM files WHERE task_id = ? ORDER BY id`).all(taskId);
 }
@@ -22223,15 +22271,15 @@ function attachFile(db, dbPath, taskId, srcPath, opts, actor) {
       if (stat.size > CAPS.fileBytes) {
         throw new KddError(`file is ${stat.size} bytes, the limit is ${CAPS.fileBytes}`);
       }
-      data = readFileSync5(srcPath);
+      data = readFileSync6(srcPath);
     } catch (e) {
       if (e instanceof KddError) throw e;
       throw new KddError(`cannot read ${srcPath}: ${e.message}`);
     }
     mustGetTask(db, taskId);
-    const sha256 = createHash5("sha256").update(data).digest("hex");
+    const sha256 = createHash6("sha256").update(data).digest("hex");
     const ext = (extname(srcPath).slice(1) || "bin").toLowerCase();
-    const target = join6(filesDir(dbPath), `${sha256}.${ext}`);
+    const target = join7(filesDir(dbPath), `${sha256}.${ext}`);
     if (!existsSync5(target)) {
       mkdirSync4(filesDir(dbPath), { recursive: true });
       const tmp = `${target}.${process.pid}.tmp`;
@@ -22332,7 +22380,7 @@ function appendTaskMutationEvent(db, taskId, actor, action, detail, opts) {
   if (!session) return appendEvent(db, taskId, actor, action, detail, opts);
   const git3 = (args) => {
     try {
-      return execFileSync8("git", args, {
+      return execFileSync9("git", args, {
         cwd: session.cwd,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"]
@@ -22667,10 +22715,10 @@ function readTaskDecisions(db, decisionsDir, taskId) {
     return db.prepare("SELECT slug,title,created,superseded_by,source_tasks FROM decisions ORDER BY slug").all().filter((row) => JSON.parse(row.source_tasks).includes(taskId)).map(({ source_tasks, ...row }) => ({ ...row, title: capText(row.title, CAPS.titleChars) }));
   }
   if (!existsSync11(decisionsDir)) return [];
-  return readdirSync7(decisionsDir).filter((file) => file.endsWith(".md")).flatMap((file) => {
+  return readdirSync8(decisionsDir).filter((file) => file.endsWith(".md")).flatMap((file) => {
     const slug = file.slice(0, -3);
-    if (!canSyncLegacyDecisions(db, dirname10(realpathSync12(join11(decisionsDir, file))))) return [];
-    const decision = parseDecisionMd(readFileSync11(join11(decisionsDir, file), "utf8"));
+    if (!canSyncLegacyDecisions(db, dirname10(realpathSync13(join12(decisionsDir, file))))) return [];
+    const decision = parseDecisionMd(readFileSync13(join12(decisionsDir, file), "utf8"));
     if (!decision.sourceTasks.includes(taskId)) return [];
     return [{
       slug,

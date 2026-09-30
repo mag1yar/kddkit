@@ -13,18 +13,31 @@ vi.mock('../src/codex_native_probe.js', () => ({
 import { assertVerifiedCodexPackage, preflightCodex, spawnCheckedNative, withNativeControllerLock } from '../src/codex_permissions.js';
 
 it.skipIf(process.platform !== 'darwin')('refuses start and resume when a linked worktree changes its common-dir', async () => {
+  const previousHome = process.env.HOME;
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'kdd-git-binding-')));
   try {
     const clone = join(root, 'clone'), workspace = join(root, 'workspace');
     const scratch = join(root, 'scratch'), controlDir = join(root, 'control'), executable = join(root, 'codex-fixture');
     for (const path of [clone, scratch, controlDir]) mkdirSync(path);
-    writeFileSync(executable, '#!/bin/sh\nprintf "codex-cli 0.157.0\\n"\n', { mode: 0o755 });
+    writeFileSync(executable, `#!/usr/bin/env node
+if (process.argv[2] === '--version') { console.log('codex-cli 0.159.0'); process.exit(0); }
+require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+  const request = JSON.parse(line);
+  if (request.id === 1) console.log(JSON.stringify({ id: 1, result: {} }));
+  if (request.method === 'model/list') console.log(JSON.stringify({ id: request.id, result: {
+    data: [{ model: 'gpt-6-sol', supportedReasoningEfforts: [{ reasoningEffort: 'high' }] }], nextCursor: null } }));
+});
+`, { mode: 0o755 });
+    process.env.HOME = root; mkdirSync(join(root, '.codex'));
+    writeFileSync(join(root, '.codex/models_cache.json'), JSON.stringify({ client_version: '0.159.0',
+      fetched_at: new Date().toISOString(), models: [{ slug: 'gpt-6-sol', context_window: 100000,
+        effective_context_window_percent: 95 }] }));
     const git = (cwd: string, ...args: string[]) => execFileSync('/usr/bin/git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
     git(clone, 'init', '-q');
     git(clone, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty', '-qm', 'seed');
     git(clone, 'worktree', 'add', '-q', '-b', 'fixture', workspace);
     const packet = await preflightCodex({ executable, cwd: workspace, readableRoots: [workspace], writableRoot: workspace,
-      scratchDir: scratch, controlDir, model: 'fixture-codex', protectedPaths: [clone] });
+      scratchDir: scratch, controlDir, model: 'gpt-6-sol', effort: 'high', protectedPaths: [clone] });
     expect(() => assertVerifiedCodexPackage(packet)).not.toThrow();
     const pointer = join(git(workspace, 'rev-parse', '--absolute-git-dir'), 'commondir'), original = readFileSync(pointer);
     const replacement = join(workspace, 'replacement-common');
@@ -39,5 +52,5 @@ it.skipIf(process.platform !== 'darwin')('refuses start and resume when a linked
     }
     await withNativeControllerLock(controlDir, () => { writeFileSync(pointer, original); rmSync(replacement, { recursive: true }); });
     expect(() => assertVerifiedCodexPackage(packet)).not.toThrow();
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { process.env.HOME = previousHome; rmSync(root, { recursive: true, force: true }); }
 });

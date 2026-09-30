@@ -4,6 +4,7 @@ import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import * as core from '../src/index.js';
 import { memoryFixture, cleanupFixtures, fixtureHash } from './memory_fixture.js';
+import { roleFixture } from './role_fixture.js';
 afterEach(cleanupFixtures);
 
 it('upgrades a populated v16 WAL store without rewriting any old rows', () => {
@@ -54,7 +55,7 @@ it('upgrades a populated v16 WAL store without rewriting any old rows', () => {
     const before = snapshot(raw);
     expect(statSync(path + '-wal').size).toBeGreaterThan(0);
     upgraded = core.openDb(path, core.canonicalCommonDir(f.repo), f.repo);
-    expect(upgraded.pragma('user_version', { simple: true })).toBe(17);
+    expect(upgraded.pragma('user_version', { simple: true })).toBe(18);
     expect(snapshot(upgraded)).toEqual(before);
     expect(upgraded.prepare('SELECT count(*) n FROM run_input_snapshots').get()).toEqual({ n: 0 });
     backup = new Database(path + '.v16.bak', { readonly: true });
@@ -64,7 +65,7 @@ it('upgrades a populated v16 WAL store without rewriting any old rows', () => {
     upgraded.close(); upgraded = core.openDb(path);
     expect(snapshot(upgraded)).toEqual(before);
     expect(upgraded.prepare('SELECT count(*) n FROM memory_revisions').get()).toEqual({ n: 1 });
-    upgraded.pragma('user_version=18'); expect(() => core.openDb(path)).toThrow(/newer|version|schema/);
+    upgraded.pragma('user_version=19'); expect(() => core.openDb(path)).toThrow(/newer|version|schema/);
   } finally { backup?.close(); upgraded?.close(); raw.close(); }
 });
 
@@ -232,7 +233,7 @@ it('refuses a published private bootstrap in a readable checkout before issuing 
     dependencies:[{key:'api',producer:producer.ref,producerRevision:1,outputKey:'api',binding:{kind:'contract',repoId:null,version:'v1'}}]});
   const owner=core.reserveWorkItem(f.handle,{ref:consumer.ref,expectedRevision:1,expectedFence:0,expectedMode:'manual',ownerId:'reader',write:false});
   const native={...f.input.native,controlDir,writableRoot:undefined,protectedPaths:[f.home,controlDir]};proved.add(native);
-  const input={...f.input,native,workItemId:consumer.ref.workItemId,ownership:owner.ref,repositories:f.input.repositories.map(r=>({...r,write:false}))};
+  const input={...f.input,native,role:roleFixture(f.handle,'read'),workItemId:consumer.ref.workItemId,ownership:owner.ref,repositories:f.input.repositories.map(r=>({...r,write:false}))};
   const rows=()=>['managed_task_policy','run_authorities','run_input_snapshots','events'].map(t=>f.db.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all());
   const before=rows();expect(()=>core.issueRunAuthority(f.handle,input)).toThrow(/unsafe/);expect(rows()).toEqual(before);
 });

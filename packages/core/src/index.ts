@@ -33,7 +33,7 @@ export { observeCodexNative } from './codex_native_probe.js';
 export type { NativeEvidence } from './codex_native_probe.js';
 export { openController, assertLegacyTaskMutation, protectTask, issueRunAuthority,
   revokeRunAuthority, assertRunAuthorityBinding, openRunContext, runOperations,
-  readRunContext, submitRunReport, requestRunQuestion,
+  readRunContext, readSkillFile, submitRunReport, requestRunQuestion,
   readRunMemory, recallRunMemory, runMemoryRules } from './authority.js';
 export type { ControllerHandle, RunOperation, RunContext, IssueRunInput,
   IssuedRunAuthority, RunContextSnapshot, RunMemoryReadInput } from './authority.js';
@@ -51,6 +51,10 @@ export type { LaunchIntent, OwnershipRecord, ReserveWorkItemInput, HandoffRecord
   StopObservation, StopObserver, HandoffOutcome } from './execution_ownership.js';
 
 export { runInputSnapshot } from './run_inputs.js';
-export type { RunInputRef, RunInputSnapshot, RunInputSections, RunInputOptions } from './run_inputs.js';
+export type { RunInputRef, RunInputSnapshot, RunInputSections, RunInputOptions, RunRolePin } from './run_inputs.js';
 export { checkRunInputs } from './run_inputs_current.js';
 export type { RunInputReason, RunInputChange, RunInputStatus } from './run_inputs_current.js';
+export { saveRoleRevision, roleRevision, currentRoleRevision, revokeRole } from './roles.js';
+export type { SkillSource, RoleDefinition, RoleRef, RoleReceipt } from './roles.js';
+export { prepareRoleLaunch, spawnCheckedRoleRun } from './role_prompt.js';
+export type { RoleLaunchPermit } from './role_prompt.js';

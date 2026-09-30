@@ -1,5 +1,7 @@
 import type Database from 'better-sqlite3';
 import type { RunOperation, RunContextSnapshot } from './authority.js';
+import type { RoleRef } from './roles.js';
+import { roleActiveDb, roleFilesDb, roleRevisionDb } from './roles.js';
 import { controllerDb, type ControllerHandle } from './controller.js';
 import { digest, shape, integer, type TaskRef, type WorkItemRef, type WorkItemDefinition, type OwnershipRef } from './execution.js';
 import type { ResultPayload, ResultBinding } from './execution_results.js';
@@ -9,10 +11,11 @@ import { KddError } from './errors.js';
 
 export interface RunInputGrant {
   projectId: string; taskId: number; workItemId: string; runId: string; generation: number;
+  role?: RoleRef;
   operations: readonly RunOperation[];
   repositories: readonly { repoId: string; checkoutPath: string; commonDir: string; write: boolean }[];
   ownership?: OwnershipRef;
-  native: { readableRoots: readonly string[]; writableRoot?: string; scratchDir: string; configHash: string };
+  native: { readableRoots: readonly string[]; writableRoot?: string; scratchDir: string; configHash: string; contextWindow?: number };
 }
 export interface RunInputOptions { maxBytes?: number; query?: string; k?: number }
 export interface RunInputRef { projectId: string; authorityId: string }
@@ -26,14 +29,21 @@ export interface DependencyContextInput {
   edgeKey: string; resultId: string; payloadHash: string; binding: ResultBinding;
   payload: DependencyContextPayload; artifact?: { sha256: string; body: string };
 }
-export interface RunInputSections {
-  schemaVersion: 1; authorityId: string; inputHash: string; createdAt: number;
+interface RunInputBase {
+  authorityId: string; inputHash: string; createdAt: number;
   budget: { maxBytes: number; omittedRecords: number };
   requirements: RequirementInput[]; rules: MemoryRecord[]; knowledge: MemoryRecord[];
   workItem: { ref: WorkItemRef; revision: number; inputsHash: string; definition: WorkItemDefinition } | null;
   dependencies: DependencyContextInput[]; repositories: { repoId: string; commit: string; write: boolean }[];
   operations: RunOperation[]; nativeConfigHash: string;
 }
+export interface RunRolePin extends RoleRef {
+  hash: string; manifestHash: string; model: string; effort: string; contextWindow: number;
+  skills: { name: string; mode: 'Always' | 'Available'; manifestHash: string }[];
+  operations: RunOperation[]; nativeConfigHash: string;
+}
+export type RunInputSections = (RunInputBase & { schemaVersion: 1; role?: never }) |
+  (RunInputBase & { schemaVersion: 2; role: RunRolePin });
 export interface RunInputValidation {
   repositories: MemoryRepoVersion[]; ownership: OwnershipRef | null;
   inputResults: { edgeKey: string; resultId: string }[];
@@ -44,6 +54,15 @@ export interface RunInputSnapshot {
   response: RunContextSnapshot & { inputs: RunInputSections }; validation: RunInputValidation;
 }
 const denied = () => new KddError('run input snapshot denied');
+function rolePinDb(db: Database.Database, grant: RunInputGrant): RunRolePin {
+  if (!grant.role || !Number.isSafeInteger(grant.native.contextWindow) || grant.native.contextWindow! < 1) throw denied();
+  const { definition, receipt } = roleRevisionDb(db, grant.role), files = roleFilesDb(db, grant.role);
+  return { ...receipt, model: definition.model, effort: definition.effort, contextWindow: grant.native.contextWindow!,
+    skills: definition.skills.map(skill => ({ name: skill.name, mode: skill.mode,
+      manifestHash: digest(files.filter(file => file.skill === skill.name)
+        .map(file => ({ path: file.path, sha256: file.sha256, mime: file.mime, size: file.bytes.length }))) })),
+    operations: [...grant.operations], nativeConfigHash: grant.native.configHash };
+}
 export function runInputHash(snapshot: RunInputSnapshot): string {
   return digest({ ...snapshot, inputHash: undefined, response: { ...snapshot.response,
     inputs: { ...snapshot.response.inputs, inputHash: undefined } } });
@@ -60,10 +79,13 @@ export function readRunInputSnapshotDb(db: Database.Database, authorityId: strin
     shape(snapshot, ['authorityId','inputHash','createdAt','response','validation']);
     const {response:r,validation:v} = snapshot, inputs = r.inputs;
     shape(v,['repositories','ownership','inputResults','artifacts']);
-    shape(inputs,['schemaVersion','authorityId','inputHash','createdAt','budget','requirements','rules','knowledge',
-      'workItem','dependencies','repositories','operations','nativeConfigHash']);
+    const baseKeys = ['schemaVersion','authorityId','inputHash','createdAt','budget','requirements','rules','knowledge',
+      'workItem','dependencies','repositories','operations','nativeConfigHash'];
+    if (inputs.schemaVersion === 2) shape(inputs, [...baseKeys, 'role']);
+    else if (inputs.schemaVersion === 1) shape(inputs, baseKeys);
+    else throw denied();
     integer(snapshot.createdAt,0);
-    if (snapshot.authorityId !== authorityId || inputs.authorityId !== authorityId || inputs.schemaVersion !== 1
+    if (snapshot.authorityId !== authorityId || inputs.authorityId !== authorityId
       || row.created_at !== snapshot.createdAt || inputs.createdAt !== snapshot.createdAt
       || snapshot.inputHash !== row.input_hash || inputs.inputHash !== row.input_hash || runInputHash(snapshot) !== row.input_hash
       || r.projectId !== projectOf(db).project_id || grant.projectId !== r.projectId
@@ -73,6 +95,10 @@ export function readRunInputSnapshotDb(db: Database.Database, authorityId: strin
       || digest(inputs.operations) !== digest(grant.operations) || inputs.nativeConfigHash !== grant.native.configHash
       || ![inputs.requirements,inputs.rules,inputs.knowledge,inputs.dependencies,inputs.repositories,
         v.repositories,v.inputResults,v.artifacts].every(Array.isArray)) throw denied();
+    if (inputs.schemaVersion === 2) {
+      if (!grant.role || digest(grant.role) !== digest({ roleId: inputs.role.roleId, revision: inputs.role.revision })
+        || digest(inputs.role) !== digest(rolePinDb(db, grant))) throw denied();
+    } else if (grant.role) throw denied();
     return snapshot;
   } catch { throw denied(); }
 }
@@ -164,6 +190,8 @@ export function buildRunInputSnapshot(db: Database.Database, original: RunInputG
   options: RunInputOptions = {}, observers: ResultObservers = {}, privateRoots: readonly string[] = []): RunInputSnapshot {
   if(!db.inTransaction || !/^[0-9a-f]{32}$/.test(authorityId))throw denied();
   const grant=structuredClone(original);shape(options,[],['maxBytes','query','k']);
+  if (!grant.role || !roleActiveDb(db, grant.role.roleId)) throw denied();
+  const role = rolePinDb(db, grant);
   const maxBytes=options.maxBytes??CAPS.agentDetailBytes;integer(maxBytes);
   if(maxBytes>CAPS.agentDetailBytes)throw new KddError('run input budget exceeds limit');
   if(options.k!==undefined){integer(options.k);if(options.k>CAPS.recallKMax)throw denied();}
@@ -219,7 +247,7 @@ export function buildRunInputSnapshot(db: Database.Database, original: RunInputG
       criteria:listCriteria(db,task.id).map(c=>({id:c.id,text:c.text,checked:c.checked_at!==null})),
       decisions:db.prepare(`SELECT d.slug,d.title FROM decisions d,json_each(d.source_tasks) s WHERE CAST(s.value AS INTEGER)=? ORDER BY d.slug`)
         .all(task.id) as {slug:string;title:string}[],
-      inputs:{schemaVersion:1,authorityId,inputHash:'0'.repeat(64),createdAt,budget:{maxBytes,omittedRecords:optional.length},
+      inputs:{schemaVersion:2,role,authorityId,inputHash:'0'.repeat(64),createdAt,budget:{maxBytes,omittedRecords:optional.length},
         requirements,rules,knowledge:[],workItem:item?{ref:item.ref,revision:item.revision,inputsHash:item.inputsHash,definition:item.definition}:null,
         dependencies,repositories:repositories.map((r,i)=>({repoId:r.repoId,commit:r.commit,write:grant.repositories[i].write})),
         operations:[...grant.operations],nativeConfigHash:grant.native.configHash}},

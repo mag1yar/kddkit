@@ -4,7 +4,7 @@ import { isAbsolute } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { CAPS, MIGRATIONS, openRunContext, runOperations, readRunContext, submitRunReport, requestRunQuestion, type RunContext } from '@kddkit/core';
+import { CAPS, MIGRATIONS, openRunContext, runOperations, readRunContext, readSkillFile, submitRunReport, requestRunQuestion, type RunContext } from '@kddkit/core';
 
 export function createRunServer(context: RunContext): McpServer {
   const server = new McpServer({ name: 'kdd-run', version: '0.1.0' });
@@ -19,6 +19,11 @@ export function createRunServer(context: RunContext): McpServer {
     description: 'Read this run’s saved input context', inputSchema: z.object({}).strict(),
     annotations: { ...annotations, readOnlyHint: true, idempotentHint: true },
   }, async () => result(() => readRunContext(context)));
+  if (granted.includes('read_skill_file')) server.registerTool('read_skill_file', {
+    description: 'Read one pinned skill file chunk for this run',
+    inputSchema: z.object({ skill: z.string(), path: z.string(), offset: z.number().int().nonnegative() }).strict(),
+    annotations: { ...annotations, readOnlyHint: true, idempotentHint: true },
+  }, async input => result(() => readSkillFile(context, input)));
   if (granted.includes('submit_report')) server.registerTool('submit_report', {
     description: 'Record an untrusted report for this run', inputSchema: body,
     annotations: { ...annotations, readOnlyHint: false, idempotentHint: false },

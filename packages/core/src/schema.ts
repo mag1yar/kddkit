@@ -386,4 +386,49 @@ BEGIN SELECT RAISE(ABORT,'immutable run input snapshot'); END;
 CREATE TRIGGER run_input_snapshots_immutable_delete BEFORE DELETE ON run_input_snapshots
 BEGIN SELECT RAISE(ABORT,'immutable run input snapshot'); END;
   `,
+  // v18: immutable role revisions and pinned skill bytes live in the project store.
+  `
+CREATE TABLE role_profiles (
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, name TEXT NOT NULL,
+  current_revision INTEGER NOT NULL CHECK(typeof(current_revision)='integer' AND current_revision > 0),
+  revoked_at INTEGER CHECK(revoked_at IS NULL OR (typeof(revoked_at)='integer' AND revoked_at > 0))
+);
+CREATE TABLE role_revisions (
+  role_id TEXT NOT NULL REFERENCES role_profiles(id),
+  revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision > 0),
+  definition_json TEXT NOT NULL CHECK(json_valid(definition_json)),
+  hash TEXT NOT NULL CHECK(length(hash)=64 AND hash NOT GLOB '*[^0-9a-f]*'),
+  manifest_hash TEXT NOT NULL CHECK(length(manifest_hash)=64 AND manifest_hash NOT GLOB '*[^0-9a-f]*'),
+  created_at INTEGER NOT NULL,
+  command_id TEXT NOT NULL UNIQUE CHECK(length(trim(command_id))>0),
+  command_hash TEXT NOT NULL CHECK(length(command_hash)=64 AND command_hash NOT GLOB '*[^0-9a-f]*'),
+  PRIMARY KEY(role_id, revision)
+);
+CREATE TABLE role_skill_files (
+  role_id TEXT NOT NULL, revision INTEGER NOT NULL,
+  skill_name TEXT NOT NULL, relative_path TEXT NOT NULL,
+  sha256 TEXT NOT NULL CHECK(length(sha256)=64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
+  mime TEXT NOT NULL, bytes BLOB NOT NULL CHECK(length(bytes)<=1048576),
+  PRIMARY KEY(role_id,revision,skill_name,relative_path),
+  FOREIGN KEY(role_id,revision) REFERENCES role_revisions(role_id,revision)
+);
+CREATE TRIGGER role_profiles_immutable BEFORE UPDATE OF id,project_id,name ON role_profiles
+BEGIN SELECT RAISE(ABORT,'immutable role identity'); END;
+CREATE TRIGGER role_profiles_no_delete BEFORE DELETE ON role_profiles
+BEGIN SELECT RAISE(ABORT,'immutable role identity'); END;
+CREATE TRIGGER role_profiles_current BEFORE UPDATE OF current_revision ON role_profiles
+WHEN NEW.current_revision<>OLD.current_revision+1
+BEGIN SELECT RAISE(ABORT,'role revision must advance once'); END;
+CREATE TRIGGER role_profiles_no_unrevoke BEFORE UPDATE OF revoked_at ON role_profiles
+WHEN OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NOT OLD.revoked_at
+BEGIN SELECT RAISE(ABORT,'role revocation is final'); END;
+CREATE TRIGGER role_revisions_immutable_update BEFORE UPDATE ON role_revisions
+BEGIN SELECT RAISE(ABORT,'immutable role revision'); END;
+CREATE TRIGGER role_revisions_immutable_delete BEFORE DELETE ON role_revisions
+BEGIN SELECT RAISE(ABORT,'immutable role revision'); END;
+CREATE TRIGGER role_skill_files_immutable_update BEFORE UPDATE ON role_skill_files
+BEGIN SELECT RAISE(ABORT,'immutable skill file'); END;
+CREATE TRIGGER role_skill_files_immutable_delete BEFORE DELETE ON role_skill_files
+BEGIN SELECT RAISE(ABORT,'immutable skill file'); END;
+  `,
 ];

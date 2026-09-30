@@ -8,6 +8,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import * as core from '../src/index.js';
 import * as authority from '../src/authority.js';
 import { fixtureHash } from './memory_fixture.js';
+import { roleFixture } from './role_fixture.js';
 
 // Native execution has its own real-tool gate. These DB tests isolate issuance/fencing.
 const proved = vi.hoisted(() => new WeakSet<object>());
@@ -19,6 +20,7 @@ vi.mock('../src/codex_permissions.js', async importOriginal => {
 });
 let root: string, home: string, source: string, workspace: string, backend: string, dbPath: string;
 let db: Database.Database;
+let roleWrite: core.RoleRef, roleRead: core.RoleRef;
 let saved: NodeJS.ProcessEnv;
 const connections: Database.Database[] = [];
 const user = { type: 'user' } as const;
@@ -36,14 +38,18 @@ beforeEach(() => {
   const resolved = core.resolveDbPath(source); dbPath = resolved.dbPath;
   db = core.openDb(dbPath, resolved.projectPath, source); connections.push(db);
   core.bindRepository(db, dbPath, home, { cwd: workspace, repoId: core.projectOf(db).primary_repo_id!, kind: 'managed' }, user);
+  roleWrite = roleFixture(core.openController(db), 'workspace-write');
+  roleRead = roleFixture(core.openController(db), 'read');
 });
 afterEach(() => {
   vi.restoreAllMocks();
   for (const connection of connections.splice(0)) if (connection.open) connection.close();
   process.env = saved; rmSync(root, { recursive: true, force: true });
 });
-function native(cwd = workspace, writable = true, readableRoots = [cwd]): core.VerifiedCodexPackage {
-  const packet = Object.freeze({ executable: '/fixture/codex', version: 'codex-cli 0.157.0', cwd,
+function native(cwd = workspace, writable = true, readableRoots = [cwd], model = 'gpt-6-sol', effort = 'high',
+  brokerTools: readonly core.RunOperation[] = ['get_context', 'submit_report', 'request_question']): core.VerifiedCodexPackage {
+  const packet = Object.freeze({ executable: '/fixture/codex', version: 'codex-cli 0.159.0', model, effort, contextWindow: 258400, cwd,
+    brokerConfigPath: join(home, 'broker.json'), brokerTools: Object.freeze([...brokerTools]),
     controlDir: home, readableRoots: Object.freeze(readableRoots), writableRoot: writable ? cwd : undefined,
     scratchDir: join(root, 'scratch'), protectedPaths: Object.freeze([home]), argv: Object.freeze([]),
     env: Object.freeze({}), configHash: 'a'.repeat(64), results: Object.freeze([]) });
@@ -52,7 +58,7 @@ function native(cwd = workspace, writable = true, readableRoots = [cwd]): core.V
 function issueInput(taskId: number) {
   return { taskId, workItemId: 'w1', runId: 'r1', expectedGeneration: 0, expiresAt: core.now() + 60,
     operations: ['get_context', 'submit_report', 'request_question'] as const,
-    repositories: [{ repoId: core.projectOf(db).primary_repo_id!, checkoutPath: workspace, write: true }], native: native() };
+    repositories: [{ repoId: core.projectOf(db).primary_repo_id!, checkoutPath: workspace, write: true }], native: native(), role: roleWrite };
 }
 function memoryInput(taskId: number | null, title = 'memory'): core.MemoryWriteInput {
   return { commandId: `memory:${title}`, entryId: null, expectedRevision: 0,
@@ -66,6 +72,125 @@ function runProposal(taskId: number, issued: core.IssuedRunAuthority, reportEven
     authority: { authorityId: issued.authorityId, workItemId: 'w1', runId: 'r1', generation: issued.generation }, reportEventId },
     author: { type: 'ai', id: 'r1' } };
 }
+it('refuses an unprofiled managed run before writing a marker, grant or audit event', () => {
+  const task = core.addTask(db, { title: 'requires role' }, user), handle = core.openController(db);
+  const { role: _role, ...unprofiled } = issueInput(task.id);
+  const tables = ['managed_task_policy', 'run_authorities', 'run_input_snapshots', 'events'];
+  const before = tables.map(table => db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get());
+  expect(() => core.issueRunAuthority(handle, unprofiled as unknown as core.IssueRunInput)).toThrow(/role/i);
+  expect(tables.map(table => db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get())).toEqual(before);
+});
+it('pins the exact role, skill manifest, model and grants in a private v2 run snapshot', () => {
+  const task = core.addTask(db, { title: 'pinned role' }, user), handle = core.openController(db);
+  const skillRoot = join(root, 'skill-source'), guide = join(skillRoot, 'guide');
+  mkdirSync(guide, { recursive: true }); writeFileSync(join(guide, 'SKILL.md'), '# Pinned body\n');
+  const role = core.saveRoleRevision(handle, { expectedRevision: 0, commandId: 'pinned-role', definition: {
+    name: 'Skilled', prompt: 'Follow the role.', runtime: 'codex', model: 'gpt-6-sol', effort: 'high',
+    access: 'workspace-write', operations: ['get_context', 'submit_report', 'request_question', 'read_skill_file'],
+    skills: [{ name: 'Guide', mode: 'Always', description: 'Pinned guide', source: { kind: 'local', root: skillRoot, path: 'guide' } }],
+  } });
+  const issued = core.issueRunAuthority(handle, { ...issueInput(task.id), role,
+    operations: ['get_context', 'submit_report', 'request_question', 'read_skill_file'],
+    native: native(workspace, true, [workspace], 'gpt-6-sol', 'high',
+      ['get_context', 'submit_report', 'request_question', 'read_skill_file']) });
+  const snapshot = core.runInputSnapshot(handle, { projectId: core.projectOf(db).project_id, authorityId: issued.authorityId });
+  expect(snapshot.response.inputs).toMatchObject({ schemaVersion: 2, role: {
+    roleId: role.roleId, revision: 1, hash: role.hash, manifestHash: role.manifestHash,
+    model: 'gpt-6-sol', effort: 'high', operations: ['get_context', 'submit_report', 'request_question', 'read_skill_file'],
+    nativeConfigHash: 'a'.repeat(64), skills: [{ name: 'Guide', mode: 'Always', manifestHash: expect.any(String) }],
+  } });
+  expect(JSON.stringify(snapshot)).not.toContain(skillRoot);
+  expect(JSON.stringify(snapshot)).not.toContain('# Pinned body');
+  const grant = JSON.parse((db.prepare('SELECT grant_json FROM run_authorities WHERE authority_id=?')
+    .get(issued.authorityId) as { grant_json: string }).grant_json);
+  expect(grant.role).toEqual({ roleId: role.roleId, revision: 1 });
+});
+it('rejects incompatible role, model, effort, access and operations before any run writes', () => {
+  const task = core.addTask(db, { title: 'profile gate' }, user), handle = core.openController(db);
+  const base = issueInput(task.id), limited = roleFixture(handle, 'workspace-write', ['get_context']);
+  const emptySkills = roleFixture(handle, 'workspace-write', ['get_context', 'read_skill_file']);
+  const revoked = roleFixture(handle); core.revokeRole(handle, revoked.roleId);
+  const attempts: core.IssueRunInput[] = [
+    { ...base, role: { roleId: '0'.repeat(32), revision: 1 } },
+    { ...base, role: { ...roleWrite, externalMcp: 'foreign' } as never },
+    { ...base, native: native(workspace, true, [workspace], 'other-model') },
+    { ...base, native: native(workspace, true, [workspace], 'gpt-6-sol', 'low') },
+    { ...base, role: roleRead },
+    { ...base, role: revoked },
+    { ...base, role: limited },
+    { ...base, role: emptySkills, operations: ['get_context', 'read_skill_file'] },
+    { ...base, operations: ['foreign_tool'] as never },
+  ];
+  const tables = ['managed_task_policy', 'run_authorities', 'run_input_snapshots', 'events'];
+  const before = tables.map(table => db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get());
+  for (const input of attempts) expect(() => core.issueRunAuthority(handle, input)).toThrow();
+  expect(tables.map(table => db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get())).toEqual(before);
+});
+it('rejects an unbound or mismatched broker without rotating a live grant', () => {
+  const task = core.addTask(db, { title: 'broker gate' }, user), handle = core.openController(db);
+  const input = issueInput(task.id), first = core.issueRunAuthority(handle, input);
+  const unbound = Object.freeze({ ...input.native, brokerConfigPath: undefined, brokerTools: [] as core.RunOperation[] });
+  const mismatched = Object.freeze({ ...input.native, brokerTools: ['get_context'] as core.RunOperation[] });
+  proved.add(unbound); proved.add(mismatched);
+  const tables = ['managed_task_policy', 'run_authorities', 'run_input_snapshots', 'events'];
+  const before = tables.map(table => db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get());
+  for (const packet of [unbound, mismatched]) {
+    expect(() => core.issueRunAuthority(handle, { ...input, expectedGeneration: 1, runId: 'r2', native: packet }))
+      .toThrow(/broker/);
+  }
+  expect(tables.map(table => db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get())).toEqual(before);
+  expect(core.readRunContext(core.openRunContext(db, first.token)).runId).toBe('r1');
+});
+it('requires file access for an Always-only skill before writing a grant', () => {
+  const task = core.addTask(db, { title: 'Always skill' }, user), handle = core.openController(db);
+  const root = join(workspace, 'always-skill'); mkdirSync(root);
+  writeFileSync(join(root, 'SKILL.md'), '# Always\n');
+  const role = core.saveRoleRevision(handle, { expectedRevision: 0, commandId: 'always-only', definition: {
+    name: 'Always reader', prompt: 'Read the guide.', runtime: 'codex', model: 'gpt-6-sol', effort: 'high',
+    access: 'workspace-write', operations: ['get_context', 'read_skill_file'],
+    skills: [{ name: 'AlwaysGuide', mode: 'Always', description: 'Pinned guide',
+      source: { kind: 'local', root: workspace, path: 'always-skill' } }],
+  } });
+  const input = issueInput(task.id);
+  const noRead = native(workspace, true, [workspace], 'gpt-6-sol', 'high', ['get_context']);
+  const before = db.prepare('SELECT COUNT(*) AS n FROM run_authorities').get();
+  expect(() => core.issueRunAuthority(handle, { ...input, role, operations: ['get_context'], native: noRead }))
+    .toThrow(/read operation/);
+  expect(db.prepare('SELECT COUNT(*) AS n FROM run_authorities').get()).toEqual(before);
+});
+it('reads only pinned skill bytes in bounded chunks and fences revoked access', () => {
+  const task = core.addTask(db, { title: 'skill read' }, user), handle = core.openController(db);
+  const skillRoot = join(root, 'skill-library'), folder = join(skillRoot, 'guide');
+  for (const name of ['', 'references', 'scripts', 'assets']) mkdirSync(join(folder, name), { recursive: true });
+  writeFileSync(join(folder, 'SKILL.md'), '# Pinned guide\n');
+  writeFileSync(join(folder, 'references', 'detail.md'), 'reference body');
+  writeFileSync(join(folder, 'scripts', 'check.sh'), 'echo pinned\n');
+  const asset = Buffer.alloc(40000, 7); writeFileSync(join(folder, 'assets', 'icon.bin'), asset);
+  const operations = ['get_context', 'read_skill_file'] as never;
+  const role = core.saveRoleRevision(handle, { expectedRevision: 0, commandId: 'skill-read-role', definition: {
+    name: 'Reader', prompt: 'Read the selected skill.', runtime: 'codex', model: 'gpt-6-sol', effort: 'high',
+    access: 'workspace-write', operations,
+    skills: [{ name: 'Guide', mode: 'Available', description: 'Pinned guide', source: { kind: 'local', root: skillRoot, path: 'guide' } }],
+  } });
+  const issued = core.issueRunAuthority(handle, { ...issueInput(task.id), role, operations,
+    native: native(workspace, true, [workspace], 'gpt-6-sol', 'high', operations) });
+  const context = core.openRunContext(db, issued.token);
+  const read = (path: string, offset = 0) => core.readSkillFile(context, { skill: 'Guide', path, offset });
+  expect(Buffer.from(read('SKILL.md').contentBase64, 'base64').toString()).toBe('# Pinned guide\n');
+  expect(Buffer.from(read('references/detail.md').contentBase64, 'base64').toString()).toBe('reference body');
+  expect(Buffer.from(read('scripts/check.sh').contentBase64, 'base64').toString()).toBe('echo pinned\n');
+  const first = read('assets/icon.bin'), second = read('assets/icon.bin', 32768);
+  expect(first.length).toBe(32768); expect(second.length).toBe(7232);
+  const joined = Buffer.concat([Buffer.from(first.contentBase64, 'base64'), Buffer.from(second.contentBase64, 'base64')]);
+  expect(joined).toEqual(asset);
+  expect(first.sha256).toBe(createHash('sha256').update(asset).digest('hex'));
+  for (const input of [
+    { skill: 'Guide', path: '../SKILL.md', offset: 0 }, { skill: 'Foreign', path: 'SKILL.md', offset: 0 },
+    { skill: 'Guide', path: 'assets/icon.bin', offset: -1 }, { skill: 'Guide', path: 'assets/icon.bin', offset: 40000 },
+  ]) expect(() => core.readSkillFile(context, input)).toThrow();
+  core.revokeRunAuthority(handle, issued.authorityId);
+  expect(() => read('SKILL.md')).toThrow();
+});
 it('derives inherited memory scope from the grant and preserves the context response and operations', () => {
   const handle = core.openController(db), parent = core.addTask(db,{title:'parent'},user);
   const ref = { projectId: core.projectOf(db).project_id, taskId: parent.id };
@@ -75,7 +200,8 @@ it('derives inherited memory scope from the grant and preserves the context resp
   const sibling = core.writeMemory(handle,memoryInput(children.b.id,'sibling'));
   core.writeMemory(handle,memoryInput(parent.id,'parent'));
   core.writeMemory(handle,memoryInput(null,'project'));
-  const input = {...issueInput(children.a.id),operations:['get_context'] as const};
+  const input = {...issueInput(children.a.id),operations:['get_context'] as const,
+    native: native(workspace, true, [workspace], 'gpt-6-sol', 'high', ['get_context'])};
   const context = core.openRunContext(db,core.issueRunAuthority(handle,input).token), snapshot = core.readRunContext(context);
   expect(core.readRunMemory(context)).toEqual([]);
   expect(core.readRunMemory(context,{candidates:true}).map(row=>row.title).sort()).toEqual(['own','parent','project']);
@@ -218,10 +344,10 @@ it('rejects expired/foreign credentials and malformed grants atomically', () => 
 it('permits context-only reads but refuses source/sibling writes and unmatched native roots', () => {
   const task = core.addTask(db, { title: 'scoped' }, user), handle = authority.openController(db), input = issueInput(task.id);
   const added = core.addRepository(db, dbPath, home, { cwd: backend, purpose: 'backend', access: 'context_only' }, user);
-  const readonly = { ...input, repositories: [{ repoId: added.repository.repo_id, checkoutPath: backend, write: false }], native: native(backend, false) };
+  const readonly = { ...input, role: roleRead, repositories: [{ repoId: added.repository.repo_id, checkoutPath: backend, write: false }], native: native(backend, false) };
   authority.issueRunAuthority(handle, readonly);
   expect(() => authority.issueRunAuthority(handle, { ...readonly, expectedGeneration: 1,
-    repositories: [{ ...readonly.repositories[0], write: true }], native: native(backend) })).toThrow(/scope|repository|write/);
+    role: roleWrite, repositories: [{ ...readonly.repositories[0], write: true }], native: native(backend) })).toThrow(/scope|repository|write/);
   expect(() => authority.issueRunAuthority(handle, { ...input, expectedGeneration: 1,
     repositories: [{ ...input.repositories[0], checkoutPath: source }], native: native(source) })).toThrow(/scope|repository|write/);
   expect(() => authority.issueRunAuthority(handle, { ...input, expectedGeneration: 1, native: native(backend) })).toThrow(/scope|repository/);
@@ -255,7 +381,8 @@ it('rechecks every run operation and keeps reports/questions as attributed untru
   for (const body of ['', ' '.repeat(4), 'x'.repeat(core.CAPS.agentFieldChars + 1)]) expect(() => authority.submitRunReport(context, body)).toThrow();
   for (const fake of [{ kind: 'run' }, { ...context }]) expect(() => authority.readRunContext(fake as authority.RunContext)).toThrow(/authority/);
   expect(['tasks', 'criteria', 'comments', 'decisions'].map(table => db.prepare(`SELECT * FROM ${table}`).all())).toEqual(before);
-  const next = authority.issueRunAuthority(controller, { ...input, expectedGeneration: 1, runId: 'r2', operations: ['get_context'] });
+  const next = authority.issueRunAuthority(controller, { ...input, expectedGeneration: 1, runId: 'r2',
+    operations: ['get_context'], native: native(workspace, true, [workspace, backend], 'gpt-6-sol', 'high', ['get_context']) });
   for (const call of [() => authority.runOperations(context), () => authority.readRunContext(context), () => authority.submitRunReport(context, 'late')]) expect(call).toThrow(/authority/);
   const readOnly = authority.openRunContext(db, next.token);
   expect(authority.runOperations(readOnly)).toEqual(['get_context']);
@@ -311,7 +438,8 @@ it('refuses stores visible through repo/Git reads or hardlinked private DB files
   for (const repo of core.repositoriesOf(db)) embedded.prepare('INSERT INTO repositories VALUES(@repo_id,@purpose,@access,@remote,@created_at)').run(repo);
   for (const binding of core.bindingsOf(db)) embedded.prepare('INSERT INTO repository_bindings VALUES(@common_dir,@repo_id,@checkout_path,@kind,@created_at)').run(binding);
   const own = core.addTask(embedded, { title: 'embedded store' }, user);
-  expect(() => authority.issueRunAuthority(authority.openController(embedded), { ...input, taskId: own.id })).toThrow(/store|scope/);
+  const embeddedRole = roleFixture(authority.openController(embedded));
+  expect(() => authority.issueRunAuthority(authority.openController(embedded), { ...input, taskId: own.id, role: embeddedRole })).toThrow(/store|scope/);
   expect(embedded.prepare('SELECT COUNT(*) n FROM run_authorities').get()).toEqual({ n: 0 });
 });
 
@@ -365,7 +493,7 @@ it('refuses a run proposal after its modeled parent inputs become stale without 
   const item=core.createWorkItem(handle,{task:childRef,definition:{kind:'analysis',repoId:null,sourceTasks:[],outputs:[]},dependencies:[]});
   const owner=core.reserveWorkItem(handle,{ref:item.ref,expectedRevision:1,expectedFence:0,expectedMode:'manual',ownerId:'BA',write:false});
   const input=issueInput(child.id);
-  const issued=core.issueRunAuthority(handle,{...input,workItemId:item.ref.workItemId,ownership:owner.ref,native:native(workspace,false),
+  const issued=core.issueRunAuthority(handle,{...input,role:roleRead,workItemId:item.ref.workItemId,ownership:owner.ref,native:native(workspace,false),
     repositories:input.repositories.map(repo=>({...repo,write:false}))});
   const context=core.openRunContext(db,issued.token),report=core.submitRunReport(context,'proposed children');
   const proposal:core.CreateSubtasksInput={parent:parentRef,expectedParentHash:core.taskContractHash(handle,parentRef),
@@ -398,7 +526,7 @@ it('requires modeled ownership and binds native writes to its definition reposit
   expect(()=>core.issueRunAuthority(nullRepo.handle,nullRepo.input)).toThrow(/repository/);
   const readonly=modeledTask(core.projectOf(db).primary_repo_id,'analysis',false);
   expect(()=>core.issueRunAuthority(readonly.handle,readonly.input)).toThrow(/repository/);
-  const packet={...readonly.input,native:native(workspace,false),repositories:[{...readonly.input.repositories[0],write:false}]};
+  const packet={...readonly.input,role:roleRead,native:native(workspace,false),repositories:[{...readonly.input.repositories[0],write:false}]};
   const readGrant=core.issueRunAuthority(readonly.handle,packet);
   expect(core.readRunContext(core.openRunContext(db,readGrant.token)).taskId).toBe(readonly.task.id);
   db.prepare("UPDATE run_authorities SET grant_json=json_set(grant_json,'$.ownership.fence',2) WHERE authority_id=?").run(issued.authorityId);
