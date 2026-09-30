@@ -22,7 +22,7 @@ export class RuntimeParser{
     this.terminal='failure';this.pending='';return [];
   }
   private event(kind:RuntimeEventKind,detail:object):RuntimeEvent{
-    return {sequence:++this.sequence,kind,detail:JSON.parse(redactRuntimeDetail(detail,this.secrets))};
+    return {sequence:++this.sequence,kind,detail:JSON.parse(redactRuntimeDetail(detail,this.secrets,this.limits.maxEventBytes))};
   }
   push(chunk:Uint8Array):RuntimeEvent[]{
     if(this.ended){this.fail();return []}if(this.reason!==null)return [];

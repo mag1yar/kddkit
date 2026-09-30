@@ -60,3 +60,12 @@ it('redacts environment dumps at actual string line boundaries',()=>{
   const events=p.push(wire([init,{type:'item.completed',item:{id:'item_0',type:'agent_message',text}},done]));p.end();
   expect(events.find(e=>e.kind==='text')?.detail).toEqual({text:'SERVICE_TOKEN=[redacted]\n'});
 });
+it('rejects redaction expansion past the event limit before emitting text',()=>{
+  const message={...text,item:{...text.item,text:'SERVICE_TOKEN=abcdefgh\n'.repeat(100)}};
+  const maxEventBytes=Buffer.byteLength(JSON.stringify(message));
+  const p=new RuntimeParser('codex',id,{...limits,maxEventBytes});
+  p.push(wire([init]));
+  const events=[...p.push(wire([message,done])),...p.end()];
+  expect(events.some(e=>e.kind==='text')).toBe(false);
+  expect(p.result()).toMatchObject({terminal:'failure',reason:'protocol_error'});
+});

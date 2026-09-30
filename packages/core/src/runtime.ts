@@ -94,12 +94,14 @@ export function admitRuntimeDb(db:Database.Database,input:RuntimeAdmission):Runt
   return readRuntimeAttemptDb(db,{projectId,sessionId,attemptId:id});
 }
 /** Host supplies exact credentials privately; the list is never persisted. */
-export function redactRuntimeDetail(detail:object,secrets:readonly string[]=[]):string{
+export function redactRuntimeDetail(detail:object,secrets:readonly string[]=[],maxBytes=64*1024*1024):string{
+  integer(maxBytes);if(maxBytes>64*1024*1024)throw denied('byte limit exceeds host capacity');
   if(!Array.isArray(secrets)||secrets.length>16||secrets.some(s=>typeof s!=='string'||s.length<16||s.length>4096))
     throw denied('invalid credential redaction');
   let safe=JSON.stringify(detail,(_key,value)=>typeof value==='string'?redact(value):value);
   if(typeof safe!=='string')throw denied('invalid event detail');
   for(const secret of secrets)safe=safe.split(JSON.stringify(secret).slice(1,-1)).join('[redacted]');
+  if(Buffer.byteLength(safe)>maxBytes)throw denied('event limit exceeded');
   return safe;
 }
 export function appendRuntimeEventDb(db:Database.Database,ref:RuntimeRef,kind:RuntimeEventKind,detail:object,secrets:readonly string[]=[]):RuntimeEvent{
@@ -108,7 +110,7 @@ export function appendRuntimeEventDb(db:Database.Database,ref:RuntimeRef,kind:Ru
   const limits=JSON.parse((db.prepare('SELECT limits_json FROM runtime_attempts WHERE id=?').get(ref.attemptId) as {limits_json:string}).limits_json) as RuntimeLimits;
   const raw=JSON.stringify(detail);
   if(typeof raw!=='string'||Buffer.byteLength(raw)>limits.maxEventBytes)throw denied('event limit exceeded');
-  const safe=redactRuntimeDetail(detail,secrets),sequence=attempt.lastSequence+1;integer(sequence);
+  const safe=redactRuntimeDetail(detail,secrets,limits.maxEventBytes),sequence=attempt.lastSequence+1;integer(sequence);
   db.prepare('INSERT INTO runtime_events VALUES(?,?,?,?,?)').run(ref.attemptId,sequence,kind,safe,now());
   return {sequence,kind,detail:JSON.parse(safe)};
 }

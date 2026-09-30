@@ -123,6 +123,13 @@ it('journals redacted events in sequence and keeps rows append-only',()=>{
   expect(()=>f.db.transaction(()=>runtime.appendRuntimeEventDb(f.db,attempt.ref,'text',{text:'x'.repeat(65537)})).immediate()).toThrow(/limit|oversize/);
 });
 
+it('rejects redaction expansion past the event limit without inserting a row',()=>{
+  const f=admitted();f.input.limits={...limits,maxEventBytes:33};
+  const attempt=f.db.transaction(()=>runtime.admitRuntimeDb(f.db,f.input)).immediate();
+  expect(()=>f.db.transaction(()=>runtime.appendRuntimeEventDb(f.db,attempt.ref,'text',{text:'SERVICE_TOKEN=abcdefgh'})).immediate()).toThrow(/limit/);
+  expect(core.runtimeEvents(f.handle,{ref:attempt.ref,afterSequence:0,limit:100})).toEqual([]);
+});
+
 it('revokes only the retired grant and recognises the scoped receipt in a later task handoff',async()=>{
   const f=admitted(),attempt=f.db.transaction(()=>runtime.admitRuntimeDb(f.db,f.input)).immediate();
   const item=core.createWorkItem(f.handle,{task:f.ref(f.t.id),definition:f.item.definition,dependencies:[]});
