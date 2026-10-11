@@ -1074,6 +1074,8 @@ var Connection = class extends DatabaseSync {
     return Object.assign(immediate, { immediate, deferred: () => this.#run(fn, "BEGIN") });
   }
   // Inside an open transaction every form becomes a savepoint: the outer lock mode already holds.
+  // So a write nested in a `.deferred()` outer upgrades the lock and fails SQLITE_BUSY at once under a
+  // concurrent writer (no busy_timeout) — `.deferred()` is only for read-only bodies.
   #run(fn, begin) {
     if (this.isTransaction) {
       const sp = `kdd_sp_${++this.#depth}`;
@@ -1991,8 +1993,8 @@ superseded_by: ${newSlug}
 ---
 ${raw}`;
   }
-  writeFileSync3(p, raw);
   db.prepare(`UPDATE decisions SET superseded_by = ? WHERE slug = ?`).run(newSlug, oldSlug);
+  writeFileSync3(p, raw);
   return () => writeFileSync3(p, original);
 }
 function addDecision(db, decisionsDir, input) {
@@ -2046,7 +2048,14 @@ function addDecision(db, decisionsDir, input) {
     return db.transaction(() => {
       if (input.supersedes) restoreSuperseded = supersede(db, decisionsDir, input.supersedes, slug);
       mkdirSync4(decisionsDir, { recursive: true });
-      writeFileSync3(path, renderDecisionMd({ ...input, sourceTasks }, date));
+      try {
+        writeFileSync3(path, renderDecisionMd({ ...input, sourceTasks }, date), { flag: "wx" });
+      } catch (e) {
+        if (e.code === "EEXIST") {
+          throw new KddError(`decision slug '${slug}' was just taken by another run \u2014 retry`);
+        }
+        throw e;
+      }
       wroteNew = true;
       db.prepare(
         `INSERT INTO decisions (slug, title, path, content_hash, created, superseded_by, source_tasks)

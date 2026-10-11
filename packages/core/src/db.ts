@@ -80,6 +80,8 @@ class Connection extends DatabaseSync {
   }
 
   // Inside an open transaction every form becomes a savepoint: the outer lock mode already holds.
+  // So a write nested in a `.deferred()` outer upgrades the lock and fails SQLITE_BUSY at once under a
+  // concurrent writer (no busy_timeout) — `.deferred()` is only for read-only bodies.
   #run<T>(fn: () => T, begin: string): T {
     if (this.isTransaction) {
       const sp = `kdd_sp_${++this.#depth}`;

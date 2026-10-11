@@ -109,6 +109,7 @@ export function parseDecisionMd(raw: string): ParsedDecision {
 }
 
 // Returns the undo for the file write: the caller restores it when the transaction rolls back.
+// UPDATE first: if it throws, the file has not been touched yet and there is nothing to undo.
 function supersede(db: Db, dir: string, oldSlug: string, newSlug: string): () => void {
   const p = join(dir, `${oldSlug}.md`);
   if (!existsSync(p)) throw new KddError(`decision '${oldSlug}' not found`);
@@ -124,8 +125,8 @@ function supersede(db: Db, dir: string, oldSlug: string, newSlug: string): () =>
     const doc = parseDecisionMd(raw);
     raw = `---\ncreated: ${doc.created}\nstatus: superseded\nsuperseded_by: ${newSlug}\n---\n${raw}`;
   }
-  writeFileSync(p, raw);
   db.prepare(`UPDATE decisions SET superseded_by = ? WHERE slug = ?`).run(newSlug, oldSlug);
+  writeFileSync(p, raw);
   return () => writeFileSync(p, original);
 }
 
@@ -193,7 +194,16 @@ export function addDecision(
     return db.transaction(() => {
       if (input.supersedes) restoreSuperseded = supersede(db, decisionsDir, input.supersedes, slug);
       mkdirSync(decisionsDir, { recursive: true });
-      writeFileSync(path, renderDecisionMd({ ...input, sourceTasks }, date));
+      // wx: параллельный запуск с тем же slug не перезапишет чужой закоммиченный файл, а наш
+      // catch не удалит его — rm только для файла, созданного этим вызовом.
+      try {
+        writeFileSync(path, renderDecisionMd({ ...input, sourceTasks }, date), { flag: 'wx' });
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'EEXIST') {
+          throw new KddError(`decision slug '${slug}' was just taken by another run — retry`);
+        }
+        throw e;
+      }
       wroteNew = true;
       db.prepare(
         `INSERT INTO decisions (slug, title, path, content_hash, created, superseded_by, source_tasks)

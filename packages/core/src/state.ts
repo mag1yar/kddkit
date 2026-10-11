@@ -63,7 +63,7 @@ export function agentId(): string | undefined {
 
 // NULL — бессрочный lease (старые строки), он не истекает. Единственное определение «lease
 // истёк»: claim-reclaim, fence в checkMove и пометка reclaimed_from не должны расходиться на секунду.
-// `now` читается только при вызове, так что цикл импорта db.js ↔ state.js порядку загрузки не мешает.
+// Импорт db.js → state.js односторонний: db.ts (и project_store) берут из state только типы.
 export const leaseExpired = (claimExpires: number | null): boolean =>
   claimExpires !== null && claimExpires < now();
 

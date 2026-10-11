@@ -231,6 +231,34 @@ describe('addDecision', () => {
       .superseded_by).toBeNull();
   });
 
+  it('a failing superseded_by UPDATE leaves the old file byte-identical', () => {
+    const db = openDb(':memory:', 'x');
+    const dir = tmp();
+    const old = addDecision(db, dir, { title: 'old way', decision: 'x' });
+    const before = readFileSync(old.path);
+    db.exec(`CREATE TEMP TRIGGER boom BEFORE UPDATE ON decisions BEGIN SELECT RAISE(ABORT, 'boom'); END`);
+    expect(() => addDecision(db, dir, { title: 'new way', decision: 'y', supersedes: old.slug }))
+      .toThrow(/boom/);
+    expect(readFileSync(old.path).equals(before)).toBe(true);
+    expect(readdirSync(dir)).toEqual([`${old.slug}.md`]);
+  });
+
+  it('a slug taken on disk after the check fails without touching the other file', () => {
+    const db = openDb(':memory:', 'x');
+    const dir = tmp();
+    const old = addDecision(db, dir, { title: 'old way', decision: 'x' });
+    const before = readFileSync(old.path);
+    const theirs = join(dir, `${new Date().toISOString().slice(0, 10)}-new-way.md`);
+    // Another run creates the same slug between our check and our write: supersede's UPDATE
+    // runs in that window, so a trigger on it stands in for the other run.
+    db.function('plant', () => { writeFileSync(theirs, 'theirs'); return 0; });
+    db.exec(`CREATE TEMP TRIGGER plant AFTER UPDATE ON decisions BEGIN SELECT plant(); END`);
+    expect(() => addDecision(db, dir, { title: 'new way', decision: 'y', supersedes: old.slug }))
+      .toThrow(/just taken by another run/);
+    expect(readFileSync(theirs, 'utf8')).toBe('theirs');
+    expect(readFileSync(old.path).equals(before)).toBe(true);
+  });
+
   it('does not inherit source tasks when superseding', () => {
     const db = openDb(':memory:', 'x');
     const dir = tmp();
