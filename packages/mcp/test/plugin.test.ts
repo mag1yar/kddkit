@@ -16,11 +16,11 @@ describe('plugin files', () => {
     expect(kdd.args.join(' ')).toContain('packages/mcp/dist/main.js');
   });
 
-  it('hooks.json wires SessionStart to both scripts', () => {
+  it('hooks.json wires SessionStart to the pointer script only', () => {
     const hooks = JSON.parse(read('hooks/hooks.json'));
     const cmd = hooks.hooks.SessionStart[0].hooks[0].command;
-    expect(cmd).toContain('smart-install.mjs');
     expect(cmd).toContain('session-start.mjs');
+    expect(cmd).not.toContain('smart-install.mjs');
   });
 
   it('hooks.json wires SubagentStart to the pointer script', () => {
@@ -47,6 +47,7 @@ describe('plugin files', () => {
     const hooks = read(`${plugin}/hooks/hooks.json`);
     expect(hooks).toContain('${PLUGIN_ROOT}');
     expect(hooks).not.toContain('CLAUDE_PLUGIN_ROOT');
+    expect(hooks).not.toContain('smart-install');
   });
 
   it('keeps the documented Codex selector aligned with both marketplaces', () => {
@@ -55,11 +56,5 @@ describe('plugin files', () => {
     for (const path of ['.agents/plugins/marketplace.json', '.codex-plugin/marketplace.json']) {
       expect(JSON.parse(read(path)).name).toBe(selector);
     }
-  });
-
-  it('uses ComSpec for the Windows npm fallback', () => {
-    const installer = read('integrations/codex-plugin/hooks/smart-install.mjs');
-    expect(installer).toContain("process.env.ComSpec || 'cmd.exe'");
-    expect(installer).toContain("['/d', '/s', '/c', 'npm.cmd ci --omit=dev']");
   });
 });

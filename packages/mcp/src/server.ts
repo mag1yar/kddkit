@@ -1,4 +1,3 @@
-import type Database from 'better-sqlite3';
 import { isAbsolute } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -6,14 +5,14 @@ import { z } from 'zod';
 import {
   agentId, CAPS, KddError, logError, manualSessionFromEnv, normalizeSessionId,
   listProjectCheckouts, kddHome, openDb, resolveDbPath, resolveDecisionsDir,
-  PRIORITIES, STATUSES, KINDS, type Actor, type Status, type Kind,
+  PRIORITIES, STATUSES, KINDS, type Actor, type Status, type Kind, type Db,
 } from '@kddkit/core';
 import * as h from './handlers.js';
 
 type Result = { content: { type: 'text'; text: string }[]; isError?: boolean };
 
 /** База и каталог решений. Добывается лениво: см. startServer. */
-export interface Ctx { db: Database.Database; dir: string }
+export interface Ctx { db: Db; dir: string }
 type Meta = Record<string, unknown> | undefined;
 type CtxFn = (meta?: Meta, project?: string) => Ctx;
 

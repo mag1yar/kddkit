@@ -1,4 +1,4 @@
-// Типы продублированы из @kddkit/core: ядро тянет better-sqlite3 и в браузер не импортируется.
+// Типы продублированы из @kddkit/core: ядро тянет node:sqlite и в браузер не импортируется.
 export const STATUSES = ['backlog', 'new', 'in_progress', 'review', 'done'] as const;
 export type Status = (typeof STATUSES)[number];
 export const PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const;

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import type Database from 'better-sqlite3';
+import type { Db } from './db.js';
 import { redact } from './redact.js';
 import { now } from './db.js';
 import { KddError } from './errors.js';
@@ -10,7 +10,7 @@ import { mustGetTrack } from './tracks.js';
 export { authorOf }; // живёт в state.ts: checkMove сравнивает автора, а state не может импортировать ops
 
 export function appendEvent(
-  db: Database.Database, taskId: number | null, actor: Actor,
+  db: Db, taskId: number | null, actor: Actor,
   action: string, detail?: object,
   opts?: { parent_id?: number; type?: string; level?: 'info' | 'warn' | 'error' },
 ): number {
@@ -27,7 +27,7 @@ export function appendEvent(
 // Only explicit successful mutations use this path. Audit events for failed claims,
 // lease maintenance, and system work keep their original detail.
 export function appendTaskMutationEvent(
-  db: Database.Database, taskId: number, actor: Actor,
+  db: Db, taskId: number, actor: Actor,
   action: string, detail?: object,
   opts?: { parent_id?: number; type?: string; level?: 'info' | 'warn' | 'error' },
 ): number {
@@ -55,7 +55,7 @@ export function appendTaskMutationEvent(
   }, opts);
 }
 
-export function mustGetTask(db: Database.Database, id: number): Task {
+export function mustGetTask(db: Db, id: number): Task {
   const t = db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id) as Task | undefined;
   if (!t) throw new KddError(`task #${id} not found`);
   return t;
@@ -79,7 +79,7 @@ function checkKind(k: string): asserts k is Kind {
 export const BUG_BODY_TEMPLATE = '## Steps\n\n## Expected\n\n## Actual\n';
 
 export function addTask(
-  db: Database.Database,
+  db: Db,
   input: {
     title: string; body?: string; priority?: Priority; area?: string;
     track_id?: number; criteria?: string[]; kind?: Kind;
@@ -113,7 +113,7 @@ export function addTask(
 }
 
 export function editTask(
-  db: Database.Database, id: number,
+  db: Db, id: number,
   patch: {
     title?: string; body?: string; priority?: Priority; area?: string;
     track_id?: number | null; kind?: Kind;
@@ -138,7 +138,7 @@ export function editTask(
 }
 
 export function commentTask(
-  db: Database.Database, id: number, body: string, actor: Actor,
+  db: Db, id: number, body: string, actor: Actor,
 ): Comment {
   if (!body.trim()) throw new KddError('comment must not be empty');
   // Текст агента редактируем: вставив в комментарий строку из `env`, он положил бы токен в базу
@@ -162,7 +162,7 @@ function checkStatus(s: string): asserts s is Status {
 }
 
 // Неотмеченные критерии приёмки — гейт ai-перехода в review (see checkMove).
-function openCriteria(db: Database.Database, taskId: number): number {
+function openCriteria(db: Db, taskId: number): number {
   return (db.prepare(
     `SELECT COUNT(*) AS c FROM criteria WHERE task_id = ? AND checked_at IS NULL`,
   ).get(taskId) as { c: number }).c;
@@ -174,7 +174,7 @@ function openCriteria(db: Database.Database, taskId: number): number {
  * перехода (CLI, MCP, drag на доске). LIKE, а не json_extract: detail у части событий не JSON,
  * и SQLite на таком бросает malformed JSON вместо того, чтобы вернуть NULL.
  */
-function submittedBy(db: Database.Database, taskId: number): string | null {
+function submittedBy(db: Db, taskId: number): string | null {
   const r = db.prepare(
     `SELECT actor_type, actor_id FROM events
       WHERE task_id = ? AND action = 'moved' AND detail LIKE '%"to":"review"%'
@@ -184,7 +184,7 @@ function submittedBy(db: Database.Database, taskId: number): string | null {
 }
 
 // Следующая свободная позиция в конце колонки (порядок на доске = position).
-function nextPosition(db: Database.Database, status: Status): number {
+function nextPosition(db: Db, status: Status): number {
   return (db.prepare(
     `SELECT COALESCE(MAX(position), -1) + 1 AS p
      FROM tasks WHERE status = ? AND archived_at IS NULL`,
@@ -192,7 +192,7 @@ function nextPosition(db: Database.Database, status: Status): number {
 }
 
 export function moveTask(
-  db: Database.Database, id: number, to: string, actor: Actor, reason?: string,
+  db: Db, id: number, to: string, actor: Actor, reason?: string,
 ): Task {
   checkStatus(to);
   return db.transaction(() => {
@@ -223,7 +223,7 @@ export function moveTask(
 // Расстановка колонки-назначения по явному порядку id (drag на доске).
 // Смена статуса → checkMove + событие moved; чистый reorder внутри колонки — без события.
 export function placeTask(
-  db: Database.Database, id: number, to: string, orderedIds: number[], actor: Actor,
+  db: Db, id: number, to: string, orderedIds: number[], actor: Actor,
 ): Task {
   checkStatus(to);
   return db.transaction(() => {
@@ -246,7 +246,7 @@ export function placeTask(
 }
 
 export function blockTask(
-  db: Database.Database, id: number, reason: string, actor: Actor,
+  db: Db, id: number, reason: string, actor: Actor,
 ): Task {
   if (!reason.trim()) throw new KddError('block reason must not be empty');
   return db.transaction(() => {
@@ -258,7 +258,7 @@ export function blockTask(
   }).immediate();
 }
 
-export function unblockTask(db: Database.Database, id: number, actor: Actor): Task {
+export function unblockTask(db: Db, id: number, actor: Actor): Task {
   return db.transaction(() => {
     mustGetTask(db, id);
     db.prepare(`UPDATE tasks SET blocked = 0, block_reason = NULL, updated_at = ? WHERE id = ?`)
@@ -269,7 +269,7 @@ export function unblockTask(db: Database.Database, id: number, actor: Actor): Ta
 }
 
 export function linkTasks(
-  db: Database.Database, fromId: number, toId: number, kind: string, actor: Actor,
+  db: Db, fromId: number, toId: number, kind: string, actor: Actor,
 ): void {
   db.transaction(() => {
     mustGetTask(db, fromId);
@@ -281,7 +281,7 @@ export function linkTasks(
   }).immediate();
 }
 
-export function archiveTask(db: Database.Database, id: number, actor: Actor): Task {
+export function archiveTask(db: Db, id: number, actor: Actor): Task {
   return db.transaction(() => {
     mustGetTask(db, id);
     db.prepare(`UPDATE tasks SET archived_at = ?, updated_at = ? WHERE id = ?`)
@@ -291,7 +291,7 @@ export function archiveTask(db: Database.Database, id: number, actor: Actor): Ta
   }).immediate();
 }
 
-export function unarchiveTask(db: Database.Database, id: number, actor: Actor): Task {
+export function unarchiveTask(db: Db, id: number, actor: Actor): Task {
   return db.transaction(() => {
     mustGetTask(db, id);
     db.prepare(`UPDATE tasks SET archived_at = NULL, updated_at = ? WHERE id = ?`)

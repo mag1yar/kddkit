@@ -2,7 +2,7 @@ import { assertLegacyDecisionSource } from './project_store.js';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type Database from 'better-sqlite3';
+import type { Db } from './db.js';
 import { KddError } from './errors.js';
 
 export interface DecisionInput {
@@ -108,7 +108,7 @@ export function parseDecisionMd(raw: string): ParsedDecision {
   };
 }
 
-function supersede(db: Database.Database, dir: string, oldSlug: string, newSlug: string): void {
+function supersede(db: Db, dir: string, oldSlug: string, newSlug: string): void {
   const p = join(dir, `${oldSlug}.md`);
   if (!existsSync(p)) throw new KddError(`decision '${oldSlug}' not found`);
   assertLegacyDecisionSource(db, dirname(realpathSync(p)));
@@ -127,7 +127,7 @@ function supersede(db: Database.Database, dir: string, oldSlug: string, newSlug:
 }
 
 export function addDecision(
-  db: Database.Database, decisionsDir: string, input: DecisionInput,
+  db: Db, decisionsDir: string, input: DecisionInput,
 ): { slug: string; path: string; created: boolean } {
   assertLegacyDecisionSource(db, decisionsDir);
   if (!input.title.trim()) throw new KddError('title must not be empty');

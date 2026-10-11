@@ -6,5 +6,4 @@ export default defineConfig({
   splitting: false, // The entry is copied/deployed as a standalone broker.
   clean: true,
   noExternal: ['@kddkit/core', '@modelcontextprotocol/sdk', 'zod'],
-  external: ['better-sqlite3'], // native .node — installed by smart-install
 });

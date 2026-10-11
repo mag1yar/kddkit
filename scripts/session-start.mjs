@@ -8,8 +8,10 @@ async function main() {
     // Load the committed core bundle by path — a real plugin install has no
     // node_modules/@kddkit/core, so resolving by package name would always miss.
     core = await import(new URL('../packages/core/dist/index.js', import.meta.url));
-  } catch {
-    console.log(POINTER); // core bundle unreadable — bare pointer
+  } catch (e) {
+    // Too-old Node throws from the core import itself — say so instead of a healthy-looking pointer.
+    console.log(POINTER);
+    console.log(`KDD unavailable: ${e?.message ?? e}`);
     return;
   }
 
@@ -17,8 +19,9 @@ async function main() {
   try {
     const { dbPath, projectPath } = core.resolveDbPath();
     db = core.openDb(dbPath, projectPath);
-  } catch {
+  } catch (e) {
     console.log(POINTER); // no db (not a git repo / unusable path)
+    if (String(e?.message).startsWith('kddkit needs Node')) console.log(`KDD unavailable: ${e.message}`);
     return;
   }
 

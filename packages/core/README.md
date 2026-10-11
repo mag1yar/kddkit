@@ -14,7 +14,7 @@ const db = openDb('/path/to/kdd.db');
 const task = addTask(db, { title: 'Wire up auth', priority: 'high' }, { type: 'user' });
 ```
 
-`db: Database.Database` is always the first argument; mutations run in a
+`db: Db` is always the first argument; mutations run in a
 transaction and append to an event log. The public API is the `@kddkit/core`
 barrel only — don't import nested paths.
 

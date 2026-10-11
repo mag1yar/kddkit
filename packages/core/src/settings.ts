@@ -1,11 +1,11 @@
-import type Database from 'better-sqlite3';
+import type { Db } from './db.js';
 
-function readMeta(db: Database.Database, key: string): string | undefined {
+function readMeta(db: Db, key: string): string | undefined {
   return (db.prepare(`SELECT value FROM meta WHERE key = ?`).get(key) as
     { value: string } | undefined)?.value;
 }
 
-function writeMeta(db: Database.Database, key: string, value: string): void {
+function writeMeta(db: Db, key: string, value: string): void {
   db.prepare(
     `INSERT INTO meta (key, value) VALUES (?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
@@ -26,11 +26,11 @@ const MAX_REMINDED_SESSIONS = 10;
  * напоминают на каждом ходу вечно, ровно тот шум, для которого дедуп существует. Список с
  * потолком в MAX_REMINDED_SESSIONS держит строку одной и ограниченной без отдельной таблицы.
  */
-export function getReminded(db: Database.Database, session: string): number[] {
+export function getReminded(db: Db, session: string): number[] {
   return readReminded(db).find(([s]) => s === session)?.[1] ?? [];
 }
 
-export function setReminded(db: Database.Database, session: string, ids: number[]): void {
+export function setReminded(db: Db, session: string, ids: number[]): void {
   db.transaction(() => {
     const kept = readReminded(db).filter(([s]) => s !== session);
     kept.push([session, ids]); // недавняя сессия — в конец
@@ -46,7 +46,7 @@ export function setReminded(db: Database.Database, session: string, ids: number[
  * {session, ids}, карта, мусор), читается как «пусто», а не чинится: дедуп восстановится сам
  * на следующей записи, а вот угадывать чужой формат нечем.
  */
-function readReminded(db: Database.Database): [string, number[]][] {
+function readReminded(db: Db): [string, number[]][] {
   try {
     const raw = JSON.parse(readMeta(db, 'stop_reminded') ?? 'null') as unknown;
     if (!Array.isArray(raw)) return [];

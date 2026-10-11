@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import Database from 'better-sqlite3';
+import { Db } from '../src/db.js';
 import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -11,7 +11,7 @@ import { KddError } from '../src/errors.js';
 describe('openDb', () => {
   it('upgrades a populated v17 WAL without changing its rows', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'kdd-role-mig-')), 'board.db');
-    const old = new Database(p);
+    const old = new Db(p);
     old.pragma('journal_mode = WAL'); old.pragma('wal_autocheckpoint = 0');
     for (const sql of MIGRATIONS.slice(0, 17)) old.exec(sql);
     old.pragma('user_version = 17');
@@ -78,10 +78,9 @@ describe('openDb', () => {
     const { mkdtempSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
     const { join } = await import('node:path');
-    const Database = (await import('better-sqlite3')).default;
     const p = join(mkdtempSync(join(tmpdir(), 'kdd-')), 'kdd.db');
     // строим v1-базу вручную: только MIGRATIONS[0]
-    const raw = new Database(p);
+    const raw = new Db(p);
     raw.exec(MIGRATIONS[0]);
     raw.pragma('user_version = 1');
     raw.close();
@@ -94,7 +93,7 @@ describe('openDb', () => {
 
   it('adds an empty verification snapshot without changing legacy criteria', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'kdd-criteria-mig-')), 'kdd.db');
-    const raw = new Database(p);
+    const raw = new Db(p);
     for (let i = 0; i < 10; i++) raw.exec(MIGRATIONS[i]);
     raw.pragma(`user_version = ${10}`);
     raw.prepare(
@@ -117,7 +116,7 @@ describe('openDb', () => {
 
   it('migration 12 preserves decisions with empty source tasks', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'kdd-decision-source-mig-')), 'kdd.db');
-    const raw = new Database(p);
+    const raw = new Db(p);
     for (let i = 0; i < 11; i++) raw.exec(MIGRATIONS[i]);
     raw.pragma(`user_version = ${11}`);
     raw.prepare(
@@ -167,7 +166,7 @@ describe('schema version guard', () => {
   it('refuses a board from a newer kdd, naming both versions', () => {
     const p = fileDb();
     openDb(p, 'x').close();
-    const raw = new Database(p);
+    const raw = new Db(p);
     raw.pragma(`user_version = ${MIGRATIONS.length + 3}`);
     raw.close();
 
@@ -178,14 +177,14 @@ describe('schema version guard', () => {
 
   it('backs the board up before migrating it, keeping the pre-migration copy readable', () => {
     const p = fileDb();
-    const raw = new Database(p);
+    const raw = new Db(p);
     for (let i = 0; i < MIGRATIONS.length - 1; i++) raw.exec(MIGRATIONS[i]);
     raw.prepare(`INSERT INTO tasks (title, created_at, updated_at) VALUES ('keep me', 1, 1)`).run();
     raw.pragma(`user_version = ${MIGRATIONS.length - 1}`);
     raw.close();
 
     openDb(p).close(); // миграция накатывается заново
-    const backup = new Database(`${p}.v${MIGRATIONS.length - 1}.bak`);
+    const backup = new Db(`${p}.v${MIGRATIONS.length - 1}.bak`);
     expect(backup.pragma('user_version', { simple: true })).toBe(MIGRATIONS.length - 1);
     expect(backup.prepare(`SELECT title FROM tasks`).get()).toEqual({ title: 'keep me' });
     backup.close();
@@ -204,8 +203,8 @@ it('upgrades v14 without changing any kept row, provenance or search hit and kee
   const root = mkdtempSync(join(tmpdir(), 'kdd-v15-preserve-')), path = join(root, 'legacy.db');
   const saved = { ...process.env }; process.env.KDD_HOME = join(root, 'home');
   delete process.env.KDD_DB; delete process.env.KDD_DECISIONS_DIR;
-  const raw = new Database(path);
-  let upgraded: Database.Database | undefined;
+  const raw = new Db(path);
+  let upgraded: Db | undefined;
   try {
     raw.pragma('foreign_keys=ON'); raw.pragma('journal_mode=WAL');
     for (const migration of MIGRATIONS.slice(0, 14)) raw.exec(migration);
@@ -250,7 +249,7 @@ it('upgrades v14 without changing any kept row, provenance or search hit and kee
       { parent_id: null }, { parent_id: null }]);
     expect(upgraded.prepare("SELECT ref FROM search_index WHERE search_index MATCH 'searchable'").get()).toEqual({ ref: 'decision' });
     expect(upgraded.pragma('foreign_key_check')).toEqual([]);
-    const backup = new Database(`${path}.v14.bak`, { readonly: true });
+    const backup = new Db(`${path}.v14.bak`, { readOnly: true });
     try {
       expect(backup.pragma('user_version', { simple: true })).toBe(14);
       for (const table of tables) expect(backup.prepare(`SELECT * FROM ${table}`).all()).toEqual(before[table]);
@@ -258,14 +257,14 @@ it('upgrades v14 without changing any kept row, provenance or search hit and kee
     upgraded.close(); upgraded = openDb(path);
     expect(upgraded.prepare('SELECT count(*) n FROM tasks').get()).toEqual({ n: 2 });
   } finally {
-    if (upgraded?.open) upgraded.close(); raw.close(); process.env = saved;
+    upgraded?.close(); raw.close(); process.env = saved;
     rmSync(root, { recursive: true, force: true });
   }
 });
 
 describe('migration v20', () => {
   it('v20 drops orchestrator and tick state, keeps tasks, parents and bindings', () => {
-    const db = new Database(':memory:');
+    const db = new Db(':memory:');
     db.pragma('foreign_keys = ON');
     for (let i = 0; i < 19; i++) { db.exec(MIGRATIONS[i]); db.pragma(`user_version = ${i + 1}`); }
     const repo = 'a'.repeat(32);
@@ -297,7 +296,7 @@ describe('migration v20', () => {
   });
 
   it('v20 survives owners released via a handoff and a retirement (FK cycle)', () => {
-    const db = new Database(':memory:');
+    const db = new Db(':memory:');
     db.pragma('foreign_keys = ON');
     for (let i = 0; i < 19; i++) db.transaction(() => { db.exec(MIGRATIONS[i]); db.pragma(`user_version = ${i + 1}`); })();
     db.transaction(() => {

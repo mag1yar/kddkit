@@ -1,4 +1,5 @@
-import Database from 'better-sqlite3';
+import * as node_sqlite from 'node:sqlite';
+import { DatabaseSyncOptions, StatementSync, StatementResultingChanges } from 'node:sqlite';
 
 declare const CAPS: {
     readonly briefBytes: 4096;
@@ -31,17 +32,42 @@ declare function capText(s: string, n: number): string;
 
 declare const MIGRATIONS: string[];
 
+declare const DatabaseSync: typeof node_sqlite.DatabaseSync;
+interface Statement {
+    run(...params: unknown[]): StatementResultingChanges;
+    get(...params: unknown[]): unknown;
+    all(...params: unknown[]): unknown[];
+}
+declare class Connection extends DatabaseSync {
+    #private;
+    constructor(path: string, options?: DatabaseSyncOptions);
+    get name(): string;
+    get memory(): boolean;
+    prepare(sql: string): StatementSync;
+    pragma(sql: string, options?: {
+        simple?: boolean;
+    }): unknown;
+    transaction<T>(fn: () => T): (() => T) & {
+        immediate: () => T;
+    };
+    close(): void;
+}
+type Db = Omit<Connection, 'prepare'> & {
+    prepare(sql: string): Statement;
+};
+declare const Db: new (path: string, options?: DatabaseSyncOptions) => Db;
+
 declare const now: () => number;
-declare function openDb(dbPath: string, projectPath?: string, checkout?: string): Database.Database;
-declare function checkpointWal(db: Database.Database): void;
-declare function closeDb(db: Database.Database): void;
-declare function projectPathOf(db: Database.Database): string | null;
-declare function projectToplevelOf(db: Database.Database): string | null;
-declare function setProjectToplevel(db: Database.Database, toplevel: string): void;
+declare function openDb(dbPath: string, projectPath?: string, checkout?: string): Db;
+declare function checkpointWal(db: Db): void;
+declare function closeDb(db: Db): void;
+declare function projectPathOf(db: Db): string | null;
+declare function projectToplevelOf(db: Db): string | null;
+declare function setProjectToplevel(db: Db, toplevel: string): void;
 
 declare class KddError extends Error {
 }
-declare function logError(db: Database.Database, source: string, message: string): void;
+declare function logError(db: Db, source: string, message: string): void;
 
 declare const kddHome: () => string;
 declare const storeIdentity: () => string;
@@ -113,38 +139,38 @@ interface RepositoryBinding {
     checkout_path: string;
     created_at: number;
 }
-declare function projectOf(db: Database.Database): ProjectRecord;
-declare function repositoriesOf(db: Database.Database): RepositoryRecord[];
-declare function bindingsOf(db: Database.Database): RepositoryBinding[];
+declare function projectOf(db: Db): ProjectRecord;
+declare function repositoriesOf(db: Db): RepositoryRecord[];
+declare function bindingsOf(db: Db): RepositoryBinding[];
 declare function canonicalCommonDir(cwd: string): string;
 declare function canonicalProjectPath(path: string): string;
 declare function lookupProjectStore(commonDir: string, home: string): {
     dbPath: string;
     projectPath: string;
 } | undefined;
-declare function initializeProjectStore(db: Database.Database, dbPath: string, home: string, projectPath?: string, checkout?: string, options?: {
+declare function initializeProjectStore(db: Db, dbPath: string, home: string, projectPath?: string, checkout?: string, options?: {
     legacyUpgrade?: boolean;
     configuredDecisions?: string;
 }): void;
 declare function listProjectCheckouts(home: string): string[];
-declare function primarySource(db: Database.Database): RepositoryBinding | undefined;
-declare function bindRepository(db: Database.Database, dbPath: string, home: string, input: {
+declare function primarySource(db: Db): RepositoryBinding | undefined;
+declare function bindRepository(db: Db, dbPath: string, home: string, input: {
     cwd: string;
     repoId: string;
 }, actor: Actor): RepositoryBinding;
-declare function addRepository(db: Database.Database, dbPath: string, home: string, input: {
+declare function addRepository(db: Db, dbPath: string, home: string, input: {
     cwd: string;
     purpose: string;
 }, actor: Actor): {
     repository: RepositoryRecord;
     binding: RepositoryBinding;
 };
-declare function rebindRepository(db: Database.Database, dbPath: string, home: string, input: {
+declare function rebindRepository(db: Db, dbPath: string, home: string, input: {
     fromCommonDir: string;
     cwd: string;
 }, actor: Actor): RepositoryBinding;
-declare function canSyncLegacyDecisions(db: Database.Database, decisionsDir: string): boolean;
-declare function assertLegacyDecisionSource(db: Database.Database, decisionsDir: string): void;
+declare function canSyncLegacyDecisions(db: Db, decisionsDir: string): boolean;
+declare function assertLegacyDecisionSource(db: Db, decisionsDir: string): void;
 
 interface Task {
     id: number;
@@ -264,19 +290,19 @@ interface DecisionDetail extends DecisionSummary {
     source_tasks: DecisionSourceTask[];
 }
 
-declare function appendEvent(db: Database.Database, taskId: number | null, actor: Actor, action: string, detail?: object, opts?: {
+declare function appendEvent(db: Db, taskId: number | null, actor: Actor, action: string, detail?: object, opts?: {
     parent_id?: number;
     type?: string;
     level?: 'info' | 'warn' | 'error';
 }): number;
-declare function appendTaskMutationEvent(db: Database.Database, taskId: number, actor: Actor, action: string, detail?: object, opts?: {
+declare function appendTaskMutationEvent(db: Db, taskId: number, actor: Actor, action: string, detail?: object, opts?: {
     parent_id?: number;
     type?: string;
     level?: 'info' | 'warn' | 'error';
 }): number;
-declare function mustGetTask(db: Database.Database, id: number): Task;
+declare function mustGetTask(db: Db, id: number): Task;
 declare const BUG_BODY_TEMPLATE = "## Steps\n\n## Expected\n\n## Actual\n";
-declare function addTask(db: Database.Database, input: {
+declare function addTask(db: Db, input: {
     title: string;
     body?: string;
     priority?: Priority;
@@ -285,7 +311,7 @@ declare function addTask(db: Database.Database, input: {
     criteria?: string[];
     kind?: Kind;
 }, actor: Actor): Task;
-declare function editTask(db: Database.Database, id: number, patch: {
+declare function editTask(db: Db, id: number, patch: {
     title?: string;
     body?: string;
     priority?: Priority;
@@ -293,42 +319,42 @@ declare function editTask(db: Database.Database, id: number, patch: {
     track_id?: number | null;
     kind?: Kind;
 }, actor: Actor): Task;
-declare function commentTask(db: Database.Database, id: number, body: string, actor: Actor): Comment;
-declare function moveTask(db: Database.Database, id: number, to: string, actor: Actor, reason?: string): Task;
-declare function placeTask(db: Database.Database, id: number, to: string, orderedIds: number[], actor: Actor): Task;
-declare function blockTask(db: Database.Database, id: number, reason: string, actor: Actor): Task;
-declare function unblockTask(db: Database.Database, id: number, actor: Actor): Task;
-declare function linkTasks(db: Database.Database, fromId: number, toId: number, kind: string, actor: Actor): void;
-declare function archiveTask(db: Database.Database, id: number, actor: Actor): Task;
-declare function unarchiveTask(db: Database.Database, id: number, actor: Actor): Task;
+declare function commentTask(db: Db, id: number, body: string, actor: Actor): Comment;
+declare function moveTask(db: Db, id: number, to: string, actor: Actor, reason?: string): Task;
+declare function placeTask(db: Db, id: number, to: string, orderedIds: number[], actor: Actor): Task;
+declare function blockTask(db: Db, id: number, reason: string, actor: Actor): Task;
+declare function unblockTask(db: Db, id: number, actor: Actor): Task;
+declare function linkTasks(db: Db, fromId: number, toId: number, kind: string, actor: Actor): void;
+declare function archiveTask(db: Db, id: number, actor: Actor): Task;
+declare function unarchiveTask(db: Db, id: number, actor: Actor): Task;
 
-declare function listCriteria(db: Database.Database, taskId: number): Criterion[];
-declare function addCriterion(db: Database.Database, taskId: number, text: string, actor: Actor): Criterion;
-declare function setCriterionChecked(db: Database.Database, taskId: number, id: number, checked: boolean, actor: Actor, evidence?: string): Criterion;
-declare function removeCriterion(db: Database.Database, taskId: number, id: number, actor: Actor): void;
+declare function listCriteria(db: Db, taskId: number): Criterion[];
+declare function addCriterion(db: Db, taskId: number, text: string, actor: Actor): Criterion;
+declare function setCriterionChecked(db: Db, taskId: number, id: number, checked: boolean, actor: Actor, evidence?: string): Criterion;
+declare function removeCriterion(db: Db, taskId: number, id: number, actor: Actor): void;
 
 declare const isInlineMime: (m: string | null) => boolean;
 declare const filesDir: (dbPath: string) => string;
 declare const filePath: (dbPath: string, f: FileRow) => string;
-declare function listFiles(db: Database.Database, taskId: number): FileRow[];
-declare function getFile(db: Database.Database, id: number): FileRow | undefined;
-declare function attachFile(db: Database.Database, dbPath: string, taskId: number, srcPath: string, opts: {
+declare function listFiles(db: Db, taskId: number): FileRow[];
+declare function getFile(db: Db, id: number): FileRow | undefined;
+declare function attachFile(db: Db, dbPath: string, taskId: number, srcPath: string, opts: {
     description?: string;
 }, actor: Actor): FileRow;
-declare function detachFile(db: Database.Database, dbPath: string, fileId: number, actor: Actor): void;
+declare function detachFile(db: Db, dbPath: string, fileId: number, actor: Actor): void;
 
-declare function mustGetTrack(db: Database.Database, id: number): Track;
-declare function createTrack(db: Database.Database, input: {
+declare function mustGetTrack(db: Db, id: number): Track;
+declare function createTrack(db: Db, input: {
     name: string;
     description?: string;
 }): Track;
-declare function editTrack(db: Database.Database, id: number, patch: {
+declare function editTrack(db: Db, id: number, patch: {
     name?: string;
     description?: string;
     status?: 'active' | 'done';
 }): Track;
-declare function deleteTrack(db: Database.Database, id: number): void;
-declare function listTracks(db: Database.Database, opts?: {
+declare function deleteTrack(db: Db, id: number): void;
+declare function listTracks(db: Db, opts?: {
     status?: 'active' | 'done';
 }): (Track & {
     open_tasks: number;
@@ -359,13 +385,13 @@ declare function normalizeSourceTasks(ids?: number[]): number[];
 declare function renderDecisionBody(input: DecisionInput): string;
 declare function renderDecisionMd(input: DecisionInput, created: string): string;
 declare function parseDecisionMd(raw: string): ParsedDecision;
-declare function addDecision(db: Database.Database, decisionsDir: string, input: DecisionInput): {
+declare function addDecision(db: Db, decisionsDir: string, input: DecisionInput): {
     slug: string;
     path: string;
     created: boolean;
 };
 
-declare function syncIndex(db: Database.Database, decisionsDir: string): void;
+declare function syncIndex(db: Db, decisionsDir: string): void;
 interface RecallHit {
     kind: 'decision' | 'task';
     ref: string;
@@ -375,17 +401,17 @@ interface RecallHit {
     status: string | null;
 }
 declare function sanitizeQuery(q: string): string;
-declare function recall(db: Database.Database, decisionsDir: string, query: string, opts?: {
+declare function recall(db: Db, decisionsDir: string, query: string, opts?: {
     k?: number;
     kind?: 'decision' | 'task';
 }): RecallHit[];
-declare function rebuild(db: Database.Database, decisionsDir: string): {
+declare function rebuild(db: Db, decisionsDir: string): {
     decisions: number;
     tasks: number;
 };
 
 declare const PRIORITY_ORDER = "CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END";
-declare function boardData(db: Database.Database, f?: {
+declare function boardData(db: Db, f?: {
     area?: string;
     status?: Status;
     archived?: boolean;
@@ -393,7 +419,7 @@ declare function boardData(db: Database.Database, f?: {
     ready?: boolean;
     kind?: Kind;
 }): Record<Status, TaskListRow[]>;
-declare function taskDetail(db: Database.Database, id: number): {
+declare function taskDetail(db: Db, id: number): {
     task: Task;
     criteria: Criterion[];
     comments: Comment[];
@@ -432,19 +458,19 @@ interface TaskDetailCapped {
     handoffs: SessionHandoff[];
     handoffs_total: number;
 }
-declare function taskDetailCapped(db: Database.Database, id: number): TaskDetailCapped;
-declare function syncedTaskDetail(db: Database.Database, decisionsDir: string, id: number, full: true): ReturnType<typeof taskDetail>;
-declare function syncedTaskDetail(db: Database.Database, decisionsDir: string, id: number, full?: false): TaskDetailCapped;
-declare function syncedTaskDetail(db: Database.Database, decisionsDir: string, id: number, full?: boolean): ReturnType<typeof taskDetail> | TaskDetailCapped;
-declare function decisionDetail(db: Database.Database, decisionsDir: string, slug: string): DecisionDetail;
-declare function statusDigest(db: Database.Database): {
+declare function taskDetailCapped(db: Db, id: number): TaskDetailCapped;
+declare function syncedTaskDetail(db: Db, decisionsDir: string, id: number, full: true): ReturnType<typeof taskDetail>;
+declare function syncedTaskDetail(db: Db, decisionsDir: string, id: number, full?: false): TaskDetailCapped;
+declare function syncedTaskDetail(db: Db, decisionsDir: string, id: number, full?: boolean): ReturnType<typeof taskDetail> | TaskDetailCapped;
+declare function decisionDetail(db: Db, decisionsDir: string, slug: string): DecisionDetail;
+declare function statusDigest(db: Db): {
     in_progress: Task[];
     review: Task[];
     blocked: Task[];
     recent: EventRow[];
 };
-declare function attentionData(db: Database.Database, nowSeconds: number): AttentionInbox;
-declare function exportBoard(db: Database.Database, decisionsDir: string, opts?: {
+declare function attentionData(db: Db, nowSeconds: number): AttentionInbox;
+declare function exportBoard(db: Db, decisionsDir: string, opts?: {
     includeSensitive?: boolean;
 }): {
     schema_version: 1;
@@ -492,17 +518,17 @@ declare function exportBoard(db: Database.Database, decisionsDir: string, opts?:
  * и напоминание стоило бы ему хода на выяснение того, что двигать её нельзя. Условие держим
  * в тех же терминах, что и fence — user-held и незанятые задачи не трогаем.
  */
-declare function unsubmitted(db: Database.Database, author: string): number[];
+declare function unsubmitted(db: Db, author: string): number[];
 
 declare const DEFAULT_TTL: number;
-declare function claimTask(db: Database.Database, id: number, actor: Actor, ttl?: number): {
+declare function claimTask(db: Db, id: number, actor: Actor, ttl?: number): {
     ok: true;
     task: Task;
 } | {
     ok: false;
     error: string;
 };
-declare function renewClaim(db: Database.Database, id: number, actor: Actor, ttl?: number): {
+declare function renewClaim(db: Db, id: number, actor: Actor, ttl?: number): {
     ok: true;
     task: Task;
 } | {
@@ -580,8 +606,8 @@ declare function releaseInfo(opts?: {
  * напоминают на каждом ходу вечно, ровно тот шум, для которого дедуп существует. Список с
  * потолком в MAX_REMINDED_SESSIONS держит строку одной и ограниченной без отдельной таблицы.
  */
-declare function getReminded(db: Database.Database, session: string): number[];
-declare function setReminded(db: Database.Database, session: string, ids: number[]): void;
+declare function getReminded(db: Db, session: string): number[];
+declare function setReminded(db: Db, session: string, ids: number[]): void;
 
 interface BriefSection<T> {
     items: T[];
@@ -653,6 +679,6 @@ interface TaskBrief {
         max_bytes: 4096;
     };
 }
-declare function taskBrief(db: Database.Database, decisionsDir: string, id: number): TaskBrief;
+declare function taskBrief(db: Db, decisionsDir: string, id: number): TaskBrief;
 
-export { type Actor, type AttentionInbox, type AttentionItem, type AttentionReason, BUG_BODY_TEMPLATE, type BriefSection, CAPS, type Comment, type Criterion, DEFAULT_TTL, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type EventRow, type FileRow, KINDS, KddError, type Kind, MIGRATIONS, type ManualProvenance, type ManualSession, type NextAction, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type Priority, type ProjectRecord, type RecallHit, type Release, type ReleaseInfo, type RepositoryBinding, type RepositoryRecord, STATUSES, type SessionHandoff, type Status, TRANSITIONS, type Task, type TaskBrief, type TaskDetailCapped, type TaskListRow, type Track, type UpdateChannel, _cacheUntil, _resetCache, addCriterion, addDecision, addRepository, addTask, agentId, appendEvent, appendTaskMutationEvent, archiveTask, assertLegacyDecisionSource, attachFile, attentionData, authorOf, bindRepository, bindingsOf, blockTask, boardData, canSyncLegacyDecisions, canonicalCommonDir, canonicalProjectPath, capText, checkMove, checkpointWal, claimTask, closeDb, commentTask, compareVersions, contentHash, createTrack, decisionDetail, deleteTrack, detachFile, editTask, editTrack, exportBoard, filePath, filesDir, getFile, getReminded, initializeProjectStore, isInlineMime, kddHome, kddVersion, linkTasks, listCriteria, listFiles, listProjectCheckouts, listProjects, listTracks, logError, lookupProjectStore, manualSessionFromEnv, moveTask, mustGetTask, mustGetTrack, normalizeSessionId, normalizeSourceTasks, now, openDb, parseDecisionMd, parseRepoUrl, placeTask, primarySource, projectOf, projectPathOf, projectToplevelOf, rebindRepository, rebuild, recall, redact, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, repositoriesOf, resolveDbPath, resolveDecisionsDir, resolveToplevel, sanitizeQuery, setCriterionChecked, setProjectToplevel, setReminded, slugify, statusDigest, storeIdentity, syncIndex, syncedTaskDetail, taskBrief, taskDetail, taskDetailCapped, unarchiveTask, unblockTask, unsubmitted, updateDisposition, versionChannel };
+export { type Actor, type AttentionInbox, type AttentionItem, type AttentionReason, BUG_BODY_TEMPLATE, type BriefSection, CAPS, type Comment, type Criterion, DEFAULT_TTL, Db, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type EventRow, type FileRow, KINDS, KddError, type Kind, MIGRATIONS, type ManualProvenance, type ManualSession, type NextAction, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type Priority, type ProjectRecord, type RecallHit, type Release, type ReleaseInfo, type RepositoryBinding, type RepositoryRecord, STATUSES, type SessionHandoff, type Statement, type Status, TRANSITIONS, type Task, type TaskBrief, type TaskDetailCapped, type TaskListRow, type Track, type UpdateChannel, _cacheUntil, _resetCache, addCriterion, addDecision, addRepository, addTask, agentId, appendEvent, appendTaskMutationEvent, archiveTask, assertLegacyDecisionSource, attachFile, attentionData, authorOf, bindRepository, bindingsOf, blockTask, boardData, canSyncLegacyDecisions, canonicalCommonDir, canonicalProjectPath, capText, checkMove, checkpointWal, claimTask, closeDb, commentTask, compareVersions, contentHash, createTrack, decisionDetail, deleteTrack, detachFile, editTask, editTrack, exportBoard, filePath, filesDir, getFile, getReminded, initializeProjectStore, isInlineMime, kddHome, kddVersion, linkTasks, listCriteria, listFiles, listProjectCheckouts, listProjects, listTracks, logError, lookupProjectStore, manualSessionFromEnv, moveTask, mustGetTask, mustGetTrack, normalizeSessionId, normalizeSourceTasks, now, openDb, parseDecisionMd, parseRepoUrl, placeTask, primarySource, projectOf, projectPathOf, projectToplevelOf, rebindRepository, rebuild, recall, redact, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, repositoriesOf, resolveDbPath, resolveDecisionsDir, resolveToplevel, sanitizeQuery, setCriterionChecked, setProjectToplevel, setReminded, slugify, statusDigest, storeIdentity, syncIndex, syncedTaskDetail, taskBrief, taskDetail, taskDetailCapped, unarchiveTask, unblockTask, unsubmitted, updateDisposition, versionChannel };

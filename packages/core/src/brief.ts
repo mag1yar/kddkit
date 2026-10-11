@@ -1,7 +1,7 @@
 import { canSyncLegacyDecisions } from './project_store.js';
 import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type Database from 'better-sqlite3';
+import type { Db } from './db.js';
 import { CAPS, capText } from './caps.js';
 import { parseDecisionMd } from './decisions.js';
 import { taskDetail } from './queries.js';
@@ -79,7 +79,7 @@ export interface TaskBrief {
 const lexical = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0;
 
 function readTaskDecisions(
-  db: Database.Database, decisionsDir: string, taskId: number,
+  db: Db, decisionsDir: string, taskId: number,
 ): TaskBrief['decisions']['items'] {
   if (!canSyncLegacyDecisions(db, decisionsDir)) {
     return (db.prepare('SELECT slug,title,created,superseded_by,source_tasks FROM decisions ORDER BY slug')
@@ -211,7 +211,7 @@ function fitBrief(brief: TaskBrief, sources: ScalarSources): TaskBrief {
 }
 
 export function taskBrief(
-  db: Database.Database, decisionsDir: string, id: number,
+  db: Db, decisionsDir: string, id: number,
 ): TaskBrief {
   const detail = taskDetail(db, id);
   const criteria = [...detail.criteria].sort((a, b) => {

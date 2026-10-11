@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import Database from 'better-sqlite3';
+import { Db } from './db.js';
 import { KddError } from './errors.js';
 import { lookupProjectStore } from './project_store.js';
 import { realpathSync } from 'node:fs';
@@ -63,7 +63,7 @@ export function listProjects(): { dbPath: string; projectPath: string }[] {
     const dbPath = join(home, entry.name, 'kdd.db');
     if (!existsSync(dbPath)) continue;
     try {
-      const db = new Database(dbPath, { readonly: true });
+      const db = new Db(dbPath, { readOnly: true });
       const row = db.prepare(`SELECT value FROM meta WHERE key = 'project_path'`).get() as
         { value: string } | undefined;
       db.close();

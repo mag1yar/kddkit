@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { BUG_BODY_TEMPLATE as core, KINDS as coreKinds } from '@kddkit/core';
 import { BUG_BODY_TEMPLATE as web, KINDS as webKinds } from '../src/web/api';
 
-// Дубликат по уже задокументированной в api.ts конвенции (ядро тянет better-sqlite3 и в
+// Дубликат по уже задокументированной в api.ts конвенции (ядро тянет node:sqlite и в
 // браузер не идёт). Расхождение означало бы, что баг, заведённый из UI и из CLI, выглядит
 // по-разному — этот тест единственное, что об этом скажет.
 describe('bug body template', () => {

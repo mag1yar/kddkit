@@ -3,8 +3,8 @@
     "SessionStart": [{
       "hooks": [{
         "type": "command",
-        "command": "node \"${PLUGIN_ROOT}/hooks/smart-install.mjs\" && node \"${PLUGIN_ROOT}/hooks/session-start.mjs\"",
-        "timeout": 300
+        "command": "node \"${PLUGIN_ROOT}/hooks/session-start.mjs\"",
+        "timeout": 10
       }]
     }],
     "SubagentStart": [{

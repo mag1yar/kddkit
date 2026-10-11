@@ -1,9 +1,8 @@
 import { statSync } from 'node:fs';
-import type Database from 'better-sqlite3';
 import {
   CAPS, capText, boardData, recall, editTask, moveTask,
   commentTask, mustGetTask, listTracks, attachFile, detachFile, getFile, KddError,
-  type Actor, type Priority, type Status, type Kind,
+  type Actor, type Priority, type Status, type Kind, type Db,
 } from '@kddkit/core';
 
 export {
@@ -22,7 +21,7 @@ export interface TaskRow {
   criteria: { checked: number; total: number };
 }
 
-export function listTracksTool(db: Database.Database) {
+export function listTracksTool(db: Db) {
   // все track-и, включая done: routing → active; done = завершённый пласт работы (контекст)
   return listTracks(db, {}).map((t) => ({
     id: t.id, name: t.name,
@@ -32,7 +31,7 @@ export function listTracksTool(db: Database.Database) {
 }
 
 export function listTasks(
-  db: Database.Database,
+  db: Db,
   filter: { status?: Status; area?: string; track_id?: number; ready?: boolean; kind?: Kind } = {},
 ): { tasks: Record<string, TaskRow[]>; omitted?: Record<string, number> } {
   const board = boardData(db, filter);
@@ -50,7 +49,7 @@ export function listTasks(
 }
 
 export function recallTool(
-  db: Database.Database, dir: string, query: string,
+  db: Db, dir: string, query: string,
   opts: { k?: number; kind?: 'decision' | 'task' } = {},
 ) {
   return recall(db, dir, query, opts);
@@ -65,7 +64,7 @@ export interface UpdateInput {
   detach?: number;
 }
 
-export function updateTask(db: Database.Database, input: UpdateInput, actor: Actor) {
+export function updateTask(db: Db, input: UpdateInput, actor: Actor) {
   if (!input.edit && !input.move && !input.comment && !input.attach && input.detach === undefined) {
     throw new KddError('nothing to update');
   }
@@ -85,11 +84,13 @@ export function updateTask(db: Database.Database, input: UpdateInput, actor: Act
     }
   }
   if (input.edit || input.move || input.comment) {
+    // IMMEDIATE: checkMove читает, потом пишем. Отложенная транзакция при чужом коммите между
+    // чтением и записью падает SQLITE_BUSY сразу, мимо busy_timeout.
     db.transaction(() => {
       if (input.edit) editTask(db, input.id, input.edit, actor);
       if (input.move) moveTask(db, input.id, input.move.to, actor, input.move.reason);
       if (input.comment) commentTask(db, input.id, input.comment, actor);
-    })();
+    }).immediate();
   }
   // attach/detach — ВНЕ общей транзакции: они пишут на диск, а откат транзакции файл не вернёт.
   // Каждая из них транзакционна сама по себе (см. core/files.ts), так что журнал целостен.

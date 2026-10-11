@@ -4,7 +4,7 @@ Research was done before project init via multi-agent analysis of 6 reference sy
 
 ## Key Findings
 
-**Stack:** Node + TypeScript, better-sqlite3 (sync, WAL), Hono for the UI server, no frameworks. One runtime for CLI + MCP + UI. Decided — do not re-research.
+**Stack:** Node + TypeScript, better-sqlite3 (sync, WAL), Hono for the UI server, no frameworks. One runtime for CLI + MCP + UI. Decided — do not re-research. — superseded 2026-10-11 by .planning/decisions/2026-10-11-node-sqlite-instead-of-better-sqlite3.md
 
 **Architecture (settled):**
 - One central SQLite per project, outside git, key = `git rev-parse --path-format=absolute --git-common-dir` — same DB for all worktrees. ~4 tables: `tasks`, `events` (append-only: actor_type, actor_id, action, session_id), `decisions_index` (FTS5 + content-hash UNIQUE), `errors`.

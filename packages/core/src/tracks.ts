@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3';
+import type { Db } from './db.js';
 import { now } from './db.js';
 import { KddError } from './errors.js';
 import type { Track } from './types.js';
@@ -7,14 +7,14 @@ import type { Track } from './types.js';
 // служит роутером: Claude читает и решает, к какому track-у относится задача).
 // Несколько active одновременно; complete не трогает задачи, память остаётся.
 
-export function mustGetTrack(db: Database.Database, id: number): Track {
+export function mustGetTrack(db: Db, id: number): Track {
   const t = db.prepare(`SELECT * FROM tracks WHERE id = ?`).get(id) as Track | undefined;
   if (!t) throw new KddError(`track #${id} not found`);
   return t;
 }
 
 export function createTrack(
-  db: Database.Database, input: { name: string; description?: string },
+  db: Db, input: { name: string; description?: string },
 ): Track {
   const name = input.name.trim();
   if (!name) throw new KddError('track name must not be empty');
@@ -30,7 +30,7 @@ export function createTrack(
 }
 
 export function editTrack(
-  db: Database.Database, id: number,
+  db: Db, id: number,
   patch: { name?: string; description?: string; status?: 'active' | 'done' },
 ): Track {
   if (patch.status && patch.status !== 'active' && patch.status !== 'done') {
@@ -50,7 +50,7 @@ export function editTrack(
 }
 
 // Удаление track-а: задачи не трогаем (память остаётся), лишь отцепляем track_id.
-export function deleteTrack(db: Database.Database, id: number): void {
+export function deleteTrack(db: Db, id: number): void {
   mustGetTrack(db, id);
   db.transaction(() => {
     db.prepare(`UPDATE tasks SET track_id = NULL WHERE track_id = ?`).run(id);
@@ -60,7 +60,7 @@ export function deleteTrack(db: Database.Database, id: number): void {
 
 // Track-и с числом открытых (не archived, не done) задач — для CLI/UI/orientation.
 export function listTracks(
-  db: Database.Database, opts: { status?: 'active' | 'done' } = {},
+  db: Db, opts: { status?: 'active' | 'done' } = {},
 ): (Track & { open_tasks: number })[] {
   const where = opts.status ? `WHERE tr.status = @status` : '';
   return db.prepare(

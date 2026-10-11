@@ -21100,10 +21100,9 @@ var StdioServerTransport = class {
 };
 
 // ../core/dist/index.js
-import Database2 from "better-sqlite3";
+import { createRequire } from "module";
 import { mkdirSync as mkdirSync2, renameSync as renameSync2, rmSync as rmSync2 } from "fs";
 import { dirname as dirname2, join as join2 } from "path";
-import Database from "better-sqlite3";
 import { execFileSync } from "child_process";
 import { randomBytes } from "crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "fs";
@@ -21113,7 +21112,6 @@ import { execFileSync as execFileSync2 } from "child_process";
 import { createHash } from "crypto";
 import { homedir as homedir2 } from "os";
 import { join as join3, resolve as resolve2 } from "path";
-import Database3 from "better-sqlite3";
 import { realpathSync as realpathSync2 } from "fs";
 import { execFileSync as execFileSync3 } from "child_process";
 import { createHash as createHash2 } from "crypto";
@@ -21778,9 +21776,8 @@ function worktrees(common) {
 }
 function withRegistry(home, fn) {
   mkdirSync(home, { recursive: true });
-  const db = new Database(join(home, "registry.db"));
+  const db = new Db(join(home, "registry.db"));
   try {
-    db.pragma("busy_timeout = 5000");
     const version2 = db.pragma("user_version", { simple: true });
     if (version2 > 1) throw new KddError(`registry has unknown schema version ${version2}`);
     db.transaction(() => {
@@ -21795,7 +21792,7 @@ function withRegistry(home, fn) {
 }
 function readonly2(path, fn) {
   if (!existsSync(path)) throw new KddError(`project store is missing: ${path}`);
-  const db = new Database(path, { readonly: true, fileMustExist: true });
+  const db = new Db(path, { readOnly: true });
   try {
     const version2 = db.pragma("user_version", { simple: true });
     if (version2 < 1 || version2 > MIGRATIONS.length) throw new KddError(`unknown project schema version ${version2}: ${path}`);
@@ -21991,6 +21988,89 @@ function canSyncLegacyDecisions(db, decisionsDir) {
     return false;
   }
 }
+var emit = process.emit;
+process.emit = function(name, ...args) {
+  const w = args[0];
+  if (name === "warning" && w?.name === "ExperimentalWarning" && /SQLite/.test(String(w.message))) return false;
+  return emit.call(this, name, ...args);
+};
+{
+  const [major, minor] = process.versions.node.split(".").map(Number);
+  if (major < 22 || major === 22 && minor < 16 || major === 23)
+    throw new KddError(`kddkit needs Node >= 22.16 (running ${process.version})`);
+}
+var { DatabaseSync } = createRequire(import.meta.url)("node:sqlite");
+function settle(r) {
+  if (r && typeof r.then === "function")
+    throw new TypeError("Transaction function cannot return a promise");
+  return r;
+}
+var Connection = class extends DatabaseSync {
+  #depth = 0;
+  // busy_timeout в node:sqlite по умолчанию 0: второй процесс (UI, MCP, терминал) падал бы на
+  // первой же чужой записи вместо того, чтобы подождать.
+  constructor(path, options = {}) {
+    super(path, { timeout: 5e3, ...options });
+  }
+  get name() {
+    return this.location() ?? ":memory:";
+  }
+  get memory() {
+    return this.location() === null;
+  }
+  // Callers bind one params object to SQL that may not use every key (e.g. an optional filter).
+  prepare(sql) {
+    const stmt = super.prepare(sql);
+    stmt.setAllowUnknownNamedParameters(true);
+    return stmt;
+  }
+  pragma(sql, options) {
+    const stmt = super.prepare(`PRAGMA ${sql}`);
+    if (!options?.simple) return stmt.all();
+    const row = stmt.get();
+    return row === void 0 ? void 0 : Object.values(row)[0];
+  }
+  transaction(fn) {
+    return Object.assign(() => this.#run(fn, "BEGIN"), { immediate: () => this.#run(fn, "BEGIN IMMEDIATE") });
+  }
+  // Inside an open transaction both forms become a savepoint: the outer lock mode already holds.
+  #run(fn, begin) {
+    if (this.isTransaction) {
+      const sp = `kdd_sp_${++this.#depth}`;
+      this.exec(`SAVEPOINT ${sp}`);
+      try {
+        const r = settle(fn());
+        this.exec(`RELEASE ${sp}`);
+        return r;
+      } catch (e) {
+        try {
+          this.exec(`ROLLBACK TO ${sp}`);
+          this.exec(`RELEASE ${sp}`);
+        } catch {
+        }
+        throw e;
+      } finally {
+        this.#depth--;
+      }
+    }
+    this.exec(begin);
+    try {
+      const r = settle(fn());
+      this.exec("COMMIT");
+      return r;
+    } catch (e) {
+      if (this.isTransaction) try {
+        this.exec("ROLLBACK");
+      } catch {
+      }
+      throw e;
+    }
+  }
+  close() {
+    if (this.isOpen) super.close();
+  }
+};
+var Db = Connection;
 var now = () => Math.floor(Date.now() / 1e3);
 function backupBeforeMigrate(db, dbPath, from) {
   const backup = `${dbPath}.v${from}.bak`;
@@ -21999,7 +22079,7 @@ function backupBeforeMigrate(db, dbPath, from) {
   try {
     rmSync2(tmp, { force: true });
     db.exec(`VACUUM INTO '${q(tmp)}'`);
-    const copy = new Database2(tmp, { readonly: true });
+    const copy = new Db(tmp, { readOnly: true });
     const copied = copy.pragma("user_version", { simple: true });
     copy.close();
     if (copied !== from) {
@@ -22017,9 +22097,8 @@ function backupBeforeMigrate(db, dbPath, from) {
 }
 function openDb(dbPath, projectPath, checkout) {
   if (dbPath !== ":memory:") mkdirSync2(dirname2(dbPath), { recursive: true });
-  const db = new Database2(dbPath);
+  const db = new Db(dbPath);
   db.pragma("journal_mode = WAL");
-  db.pragma("busy_timeout = 5000");
   db.pragma("foreign_keys = ON");
   const from = db.pragma("user_version", { simple: true });
   if (from > MIGRATIONS.length) {
@@ -22993,7 +23072,7 @@ function updateTask(db, input, actor) {
       if (input.edit) editTask(db, input.id, input.edit, actor);
       if (input.move) moveTask(db, input.id, input.move.to, actor, input.move.reason);
       if (input.comment) commentTask(db, input.id, input.comment, actor);
-    })();
+    }).immediate();
   }
   if (input.attach) {
     attachFile(

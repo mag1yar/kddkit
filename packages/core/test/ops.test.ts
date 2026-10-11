@@ -3,12 +3,12 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, beforeEach } from 'vitest';
-import type Database from 'better-sqlite3';
+import type { Db } from '../src/db.js';
 import { claimTask } from '../src/claim.js';
 import { openDb } from '../src/db.js';
 import { addTask, appendEvent, editTask, commentTask, moveTask } from '../src/ops.js';
 
-let db: Database.Database;
+let db: Db;
 beforeEach(() => { db = openDb(':memory:', 'p'); });
 const user = { type: 'user' as const };
 const ai = { type: 'ai' as const, id: 's1' };

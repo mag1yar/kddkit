@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtempSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
-import type Database from 'better-sqlite3';
+import type { Db } from '../src/db.js';
 import { openDb } from '../src/db.js';
 import { addTask, editTask, moveTask, blockTask, archiveTask } from '../src/ops.js';
 import {
@@ -15,7 +15,7 @@ import { addCriterion, setCriterionChecked } from '../src/criteria.js';
 import { attachFile } from '../src/files.js';
 import { CAPS } from '../src/caps.js';
 
-let db: Database.Database;
+let db: Db;
 const user = { type: 'user' as const };
 beforeEach(() => {
   db = openDb(':memory:', 'p');

@@ -1,4 +1,102 @@
-import Database from 'better-sqlite3';
+import { createRequire } from 'node:module';
+import type { DatabaseSyncOptions, StatementResultingChanges, StatementSync } from 'node:sqlite';
+
+// Node 22 печатает ExperimentalWarning при первой загрузке node:sqlite — в stderr каждого
+// запуска kdd, MCP и UI. Фильтр ставится ДО загрузки модуля, поэтому node:sqlite берём через
+// require, а не статическим import: тот поднялся бы выше фильтра. Глушим только этот warning.
+const emit = process.emit;
+process.emit = function (this: NodeJS.Process, name: string | symbol, ...args: unknown[]): boolean {
+  const w = args[0] as { name?: unknown; message?: unknown } | undefined;
+  if (name === 'warning' && w?.name === 'ExperimentalWarning' && /SQLite/.test(String(w.message))) return false;
+  return (emit as (this: NodeJS.Process, ...a: unknown[]) => boolean).call(this, name, ...args);
+} as typeof process.emit;
+// engines is only an npm warning; plugins run whatever node is on PATH. Below 22.16 node:sqlite
+// is missing (<22.13) or lacks `timeout`, `isTransaction`, `location()` — busy timeout 0, nested
+// transactions BEGIN inside BEGIN, db.name throws. 23.x is EOL with the same gaps by minor.
+// KddError is initialised here: db.js is entered before errors.js, so its dependency evaluates first.
+{
+  const [major, minor] = process.versions.node.split('.').map(Number);
+  if (major < 22 || (major === 22 && minor < 16) || major === 23)
+    throw new KddError(`kddkit needs Node >= 22.16 (running ${process.version})`);
+}
+const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite');
+
+// Row types: callers cast rows in place (`as Task`). node:sqlite types rows as
+// Record<string, SQLOutputValue>, which does not cast to interfaces — keep `unknown` like before.
+export interface Statement {
+  run(...params: unknown[]): StatementResultingChanges;
+  get(...params: unknown[]): unknown;
+  all(...params: unknown[]): unknown[];
+}
+
+function settle<T>(r: T): T {
+  if (r && typeof (r as { then?: unknown }).then === 'function')
+    throw new TypeError('Transaction function cannot return a promise');
+  return r;
+}
+
+class Connection extends DatabaseSync {
+  #depth = 0;
+
+  // busy_timeout в node:sqlite по умолчанию 0: второй процесс (UI, MCP, терминал) падал бы на
+  // первой же чужой записи вместо того, чтобы подождать.
+  constructor(path: string, options: DatabaseSyncOptions = {}) {
+    super(path, { timeout: 5000, ...options });
+  }
+
+  get name(): string { return this.location() ?? ':memory:'; }
+  get memory(): boolean { return this.location() === null; }
+
+  // Callers bind one params object to SQL that may not use every key (e.g. an optional filter).
+  prepare(sql: string): StatementSync {
+    const stmt = super.prepare(sql);
+    stmt.setAllowUnknownNamedParameters(true);
+    return stmt;
+  }
+
+  pragma(sql: string, options?: { simple?: boolean }): unknown {
+    const stmt = super.prepare(`PRAGMA ${sql}`);
+    if (!options?.simple) return stmt.all();
+    const row = stmt.get();
+    return row === undefined ? undefined : Object.values(row)[0];
+  }
+
+  transaction<T>(fn: () => T): (() => T) & { immediate: () => T } {
+    return Object.assign(() => this.#run(fn, 'BEGIN'), { immediate: () => this.#run(fn, 'BEGIN IMMEDIATE') });
+  }
+
+  // Inside an open transaction both forms become a savepoint: the outer lock mode already holds.
+  #run<T>(fn: () => T, begin: string): T {
+    if (this.isTransaction) {
+      const sp = `kdd_sp_${++this.#depth}`;
+      this.exec(`SAVEPOINT ${sp}`);
+      try {
+        const r = settle(fn());
+        this.exec(`RELEASE ${sp}`);
+        return r;
+      } catch (e) {
+        try { this.exec(`ROLLBACK TO ${sp}`); this.exec(`RELEASE ${sp}`); } catch { /* outer already rolled back */ }
+        throw e;
+      } finally { this.#depth--; }
+    }
+    this.exec(begin);
+    try {
+      const r = settle(fn());
+      this.exec('COMMIT');
+      return r;
+    } catch (e) {
+      // SQLite may have rolled back on its own (e.g. a constraint with ON CONFLICT ROLLBACK).
+      if (this.isTransaction) try { this.exec('ROLLBACK'); } catch { /* keep the original error */ }
+      throw e;
+    }
+  }
+
+  close(): void { if (this.isOpen) super.close(); }
+}
+
+export type Db = Omit<Connection, 'prepare'> & { prepare(sql: string): Statement };
+export const Db = Connection as unknown as new (path: string, options?: DatabaseSyncOptions) => Db;
+
 import { mkdirSync, renameSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { KddError } from './errors.js';
@@ -14,7 +112,7 @@ export const now = (): number => Math.floor(Date.now() / 1000);
 // половину транзакции. Своё имя на каждую исходную версию: апгрейд через две версии оставит
 // два файла, и откатываться можно на любой. Провал НЕ глотаем: не сумели сохранить копию —
 // значит нечем откатиться, а мигрируем мы ровно на этот случай.
-function backupBeforeMigrate(db: Database.Database, dbPath: string, from: number): void {
+function backupBeforeMigrate(db: Db, dbPath: string, from: number): void {
   const backup = `${dbPath}.v${from}.bak`;
   // Пишем в СВОЙ временный файл и переименовываем: одну и ту же доску открывают несколько
   // процессов (сервер UI, MCP, терминал), и все они после апгрейда мигрируют её
@@ -28,7 +126,7 @@ function backupBeforeMigrate(db: Database.Database, dbPath: string, from: number
     // Сосед мог обогнать нас и домигрировать доску, пока шёл VACUUM: тогда в копии лежит уже
     // НОВАЯ схема, и класть её под именем v${from} нельзя — человек, откатываясь, получил бы
     // ровно ту версию, от которой убегал.
-    const copy = new Database(tmp, { readonly: true });
+    const copy = new Db(tmp, { readOnly: true });
     const copied = copy.pragma('user_version', { simple: true }) as number;
     copy.close();
     if (copied !== from) { rmSync(tmp, { force: true }); return; }
@@ -42,11 +140,10 @@ function backupBeforeMigrate(db: Database.Database, dbPath: string, from: number
   }
 }
 
-export function openDb(dbPath: string, projectPath?: string, checkout?: string): Database.Database {
+export function openDb(dbPath: string, projectPath?: string, checkout?: string): Db {
   if (dbPath !== ':memory:') mkdirSync(dirname(dbPath), { recursive: true });
-  const db = new Database(dbPath);
+  const db = new Db(dbPath);
   db.pragma('journal_mode = WAL');
-  db.pragma('busy_timeout = 5000');
   db.pragma('foreign_keys = ON');
   const from = db.pragma('user_version', { simple: true }) as number;
   // База из будущего: цикл ниже просто не выполнился бы, и kdd молча работал бы на схеме,
@@ -94,7 +191,7 @@ export function openDb(dbPath: string, projectPath?: string, checkout?: string):
 // пустой — 4K базы при 1.8M. Отсюда же второе: `cp kdd.db` без `-wal` копирует не всё —
 // после чекпоинта копия хотя бы полная. Занятость (чужой ридер в этот момент) — не ошибка:
 // файл подрежет следующий, кто закроется последним.
-export function checkpointWal(db: Database.Database): void {
+export function checkpointWal(db: Db): void {
   // busy_timeout на время чекпоинта снимаем: TRUNCATE ждёт, пока разойдутся ВСЕ читатели, и с
   // общими 5 секундами выход из UI с тремя живыми сессиями вис бы по пять секунд на каждый
   // проект в пуле. Обрезка — оппортунистическая уборка, а не обязательство: не вышло сейчас —
@@ -108,14 +205,14 @@ export function checkpointWal(db: Database.Database): void {
 
 // Закрытие долгоживущего клиента (сервер UI, MCP):
 // единственный момент, когда обрезать WAL и дёшево, и заведомо безопасно.
-export function closeDb(db: Database.Database): void {
+export function closeDb(db: Db): void {
   checkpointWal(db);
   db.close();
 }
 
 // Читает project_path напрямую из уже открытой базы — без обхода ~/.kdd через listProjects(),
 // который каждому проекту стоит отдельного readonly-подключения ко всем остальным.
-export function projectPathOf(db: Database.Database): string | null {
+export function projectPathOf(db: Db): string | null {
   return (db.prepare(`SELECT value FROM meta WHERE key = 'project_path'`).get() as
     { value: string } | undefined)?.value ?? null;
 }
@@ -126,12 +223,12 @@ export function projectPathOf(db: Database.Database): string | null {
 // у bare-репо с linked worktree — сам по себе. Пишут те, кто резолвил toplevel из настоящего
 // cwd внутри репозитория (`kdd ui`); читают те, кому нужен рабочий каталог проекта,
 // но у кого нет своего cwd в нём (web-сервер, мультиплексирующий проекты).
-export function projectToplevelOf(db: Database.Database): string | null {
+export function projectToplevelOf(db: Db): string | null {
   return (db.prepare(`SELECT value FROM meta WHERE key = 'project_toplevel'`).get() as
     { value: string } | undefined)?.value ?? null;
 }
 
-export function setProjectToplevel(db: Database.Database, toplevel: string): void {
+export function setProjectToplevel(db: Db, toplevel: string): void {
   const primary = projectOf(db).primary_repo_id;
   if (primary) {
     try {

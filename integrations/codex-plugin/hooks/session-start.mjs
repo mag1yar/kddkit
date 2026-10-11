@@ -31,11 +31,12 @@ try {
       if (db) core.logError(db, 'codex-session-start', String(error));
       else diagnostic('codex-session-start', error);
     } catch { diagnostic('codex-session-start', error); }
-    emit(pointer);
+    emit(String(error?.message).startsWith('kddkit needs Node') ? `${pointer}\nKDD unavailable: ${error.message}` : pointer);
   } finally {
     try { db?.close(); } catch { /* best effort */ }
   }
 } catch (error) {
+  // Too-old Node throws from the core import itself — say so instead of a healthy-looking pointer.
   diagnostic('codex-session-start', error);
-  emit(pointer);
+  emit(`${pointer}\nKDD unavailable: ${error?.message ?? error}`);
 }

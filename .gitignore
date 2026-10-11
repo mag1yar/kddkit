@@ -7,4 +7,3 @@ dist/
 !packages/cli/dist/
 !packages/mcp/dist/
 *.tgz
-.kdd-install-error.log

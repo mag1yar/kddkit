@@ -1,9 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import type Database from 'better-sqlite3';
-import { addTask, openDb } from '@kddkit/core';
+import { addTask, openDb, type Db } from '@kddkit/core';
 import { listTasks, updateTask } from '../src/handlers.js';
 
-let db: Database.Database;
+let db: Db;
 beforeEach(() => { db = openDb(':memory:', 'p'); });
 const user = { type: 'user' as const };
 const ai = { type: 'ai' as const, id: 'mcp' };

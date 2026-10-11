@@ -44,7 +44,7 @@ KDD — continuity substrate для человека, работающего ч�
 
 ## Constraints
 
-- **Tech stack**: Node + TypeScript, better-sqlite3, Hono для UI-сервера, без фреймворков — один рантайм на CLI/MCP/UI, ноль барьера установки
+- **Tech stack**: Node + TypeScript, node:sqlite, Hono для UI-сервера, без фреймворков — один рантайм на CLI/MCP/UI, ноль барьера установки
 - **Хранение**: мутабельное состояние только в SQLite (вне репо); durable-знание только в git-md; не смешивать
 - **Контекст-бюджет**: каждый вывод CLI капирован (status ≤2KB, hook ≤3 строк, recall top-k с капом) — цифры в спеку
 - **Совместимость**: `.planning/` — структура, совместимая с GSD; KDD не ломает существующие GSD-проекты
@@ -59,7 +59,7 @@ KDD — continuity substrate для человека, работающего ч�
 | Решения в `.planning/` md, коммитятся | Совместимость с GSD-привычками; ревью в PR; edут с веткой | — Pending |
 | FTS5 BM25, без эмбеддингов | Бенчмарк ruflo: cosine-only 0% → BM25 70%; вектор = v2+ по доказанной нужде | — Pending |
 | Web-UI в v0, но минимальный | Пользователь ведёт доску вручную с первого дня — это и есть режим «документирование» | — Pending |
-| Node+TS, better-sqlite3, Hono | Один рантайм, нативная среда Claude Code плагинов | — Pending |
+| Node+TS, node:sqlite, Hono | Один рантайм, нативная среда Claude Code плагинов | — Pending |
 | Схема с actor_type/session_id/events с v0 | Continuity и аудит не требуют владеть исполнением; optional agent mode использует тот же субстрат | — Pending |
 
 ## Evolution

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import Database from 'better-sqlite3';
+import { Db } from '../src/db.js';
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,7 +9,7 @@ import * as core from '../src/index.js';
 let root: string;
 let home: string;
 let saved: NodeJS.ProcessEnv;
-const handles: Database.Database[] = [];
+const handles: Db[] = [];
 const user = { type: 'user' } as const;
 beforeEach(() => {
   saved = { ...process.env };
@@ -20,7 +20,7 @@ beforeEach(() => {
   delete process.env.KDD_DECISIONS_DIR;
 });
 afterEach(() => {
-  for (const db of handles.splice(0)) if (db.open) db.close();
+  for (const db of handles.splice(0)) db.close();
   process.env = saved;
   rmSync(root, { recursive: true, force: true });
 });
@@ -49,7 +49,7 @@ function legacy(cwd: string, decisionsDir: string, override = false) {
   const path = join(decisionsDir,'original.md');
   const text = core.renderDecisionMd({title:'Original',decision:'primarytoken'},'2026-09-27');
   writeFileSync(path,text);
-  const raw = new Database(dbPath);
+  const raw = new Db(dbPath);
   raw.pragma('journal_mode=WAL');
   for (const sql of core.MIGRATIONS.slice(0,12)) raw.exec(sql);
   raw.pragma('user_version=12');
@@ -91,7 +91,7 @@ describe('project store review regressions', () => {
   it('captures the configured external directory for an empty legacy source only from its source caller', () => {
     const source = repo('source');const external = join(root,'external');
     const dbPath = legacy(source,external);
-    const raw = new Database(dbPath);raw.exec('DELETE FROM decisions; DELETE FROM search_index');raw.close();
+    const raw = new Db(dbPath);raw.exec('DELETE FROM decisions; DELETE FROM search_index');raw.close();
     process.env.KDD_DECISIONS_DIR=external;
     const db = core.openDb(dbPath,core.canonicalCommonDir(source),source);handles.push(db);
     expect(core.projectOf(db).legacy_decisions_dir).toBe(realpathSync(external));
@@ -180,7 +180,7 @@ describe('project store review regressions', () => {
 describe('project store migration', () => {
   it('preserves populated v12 rows and uncheckpointed WAL with a stable identity', () => {
     const path = join(root, 'legacy.db');
-    const raw = new Database(path);
+    const raw = new Db(path);
     handles.push(raw);
     raw.pragma('journal_mode = WAL');
     raw.pragma('wal_autocheckpoint = 0');
@@ -200,7 +200,7 @@ describe('project store migration', () => {
       INSERT INTO errors VALUES(2,'old','retained',1);
     `);
     const tables = ['tasks','criteria','comments','events','tracks','task_links','files','decisions','search_index','errors','meta'];
-    const snapshot = (db: Database.Database) => tables.map(t => db.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all());
+    const snapshot = (db: Db) => tables.map(t => db.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all());
     const before = snapshot(raw);
     const assets = ['files/evidence.txt','knowledge/old.md','workspaces/dirty.txt'];
     for (const name of assets) {
@@ -216,7 +216,7 @@ describe('project store migration', () => {
     expect(db.prepare('PRAGMA table_info(project)').all().map((r: any) => r.name)).toContain('project_id');
     const project = core.projectOf(db);
     expect(project.project_id).toMatch(/^[0-9a-f]{32}$/);
-    const backup = new Database(`${path}.v12.bak`, { readonly: true });
+    const backup = new Db(`${path}.v12.bak`, { readOnly: true });
     handles.push(backup);
     expect(backup.pragma('user_version', { simple: true })).toBe(12);
     expect(snapshot(backup)).toEqual(before);
@@ -256,7 +256,7 @@ describe('project store lookup', () => {
     const { db, dbPath } = open(source);
     expect(core.bindingsOf(db)[0].checkout_path).toBe(realpathSync(source));
     expect(core.resolveDbPath(source).dbPath).toBe(dbPath);
-    const registry = new Database(join(home, 'registry.db'));
+    const registry = new Db(join(home, 'registry.db'));
     registry.pragma('user_version = 99');
     registry.close();
     expect(() => core.resolveDbPath(source)).toThrow(/registry.*version/);
@@ -320,7 +320,7 @@ describe('explicit repository bindings', () => {
     core.bindRepository(db,dbPath,home,{ cwd: clone,repoId},user);
     expect(db.prepare('SELECT COUNT(*) n FROM events').get()).toEqual(eventsBefore);
     expect(git(source,'show-ref')).toBe(before);
-    const reg = new Database(join(home,'registry.db'));
+    const reg = new Db(join(home,'registry.db'));
     reg.prepare('DELETE FROM bindings WHERE common_dir=?').run(core.canonicalCommonDir(clone));
     reg.close();
     const other = open(repo('other'));
@@ -359,7 +359,7 @@ describe('explicit repository bindings', () => {
     const resolved = core.resolveDbPath(source);
     const dbPath = location === 'external' ? join(root,'external','board.db') : resolved.dbPath;
     mkdirSync(join(dbPath,'..'),{recursive:true});
-    const raw = new Database(dbPath);
+    const raw = new Db(dbPath);
     raw.pragma('journal_mode=WAL');
     for(const sql of core.MIGRATIONS.slice(0,12)) raw.exec(sql);
     raw.pragma('user_version=12');

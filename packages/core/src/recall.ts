@@ -1,12 +1,12 @@
 import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type Database from 'better-sqlite3';
+import type { Db } from './db.js';
 import { CAPS } from './caps.js';
 import { KddError } from './errors.js';
 import { parseDecisionMd } from './decisions.js';
 import { canSyncLegacyDecisions, assertLegacyDecisionSource } from './project_store.js';
 
-export function syncIndex(db: Database.Database, decisionsDir: string): void {
+export function syncIndex(db: Db, decisionsDir: string): void {
   db.transaction(() => {
     if (canSyncLegacyDecisions(db, decisionsDir)) {
       // решения: истина — файловая система
@@ -110,7 +110,7 @@ export function sanitizeQuery(q: string): string {
 }
 
 export function recall(
-  db: Database.Database, decisionsDir: string, query: string,
+  db: Db, decisionsDir: string, query: string,
   opts: { k?: number; kind?: 'decision' | 'task' } = {},
 ): RecallHit[] {
   if (opts.kind && opts.kind !== 'decision' && opts.kind !== 'task') {
@@ -141,7 +141,7 @@ export function recall(
 }
 
 export function rebuild(
-  db: Database.Database, decisionsDir: string,
+  db: Db, decisionsDir: string,
 ): { decisions: number; tasks: number } {
   assertLegacyDecisionSource(db, decisionsDir);
   if (existsSync(decisionsDir)) for (const name of readdirSync(decisionsDir).filter(f => f.endsWith('.md'))) {

@@ -11,6 +11,7 @@
     "access": "public"
   },
   "license": "MIT",
+  "engines": { "node": ">=22.16" },
   "repository": {
     "type": "git",
     "url": "https://github.com/mag1yar/kddkit.git",
@@ -36,7 +37,6 @@
     "@tailwindcss/vite": "^4.3.2",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/react": "^16.3.2",
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.18.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",

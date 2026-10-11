@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import { Db } from './db.js';
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -20,14 +20,14 @@ export interface RepositoryRecord {
 export interface RepositoryBinding {
   common_dir: string; repo_id: string; checkout_path: string; created_at: number;
 }
-export function projectOf(db: Database.Database): ProjectRecord {
+export function projectOf(db: Db): ProjectRecord {
   return db.prepare('SELECT project_id,primary_repo_id,legacy_decisions_dir,created_at FROM project WHERE singleton=1')
     .get() as ProjectRecord;
 }
-export function repositoriesOf(db: Database.Database): RepositoryRecord[] {
+export function repositoriesOf(db: Db): RepositoryRecord[] {
   return db.prepare('SELECT * FROM repositories ORDER BY repo_id').all() as RepositoryRecord[];
 }
-export function bindingsOf(db: Database.Database): RepositoryBinding[] {
+export function bindingsOf(db: Db): RepositoryBinding[] {
   return db.prepare('SELECT * FROM repository_bindings ORDER BY common_dir').all() as RepositoryBinding[];
 }
 
@@ -57,11 +57,10 @@ function worktrees(common: string): string[] {
     });
 }
 interface Locator { common_dir: string; db_path: string; project_id: string; repo_id: string }
-function withRegistry<T>(home: string, fn: (db: Database.Database) => T): T {
+function withRegistry<T>(home: string, fn: (db: Db) => T): T {
   mkdirSync(home, { recursive: true });
-  const db = new Database(join(home, 'registry.db'));
+  const db = new Db(join(home, 'registry.db'));
   try {
-    db.pragma('busy_timeout = 5000');
     const version = db.pragma('user_version', { simple: true }) as number;
     if (version > 1) throw new KddError(`registry has unknown schema version ${version}`);
     db.transaction(() => {
@@ -72,9 +71,9 @@ function withRegistry<T>(home: string, fn: (db: Database.Database) => T): T {
     return fn(db);
   } finally { db.close(); }
 }
-function readonly<T>(path: string, fn: (db: Database.Database, version: number) => T): T {
+function readonly<T>(path: string, fn: (db: Db, version: number) => T): T {
   if (!existsSync(path)) throw new KddError(`project store is missing: ${path}`);
-  const db = new Database(path, { readonly: true, fileMustExist: true });
+  const db = new Db(path, { readOnly: true });
   try {
     const version = db.pragma('user_version', { simple: true }) as number;
     if (version < 1 || version > MIGRATIONS.length) throw new KddError(`unknown project schema version ${version}: ${path}`);
@@ -96,7 +95,7 @@ function storePaths(home: string): string[] {
   }
   return [...new Set(paths.map(path => resolve(path)))];
 }
-function catalogStore(db: Database.Database, dbPath: string, home: string): void {
+function catalogStore(db: Db, dbPath: string, home: string): void {
   if (canonicalProjectPath(dirname(dirname(dbPath))) === canonicalProjectPath(home) && dbPath.endsWith('/kdd.db')) return;
   // Explicit external stores need a durable location when the disposable registry is lost.
   const projectId = projectOf(db).project_id;
@@ -112,7 +111,7 @@ function catalogStore(db: Database.Database, dbPath: string, home: string): void
   try { writeFileSync(tmp,record,{mode:0o600}); renameSync(tmp,path); }
   finally { rmSync(tmp,{force:true}); }
 }
-function meta(db: Database.Database, key: string): string | undefined {
+function meta(db: Db, key: string): string | undefined {
   return (db.prepare('SELECT value FROM meta WHERE key=?').get(key) as { value: string } | undefined)?.value;
 }
 function discover(common: string, home: string): { dbPath: string; projectPath: string; locator?: Locator } | undefined {
@@ -140,7 +139,7 @@ function validateLocator(row: Locator): void {
     }
   });
 }
-function putLocator(registry: Database.Database, row: Locator): void {
+function putLocator(registry: Db, row: Locator): void {
   registry.prepare('INSERT INTO bindings(common_dir,db_path,project_id,repo_id) VALUES(@common_dir,@db_path,@project_id,@repo_id) ON CONFLICT(common_dir) DO UPDATE SET db_path=excluded.db_path,project_id=excluded.project_id,repo_id=excluded.repo_id').run(row);
 }
 export function lookupProjectStore(commonDir: string, home: string): { dbPath: string; projectPath: string } | undefined {
@@ -152,7 +151,7 @@ export function lookupProjectStore(commonDir: string, home: string): { dbPath: s
     return found ? { dbPath: found.dbPath, projectPath: found.projectPath } : undefined;
   }).immediate());
 }
-export function initializeProjectStore(db: Database.Database, dbPath: string, home: string,
+export function initializeProjectStore(db: Db, dbPath: string, home: string,
   projectPath?: string, checkout: string = process.cwd(),
   options: { legacyUpgrade?: boolean; configuredDecisions?: string } = {}): void {
   if (dbPath === ':memory:') return;
@@ -225,11 +224,11 @@ export function listProjectCheckouts(home: string): string[] {
   })))];
 }
 
-function audit(db: Database.Database, actor: Actor, action: string, detail: unknown): void {
+function audit(db: Db, actor: Actor, action: string, detail: unknown): void {
   db.prepare('INSERT INTO events(task_id,actor_type,actor_id,action,detail,created_at) VALUES(NULL,?,?,?,?,?)')
     .run(actor.type, actor.type === 'ai' ? actor.id ?? null : null, action, JSON.stringify(detail), time());
 }
-function assertAvailable(registry: Database.Database, common: string, home: string,
+function assertAvailable(registry: Db, common: string, home: string,
   dbPath: string, projectId: string, repoId?: string): void {
   const row = registry.prepare('SELECT * FROM bindings WHERE common_dir=?').get(common) as Locator | undefined;
   if (row && (row.project_id !== projectId || resolve(row.db_path) !== resolve(dbPath) || (repoId && row.repo_id !== repoId))) {
@@ -244,7 +243,7 @@ function checkoutBinding(cwd: string, repoId: string): RepositoryBinding {
   return { common_dir: canonicalCommonDir(cwd), repo_id: repoId,
     checkout_path: realpathSync(git(cwd,['rev-parse','--show-toplevel'])), created_at: time() };
 }
-function insertBinding(db: Database.Database, binding: RepositoryBinding): void {
+function insertBinding(db: Db, binding: RepositoryBinding): void {
   db.prepare('INSERT INTO repository_bindings VALUES(@common_dir,@repo_id,@checkout_path,@created_at)').run(binding);
 }
 // Источник первичного репо — не колонка, а чекаут, на который указывает meta.project_path:
@@ -252,7 +251,7 @@ function insertBinding(db: Database.Database, binding: RepositoryBinding): void 
 // Прочие чекауты того же репо (клоны) источником решений не становятся.
 // Старые override-доски хранят там чекаут, а не common-dir — поэтому сверяем с обоими путями
 // записи. Без git: после переезда источника старого пути уже нет, а узнать его rebind обязан.
-export function primarySource(db: Database.Database): RepositoryBinding | undefined {
+export function primarySource(db: Db): RepositoryBinding | undefined {
   const source = meta(db, 'project_path');
   if (!source) return undefined;
   const primary = projectOf(db).primary_repo_id;
@@ -266,11 +265,11 @@ export function primarySource(db: Database.Database): RepositoryBinding | undefi
   try { if (!existsSync(p)) return undefined; common = canonicalCommonDir(p); } catch { return undefined; }
   return bindings.find(b => b.common_dir === common);
 }
-function locateBinding(registry: Database.Database, db: Database.Database, dbPath: string, binding: RepositoryBinding): void {
+function locateBinding(registry: Db, db: Db, dbPath: string, binding: RepositoryBinding): void {
   putLocator(registry, { common_dir: binding.common_dir, db_path: resolve(dbPath),
     project_id: projectOf(db).project_id, repo_id: binding.repo_id });
 }
-export function bindRepository(db: Database.Database, dbPath: string, home: string,
+export function bindRepository(db: Db, dbPath: string, home: string,
   input: { cwd: string; repoId: string }, actor: Actor): RepositoryBinding {
   if (!/^[0-9a-f]{32}$/.test(input.repoId) || !repositoriesOf(db).some(r => r.repo_id === input.repoId)) throw new KddError('unknown repository id');
   const binding = checkoutBinding(input.cwd,input.repoId);
@@ -287,7 +286,7 @@ export function bindRepository(db: Database.Database, dbPath: string, home: stri
     return result;
   }).immediate());
 }
-export function addRepository(db: Database.Database, dbPath: string, home: string,
+export function addRepository(db: Db, dbPath: string, home: string,
   input: { cwd: string; purpose: string }, actor: Actor):
   { repository: RepositoryRecord; binding: RepositoryBinding } {
   if (!input.purpose?.trim()) throw new KddError('repository purpose must not be empty');
@@ -309,7 +308,7 @@ export function addRepository(db: Database.Database, dbPath: string, home: strin
     return { repository, binding: existing ?? binding };
   }).immediate());
 }
-export function rebindRepository(db: Database.Database, dbPath: string, home: string,
+export function rebindRepository(db: Db, dbPath: string, home: string,
   input: { fromCommonDir: string; cwd: string }, actor: Actor): RepositoryBinding {
   const oldPath = canonicalProjectPath(input.fromCommonDir);
   const newCommon = canonicalCommonDir(input.cwd);
@@ -354,7 +353,7 @@ export function rebindRepository(db: Database.Database, dbPath: string, home: st
   }).immediate());
 }
 
-export function canSyncLegacyDecisions(db: Database.Database, decisionsDir: string): boolean {
+export function canSyncLegacyDecisions(db: Db, decisionsDir: string): boolean {
   const project = projectOf(db);
   if (!project.primary_repo_id && db.memory) return true;
   const source = primarySource(db);
@@ -371,6 +370,6 @@ export function canSyncLegacyDecisions(db: Database.Database, decisionsDir: stri
     return source?.common_dir === common;
   } catch { return false; }
 }
-export function assertLegacyDecisionSource(db: Database.Database, decisionsDir: string): void {
+export function assertLegacyDecisionSource(db: Db, decisionsDir: string): void {
   if (!canSyncLegacyDecisions(db,decisionsDir)) throw new KddError('legacy decisions require the primary project source; foreign repositories may read the shared index');
 }

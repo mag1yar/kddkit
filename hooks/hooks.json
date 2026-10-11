@@ -1,5 +1,5 @@
 {
-  "description": "KDD substrate hooks: SessionStart pointer, native-dep install, Stop reminder",
+  "description": "KDD substrate hooks: SessionStart pointer, Stop reminder",
   "hooks": {
     "SubagentStart": [
       {
@@ -18,8 +18,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/smart-install.mjs\" && node \"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.mjs\"",
-            "timeout": 300
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.mjs\"",
+            "timeout": 10
           }
         ]
       }

@@ -1,8 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 
 const source = new URL('../integrations/codex-plugin/', import.meta.url);
@@ -57,18 +56,6 @@ function rpc(child, request) {
 try {
   cpSync(source, plugin, { recursive: true, dereference: true, filter: (path) => !path.endsWith('node_modules') });
   mkdirSync(join(temp, 'data'));
-  execFileSync(process.execPath, ['hooks/smart-install.mjs'], {
-    cwd: plugin,
-    env: { ...process.env, PLUGIN_DATA: join(temp, 'data') },
-    stdio: 'inherit',
-  });
-  const installError = join(temp, 'data', 'kdd-install-error.log');
-  if (existsSync(installError)) throw new Error(readFileSync(installError, 'utf8'));
-  const require = createRequire(join(plugin, 'package.json'));
-  if (!existsSync(join(plugin, 'node_modules', 'better-sqlite3')))
-    throw new Error(`smart-install left no local better-sqlite3; require resolves ${require.resolve('better-sqlite3')}`);
-  const Database = require('better-sqlite3');
-  new Database(':memory:').close();
   const core = await import(pathToFileURL(join(plugin, 'runtime/core.js')).href);
   const dbPath = join(temp, 'hook.db');
   const db = core.openDb(dbPath, plugin);
@@ -135,7 +122,7 @@ try {
   if (!initialize.result?.serverInfo?.name) throw new Error(`initialize failed: ${JSON.stringify(initialize)}`);
   const tools = await rpc(child, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
   if (tools.result?.tools?.length !== 6) throw new Error(`tools/list failed: ${JSON.stringify(tools)}`);
-  console.log(`fresh install SQLite OK; MCP initialize=${initialize.result.serverInfo.name}; tools=${tools.result.tools.length}; Codex hooks valid`);
+  console.log(`SQLite OK; MCP initialize=${initialize.result.serverInfo.name}; tools=${tools.result.tools.length}; Codex hooks valid`);
 } finally {
   if (child) await stopChild(child);
   rmSync(temp, { recursive: true, force: true });

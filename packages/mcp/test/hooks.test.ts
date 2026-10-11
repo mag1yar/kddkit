@@ -8,7 +8,6 @@ import { openDb, addTask, addCriterion, setCriterionChecked, moveTask } from '@k
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const sessionStart = join(root, 'scripts', 'session-start.mjs');
-const smartInstall = join(root, 'scripts', 'smart-install.mjs');
 const stop = join(root, 'scripts', 'stop.mjs');
 
 const runNode = (script: string, env: Record<string, string>) =>
@@ -63,17 +62,10 @@ describe('session-start.mjs', () => {
   });
 
   it('exits 0 even when the db path is unusable', () => {
-    // a directory as the db path makes better-sqlite3 throw
+    // a directory as the db path makes node:sqlite throw
     const dir = mkdtempSync(join(tmpdir(), 'kdd-hook-'));
     const out = runNode(sessionStart, { KDD_DB: dir });
     expect(out).toMatch(/KDD substrate active/); // bare pointer still printed
-  });
-});
-
-describe('smart-install.mjs', () => {
-  it('is a no-op and exits 0 when better-sqlite3 already resolves', () => {
-    // resolved from the workspace; must not throw and must print nothing noisy
-    expect(() => runNode(smartInstall, {})).not.toThrow();
   });
 });
 
@@ -105,7 +97,7 @@ describe('stop.mjs', () => {
   });
 
   it('молчит и выходит 0, когда база недоступна', () => {
-    // директория вместо файла базы: better-sqlite3 на таком бросает
+    // директория вместо файла базы: node:sqlite на таком бросает
     const dir = mkdtempSync(join(tmpdir(), 'kdd-stop-'));
     expect(() => runStop(IN, { KDD_DB: dir })).not.toThrow();
     expect(runStop(IN, { KDD_DB: dir }).trim()).toBe('');

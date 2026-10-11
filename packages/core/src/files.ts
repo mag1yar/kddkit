@@ -3,7 +3,7 @@ import {
   existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import { basename, dirname, extname, join } from 'node:path';
-import type Database from 'better-sqlite3';
+import type { Db } from './db.js';
 import { CAPS, capText } from './caps.js';
 import { now } from './db.js';
 import { KddError } from './errors.js';
@@ -44,18 +44,18 @@ export const filesDir = (dbPath: string): string => {
 export const filePath = (dbPath: string, f: FileRow): string =>
   join(filesDir(dbPath), `${f.sha256}.${f.ext}`);
 
-export function listFiles(db: Database.Database, taskId: number): FileRow[] {
+export function listFiles(db: Db, taskId: number): FileRow[] {
   return db.prepare(`SELECT * FROM files WHERE task_id = ? ORDER BY id`).all(taskId) as FileRow[];
 }
 
 // По id, а не по задаче: GET /api/files/:id (и вообще любая отдача байтов) не знает task_id
 // заранее — только глобальный file id из ссылки/img в теле.
-export function getFile(db: Database.Database, id: number): FileRow | undefined {
+export function getFile(db: Db, id: number): FileRow | undefined {
   return db.prepare(`SELECT * FROM files WHERE id = ?`).get(id) as FileRow | undefined;
 }
 
 export function attachFile(
-  db: Database.Database, dbPath: string, taskId: number, srcPath: string,
+  db: Db, dbPath: string, taskId: number, srcPath: string,
   opts: { description?: string }, actor: Actor,
 ): FileRow {
   return db.transaction(() => {
@@ -132,7 +132,7 @@ export function attachFile(
 }
 
 export function detachFile(
-  db: Database.Database, dbPath: string, fileId: number, actor: Actor,
+  db: Db, dbPath: string, fileId: number, actor: Actor,
 ): void {
   // Байты сносим, только когда на них не осталось ни одной строки: тот же файл может висеть
   // на другой задаче — дедуп сделал их одним блобом. И refcount, и само удаление байтов —

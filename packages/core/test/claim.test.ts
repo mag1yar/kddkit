@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import type Database from 'better-sqlite3';
+import type { Db } from '../src/db.js';
 import { openDb } from '../src/db.js';
 import { addTask, moveTask, placeTask } from '../src/ops.js';
 import { addCriterion, setCriterionChecked } from '../src/criteria.js';
@@ -7,7 +7,7 @@ import { claimTask, renewClaim, DEFAULT_TTL } from '../src/claim.js';
 import { now } from '../src/db.js';
 import { KddError } from '../src/errors.js';
 
-let db: Database.Database;
+let db: Db;
 beforeEach(() => { db = openDb(':memory:', 'p'); });
 const user = { type: 'user' as const };
 

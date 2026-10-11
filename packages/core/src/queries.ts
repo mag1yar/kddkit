@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type Database from 'better-sqlite3';
+import type { Db } from './db.js';
 import { CAPS, capText } from './caps.js';
 import { authorOf, normalizeSessionId, STATUSES, type Kind, type Status } from './state.js';
 import type {
@@ -70,7 +70,7 @@ function manualHistory(events: EventRow[]): {
 const READY_SQL = `(status = 'new' AND blocked = 0 AND archived_at IS NULL AND kind <> 'research')`;
 
 export function boardData(
-  db: Database.Database,
+  db: Db,
   f: { area?: string; status?: Status; archived?: boolean; track_id?: number;
        ready?: boolean; kind?: Kind } = {},
 ): Record<Status, TaskListRow[]> {
@@ -95,7 +95,7 @@ export function boardData(
   return out;
 }
 
-export function taskDetail(db: Database.Database, id: number): {
+export function taskDetail(db: Db, id: number): {
   task: Task; criteria: Criterion[]; comments: Comment[]; events: EventRow[];
   links: { id: number; title: string; kind: string }[];
   decisions: DecisionSummary[];
@@ -145,7 +145,7 @@ export interface TaskDetailCapped {
 }
 
 // Единственный источник trim-политики show/get_task: последние N с честными totals.
-export function taskDetailCapped(db: Database.Database, id: number): TaskDetailCapped {
+export function taskDetailCapped(db: Db, id: number): TaskDetailCapped {
   const d = taskDetail(db, id);
   return {
     task: {
@@ -177,23 +177,23 @@ export function taskDetailCapped(db: Database.Database, id: number): TaskDetailC
 }
 
 export function syncedTaskDetail(
-  db: Database.Database, decisionsDir: string, id: number, full: true,
+  db: Db, decisionsDir: string, id: number, full: true,
 ): ReturnType<typeof taskDetail>;
 export function syncedTaskDetail(
-  db: Database.Database, decisionsDir: string, id: number, full?: false,
+  db: Db, decisionsDir: string, id: number, full?: false,
 ): TaskDetailCapped;
 export function syncedTaskDetail(
-  db: Database.Database, decisionsDir: string, id: number, full?: boolean,
+  db: Db, decisionsDir: string, id: number, full?: boolean,
 ): ReturnType<typeof taskDetail> | TaskDetailCapped;
 export function syncedTaskDetail(
-  db: Database.Database, decisionsDir: string, id: number, full = false,
+  db: Db, decisionsDir: string, id: number, full = false,
 ): ReturnType<typeof taskDetail> | TaskDetailCapped {
   syncIndex(db, decisionsDir);
   return full ? taskDetail(db, id) : taskDetailCapped(db, id);
 }
 
 export function decisionDetail(
-  db: Database.Database, decisionsDir: string, slug: string,
+  db: Db, decisionsDir: string, slug: string,
 ): DecisionDetail {
   syncIndex(db, decisionsDir);
   const row = db.prepare(
@@ -219,7 +219,7 @@ export function decisionDetail(
   };
 }
 
-export function statusDigest(db: Database.Database): {
+export function statusDigest(db: Db): {
   in_progress: Task[]; review: Task[]; blocked: Task[]; recent: EventRow[];
 } {
   const active = `archived_at IS NULL`;
@@ -235,7 +235,7 @@ export function statusDigest(db: Database.Database): {
   };
 }
 
-export function attentionData(db: Database.Database, nowSeconds: number): AttentionInbox {
+export function attentionData(db: Db, nowSeconds: number): AttentionInbox {
   type Row = AttentionItem & { reason_rank: number; total_count: number };
   const rows = db.prepare(`
     WITH task_facts AS (
@@ -336,7 +336,7 @@ function exportEventDetail(detail: string | null, includeSensitive: boolean): st
 }
 
 export function exportBoard(
-  db: Database.Database, decisionsDir: string, opts: { includeSensitive?: boolean } = {},
+  db: Db, decisionsDir: string, opts: { includeSensitive?: boolean } = {},
 ) {
   syncIndex(db, decisionsDir);
   return db.transaction(() => {
@@ -383,7 +383,7 @@ export function exportBoard(
  * и напоминание стоило бы ему хода на выяснение того, что двигать её нельзя. Условие держим
  * в тех же терминах, что и fence — user-held и незанятые задачи не трогаем.
  */
-export function unsubmitted(db: Database.Database, author: string): number[] {
+export function unsubmitted(db: Db, author: string): number[] {
   const ids = db.prepare(
     `SELECT id FROM tasks t
       WHERE t.status = 'in_progress' AND t.archived_at IS NULL

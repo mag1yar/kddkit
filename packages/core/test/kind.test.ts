@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import Database from 'better-sqlite3';
+import { Db } from '../src/db.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,7 +10,7 @@ import { claimTask } from '../src/claim.js';
 import { addCriterion } from '../src/criteria.js';
 import { boardData } from '../src/queries.js';
 
-let db: Database.Database;
+let db: Db;
 beforeEach(() => { db = openDb(':memory:', 'p'); });
 const user = { type: 'user' as const };
 
@@ -48,7 +48,7 @@ describe('kind on a task', () => {
   // Старая доска не должна начать врать: дефолт молчаливый, и на карточке он не рисуется.
   it('migrates an older board in place, backfilling every existing row with feature', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'kdd-kind-')), 'kdd.db');
-    const raw = new Database(p);
+    const raw = new Db(p);
     for (let i = 0; i < MIGRATIONS.length - 1; i++) raw.exec(MIGRATIONS[i]); // всё, кроме нашей
     raw.pragma(`user_version = ${MIGRATIONS.length - 1}`);
     raw.prepare(

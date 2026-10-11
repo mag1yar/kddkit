@@ -40,8 +40,7 @@ Send these as **two separate prompts** in Claude Code:
 /plugin install kddkit@kddkit
 ```
 
-Then restart Claude Code. On the first session the plugin fetches its one native
-dependency (`better-sqlite3`) into the plugin directory and prints a one-line
+Then restart Claude Code. On the first session the plugin prints a one-line
 pointer confirming the substrate is active.
 
 ### Codex
@@ -55,19 +54,17 @@ codex plugin list
 ```
 
 The last command should show `kddkit@kddkit` as `installed, enabled`. Then start or
-restart Codex **from inside the project you want to use kddkit with**. On the first
-session the plugin verifies and, if needed, downloads its native `better-sqlite3`.
+restart Codex **from inside the project you want to use kddkit with**.
 MCP writes and Stop reminders use the same full Codex session identity.
 
 ## Requirements
 
-- **Node.js ≥ 22** on your `PATH` — the SessionStart hook and the MCP server run
-  on it. Without it the plugin loads but stays quiet.
+- **Node.js ≥ 22.16** on your `PATH` — the SessionStart hook and the MCP server run
+  on it (SQLite is built into Node, no native build). Without it the plugin loads
+  but stays quiet.
 - **Claude Code or Codex** with plugin support.
 - **git** — kddkit resolves its store from the repo you are in, so use it inside a
   git repository.
-- **Internet access on the first plugin session** — it downloads the native
-  `better-sqlite3` dependency automatically.
 - macOS, Linux or Windows.
 
 ## Using the board (human side)
@@ -196,11 +193,11 @@ last checkpoint. kdd itself already does this wherever it copies the board.
 ```
 .claude-plugin/    Claude plugin manifest
 integrations/codex-plugin/  self-contained Codex plugin + native runtime
-hooks/             Claude SessionStart: smart-install + pointer
+hooks/             Claude SessionStart pointer, Stop reminder
 skills/kdd/        the pull-protocol contract
-scripts/           smart-install.mjs, session-start.mjs
+scripts/           session-start.mjs, stop.mjs
 packages/
-  core/            store, state machine, recall (better-sqlite3, FTS5)
+  core/            store, state machine, recall (node:sqlite, FTS5)
   cli/             the `kdd` command
   mcp/             thin MCP server over core (committed self-contained bundle)
   ui/              Hono API + React board

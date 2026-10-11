@@ -7,15 +7,14 @@
   "files": ["dist"],
   "publishConfig": { "access": "public" },
   "license": "MIT",
+  "engines": { "node": ">=22.16" },
   "repository": { "type": "git", "url": "https://github.com/mag1yar/kddkit.git", "directory": "packages/core" },
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts --clean",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": { "better-sqlite3": "^12.11.1" },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.18.0",
     "tsup": "^8.5.1",
     "vitest": "^4.1.10"

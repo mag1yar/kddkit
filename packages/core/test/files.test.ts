@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { existsSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type Database from 'better-sqlite3';
+import type { Db } from '../src/db.js';
 import { openDb } from '../src/db.js';
 import { addTask } from '../src/ops.js';
 import { attachFile, detachFile, filePath, filesDir, isInlineMime, listFiles } from '../src/files.js';
@@ -12,7 +12,7 @@ import { KddError } from '../src/errors.js';
 const user = { type: 'user' as const };
 let dir: string;
 let dbPath: string;
-let db: Database.Database;
+let db: Db;
 
 // Настоящий файл базы, не ':memory:': стор вложений — это dirname(dbPath)/files,
 // и у in-memory базы такого каталога нет.

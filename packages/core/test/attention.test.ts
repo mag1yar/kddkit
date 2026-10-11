@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import type Database from 'better-sqlite3';
+import type { Db } from '../src/db.js';
 import { openDb } from '../src/db.js';
 import { addTask, blockTask, moveTask, unblockTask } from '../src/ops.js';
 import { addCriterion, removeCriterion, setCriterionChecked } from '../src/criteria.js';
@@ -9,7 +9,7 @@ import { CAPS } from '../src/caps.js';
 const NOW = 2_000_000;
 const DAY = 86_400;
 const user = { type: 'user' as const };
-let db: Database.Database;
+let db: Db;
 
 beforeEach(() => { db = openDb(':memory:', 'attention'); });
 

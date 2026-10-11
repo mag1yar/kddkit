@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import Database from 'better-sqlite3';
+import type { Db } from '../src/db.js';
 import { getReminded, openDb, setReminded } from '../src/index.js';
 
-const mk = (): Database.Database => openDb(':memory:', 'x');
+const mk = (): Db => openDb(':memory:', 'x');
 
 describe('stop reminders', () => {
   it('на чистой базе ничего не напомнено', () => {

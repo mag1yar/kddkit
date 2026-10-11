@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3';
+import type { Db } from './db.js';
 import { now } from './db.js';
 import type { Actor } from './state.js';
 import { appendEvent, appendTaskMutationEvent, authorOf, mustGetTask } from './ops.js';
@@ -13,11 +13,11 @@ function assertTtl(ttl: number): void {
   if (!Number.isFinite(ttl) || ttl <= 0) throw new KddError(`invalid ttl '${ttl}' (seconds > 0)`);
 }
 
-const criteriaCount = (db: Database.Database, id: number): number =>
+const criteriaCount = (db: Db, id: number): number =>
   (db.prepare(`SELECT COUNT(*) c FROM criteria WHERE task_id = ?`).get(id) as { c: number }).c;
 
 export function claimTask(
-  db: Database.Database, id: number, actor: Actor, ttl = DEFAULT_TTL,
+  db: Db, id: number, actor: Actor, ttl = DEFAULT_TTL,
 ): { ok: true; task: Task } | { ok: false; error: string } {
   assertTtl(ttl);
   return db.transaction((): { ok: true; task: Task } | { ok: false; error: string } => {
@@ -59,7 +59,7 @@ export function claimTask(
 
 // Продление тем же CAS: rowcount 0 => «ты больше не владелец» (истёк/reclaim), агент обязан остановиться.
 export function renewClaim(
-  db: Database.Database, id: number, actor: Actor, ttl = DEFAULT_TTL,
+  db: Db, id: number, actor: Actor, ttl = DEFAULT_TTL,
 ): { ok: true; task: Task } | { ok: false; error: string } {
   assertTtl(ttl);
   return db.transaction((): { ok: true; task: Task } | { ok: false; error: string } => {

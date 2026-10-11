@@ -3,7 +3,6 @@ import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type Database from 'better-sqlite3';
 import { serve } from '@hono/node-server';
 import { Hono, type Context } from 'hono';
 import {
@@ -11,7 +10,7 @@ import {
   createTrack, deleteTrack, detachFile, editTask, editTrack, filePath, getFile, isInlineMime,
   kddHome, listProjects, listTracks, logError, moveTask, openDb, placeTask, releaseInfo,
   removeCriterion, setCriterionChecked, storeIdentity, taskDetail, unblockTask, type Kind,
-  type Priority,
+  type Priority, type Db,
 } from '@kddkit/core';
 
 const hashOf = (dbPath: string) => basename(dirname(dbPath));
@@ -30,12 +29,12 @@ const HASH_RE = /^[0-9a-f]{16}$/;
 // иначе держатель токена, знающий путь чужого репозитория на этой машине, вычислил бы его hash
 // (sha256 от пути) и правил бы доску, которую ему не показывали.
 export function projectPool(defaultHash: string, opts: { lockToDefault?: boolean } = {}): {
-  getDb: (c: Context) => Database.Database;
-  get: (hash: string) => Database.Database;
+  getDb: (c: Context) => Db;
+  get: (hash: string) => Db;
   closeAll: () => void;
 } {
-  const pool = new Map<string, Database.Database>();
-  const get = (hash: string): Database.Database => {
+  const pool = new Map<string, Db>();
+  const get = (hash: string): Db => {
     const cached = pool.get(hash);
     if (cached) return cached;
     if (!HASH_RE.test(hash)) throw new KddError(`unknown project '${hash}'`);
@@ -93,7 +92,7 @@ const loopbackHost = (reqUrl: string, port: number | undefined): boolean => {
 };
 
 export function createApp(
-  getDb: (c: Context) => Database.Database, defaultHash = '',
+  getDb: (c: Context) => Db, defaultHash = '',
   opts: { token?: string; port?: () => number | undefined } = {},
 ): Hono {
   const app = new Hono();
@@ -396,7 +395,7 @@ function mountStatic(app: Hono, publicDir: string): void {
 // в том же кафе читал и правил бы доску, а `/api/projects` отдавал бы ему абсолютные пути всех
 // проектов на машине ещё до всякого выбора. Выход наружу — осознанный опт-ин с токеном.
 export function startUi(
-  getDb: (c: Context) => Database.Database, port: number, defaultHash = '',
+  getDb: (c: Context) => Db, port: number, defaultHash = '',
   opts: { host?: string; token?: string } = {},
 ): Promise<{ url: string; close: () => void }> {
   // Порт узнаём только из колбэка listen (port 0 = эфемерный), а приложение собирается до —
