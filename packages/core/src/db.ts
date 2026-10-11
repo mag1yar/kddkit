@@ -4,13 +4,18 @@ import type { DatabaseSyncOptions, StatementResultingChanges } from 'node:sqlite
 // Node 22 печатает ExperimentalWarning при первой загрузке node:sqlite — в stderr каждого
 // запуска kdd, MCP и UI. Фильтр ставится ДО загрузки модуля, поэтому node:sqlite берём через
 // require, а не статическим import: тот поднялся бы выше фильтра. Глушим только этот warning.
+// Две копии core в одном процессе (CLI + бандл плагина) в одном тике: вторая не оборачивает
+// фильтр первой — иначе приняла бы его за оригинал, и первая уже не смогла бы вернуть настоящий.
+const FILTER = Symbol.for('kddkit.sqliteWarningFilter');
 const emit = process.emit;
+const ours = (emit as unknown as Record<symbol, unknown>)[FILTER] === true;
 const filtered = function (this: NodeJS.Process, name: string | symbol, ...args: unknown[]): boolean {
   const w = args[0] as { name?: unknown; message?: unknown } | undefined;
   if (name === 'warning' && w?.name === 'ExperimentalWarning' && /SQLite/.test(String(w.message))) return false;
   return (emit as (this: NodeJS.Process, ...a: unknown[]) => boolean).call(this, name, ...args);
 } as typeof process.emit;
-process.emit = filtered;
+(filtered as unknown as Record<symbol, unknown>)[FILTER] = true;
+if (!ours) process.emit = filtered;
 // engines is only an npm warning; plugins run whatever node is on PATH. Below 22.16 node:sqlite
 // is missing (<22.13) or lacks `timeout`, `isTransaction` — busy timeout 0, nested transactions
 // BEGIN inside BEGIN. 23.x is EOL with the same gaps by minor. A plain Error, not KddError:
@@ -47,11 +52,12 @@ class Connection extends DatabaseSync {
   // первой же чужой записи вместо того, чтобы подождать.
   constructor(path: string, options: DatabaseSyncOptions = {}) {
     super(path, { timeout: 5000, ...options });
-    this.#path = path;
+    this.#path = path === ':memory:' || path === '' ? path : resolve(path);
   }
 
-  // The path as given, not location(): that resolves symlinks (a symlinked KDD_DB would put
-  // attachments next to the target, while the CLI uses the link) and throws after close().
+  // Absolute (a relative KDD_DB would otherwise give relative attachment paths) but with symlinks
+  // kept — not location(): that resolves them (a symlinked KDD_DB would put attachments next to the
+  // target, while the CLI uses the link) and throws after close().
   readonly #path: string;
   get name(): string { return this.#path; }
   get memory(): boolean { return this.#path === ':memory:' || this.#path === ''; }
@@ -100,7 +106,7 @@ export type Db = Omit<Connection, 'prepare'> & { prepare(sql: string): Statement
 export const Db = Connection as unknown as new (path: string, options?: DatabaseSyncOptions) => Db;
 
 import { mkdirSync, renameSync, rmSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { KddError } from './errors.js';
 import { initializeProjectStore, canonicalProjectPath, canonicalCommonDir, primarySource, projectOf } from './project_store.js';
 import { homedir } from 'node:os';

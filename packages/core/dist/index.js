@@ -56,7 +56,7 @@ function capText(s, n) {
 // src/db.ts
 import { createRequire } from "module";
 import { mkdirSync as mkdirSync2, renameSync as renameSync2, rmSync as rmSync2 } from "fs";
-import { dirname as dirname2, join as join2 } from "path";
+import { dirname as dirname2, join as join2, resolve as resolve2 } from "path";
 
 // src/errors.ts
 var KddError = class extends Error {
@@ -996,13 +996,16 @@ function assertLegacyDecisionSource(db, decisionsDir) {
 
 // src/db.ts
 import { homedir } from "os";
+var FILTER = /* @__PURE__ */ Symbol.for("kddkit.sqliteWarningFilter");
 var emit = process.emit;
+var ours = emit[FILTER] === true;
 var filtered = function(name, ...args) {
   const w = args[0];
   if (name === "warning" && w?.name === "ExperimentalWarning" && /SQLite/.test(String(w.message))) return false;
   return emit.call(this, name, ...args);
 };
-process.emit = filtered;
+filtered[FILTER] = true;
+if (!ours) process.emit = filtered;
 {
   const [major, minor] = process.versions.node.split(".").map(Number);
   if (major < 22 || major === 22 && minor < 16 || major === 23)
@@ -1023,10 +1026,11 @@ var Connection = class extends DatabaseSync {
   // первой же чужой записи вместо того, чтобы подождать.
   constructor(path, options = {}) {
     super(path, { timeout: 5e3, ...options });
-    this.#path = path;
+    this.#path = path === ":memory:" || path === "" ? path : resolve2(path);
   }
-  // The path as given, not location(): that resolves symlinks (a symlinked KDD_DB would put
-  // attachments next to the target, while the CLI uses the link) and throws after close().
+  // Absolute (a relative KDD_DB would otherwise give relative attachment paths) but with symlinks
+  // kept — not location(): that resolves them (a symlinked KDD_DB would put attachments next to the
+  // target, while the CLI uses the link) and throws after close().
   #path;
   get name() {
     return this.#path;
@@ -1199,10 +1203,10 @@ import { execFileSync as execFileSync2 } from "child_process";
 import { createHash } from "crypto";
 import { existsSync as existsSync2, readdirSync as readdirSync2 } from "fs";
 import { homedir as homedir2 } from "os";
-import { join as join3, resolve as resolve2 } from "path";
+import { join as join3, resolve as resolve3 } from "path";
 import { realpathSync as realpathSync2 } from "fs";
 var kddHome = () => process.env.KDD_HOME ?? join3(homedir2(), ".kdd");
-var storeIdentity = () => createHash("sha256").update(resolve2(kddHome())).update("\0").update(process.env.KDD_DB ? resolve2(process.env.KDD_DB) : "").digest("hex").slice(0, 16);
+var storeIdentity = () => createHash("sha256").update(resolve3(kddHome())).update("\0").update(process.env.KDD_DB ? resolve3(process.env.KDD_DB) : "").digest("hex").slice(0, 16);
 function resolveDbPath(cwd = process.cwd()) {
   if (process.env.KDD_DB) return { dbPath: process.env.KDD_DB, projectPath: cwd };
   let common;
@@ -2018,68 +2022,76 @@ function addDecision(db, decisionsDir, input) {
 import { existsSync as existsSync5, readFileSync as readFileSync4, readdirSync as readdirSync4, realpathSync as realpathSync4 } from "fs";
 import { dirname as dirname5, join as join6 } from "path";
 function syncIndex(db, decisionsDir) {
-  db.transaction(() => {
-    if (canSyncLegacyDecisions(db, decisionsDir)) {
-      const files = existsSync5(decisionsDir) ? readdirSync4(decisionsDir).filter((f) => f.endsWith(".md")) : [];
-      const inDb = new Map(
-        db.prepare(
-          `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`
-        ).all().map((r) => [r.slug, r])
-      );
-      const seen = /* @__PURE__ */ new Set();
-      for (const f of files) {
-        const slug = f.slice(0, -3);
-        seen.add(slug);
-        const path = join6(decisionsDir, f);
-        if (!canSyncLegacyDecisions(db, dirname5(realpathSync4(path)))) continue;
-        const doc = parseDecisionMd(readFileSync4(path, "utf8"));
-        const title = doc.title || slug;
-        const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
-        const sourceTasks = JSON.stringify(doc.sourceTasks);
-        const row = inDb.get(slug);
-        if (row && row.content_hash === doc.hash && (row.superseded_by ?? null) === (supersededBy ?? null)) {
-          if (row.path !== path || row.source_tasks !== sourceTasks || row.created !== (doc.created || null)) {
-            db.prepare(`UPDATE decisions SET path = ?, source_tasks = ?, created = ? WHERE slug = ?`).run(path, sourceTasks, doc.created || null, slug);
-          }
-          continue;
-        }
-        db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
-        db.prepare(
-          `INSERT OR REPLACE INTO decisions
-             (slug, title, path, content_hash, created, superseded_by, source_tasks)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
-        ).run(slug, title, path, doc.hash, doc.created || null, supersededBy, sourceTasks);
-        db.prepare(
-          `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`
-        ).run(slug, title, doc.indexBody);
-      }
-      for (const slug of inDb.keys()) {
-        if (seen.has(slug)) continue;
-        db.prepare(`DELETE FROM decisions WHERE slug = ?`).run(slug);
-        db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
-      }
-    }
-    const last = Number(
-      db.prepare(`SELECT value FROM meta WHERE key='fts_last_event_id'`).get()?.value ?? "0"
-    );
-    const max = db.prepare(`SELECT MAX(id) AS m FROM events`).get().m ?? 0;
-    if (max <= last) return;
-    const ids = db.prepare(
-      `SELECT DISTINCT task_id AS id FROM events WHERE id > ? AND task_id IS NOT NULL`
-    ).all(last);
-    const getTask = db.prepare(`SELECT * FROM tasks WHERE id = ?`);
-    const getComments = db.prepare(`SELECT body FROM comments WHERE task_id = ? ORDER BY id`);
-    for (const { id: id2 } of ids) {
-      db.prepare(`DELETE FROM search_index WHERE kind='task' AND ref = ?`).run(String(id2));
-      const t = getTask.get(id2);
-      if (!t || t.archived_at) continue;
-      const body = [t.body ?? "", ...getComments.all(id2).map((c) => c.body)].filter(Boolean).join("\n");
-      db.prepare(
-        `INSERT INTO search_index (kind, ref, title, body) VALUES ('task', ?, ?, ?)`
-      ).run(String(id2), t.title, body);
-    }
-    db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_last_event_id', ?)`).run(String(max));
+  if (indexPass(db, decisionsDir, false)) db.transaction(() => {
+    indexPass(db, decisionsDir, true);
   }).immediate();
+}
+function indexPass(db, decisionsDir, write) {
+  if (canSyncLegacyDecisions(db, decisionsDir)) {
+    const files = existsSync5(decisionsDir) ? readdirSync4(decisionsDir).filter((f) => f.endsWith(".md")) : [];
+    const inDb = new Map(
+      db.prepare(
+        `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`
+      ).all().map((r) => [r.slug, r])
+    );
+    const seen = /* @__PURE__ */ new Set();
+    for (const f of files) {
+      const slug = f.slice(0, -3);
+      seen.add(slug);
+      const path = join6(decisionsDir, f);
+      if (!canSyncLegacyDecisions(db, dirname5(realpathSync4(path)))) continue;
+      const doc = parseDecisionMd(readFileSync4(path, "utf8"));
+      const title = doc.title || slug;
+      const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
+      const sourceTasks = JSON.stringify(doc.sourceTasks);
+      const row = inDb.get(slug);
+      if (row && row.content_hash === doc.hash && (row.superseded_by ?? null) === (supersededBy ?? null)) {
+        if (row.path !== path || row.source_tasks !== sourceTasks || row.created !== (doc.created || null)) {
+          if (!write) return true;
+          db.prepare(`UPDATE decisions SET path = ?, source_tasks = ?, created = ? WHERE slug = ?`).run(path, sourceTasks, doc.created || null, slug);
+        }
+        continue;
+      }
+      if (!write) return true;
+      db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
+      db.prepare(
+        `INSERT OR REPLACE INTO decisions
+           (slug, title, path, content_hash, created, superseded_by, source_tasks)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(slug, title, path, doc.hash, doc.created || null, supersededBy, sourceTasks);
+      db.prepare(
+        `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`
+      ).run(slug, title, doc.indexBody);
+    }
+    for (const slug of inDb.keys()) {
+      if (seen.has(slug)) continue;
+      if (!write) return true;
+      db.prepare(`DELETE FROM decisions WHERE slug = ?`).run(slug);
+      db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
+    }
+  }
+  const last = Number(
+    db.prepare(`SELECT value FROM meta WHERE key='fts_last_event_id'`).get()?.value ?? "0"
+  );
+  const max = db.prepare(`SELECT MAX(id) AS m FROM events`).get().m ?? 0;
+  if (max <= last) return false;
+  if (!write) return true;
+  const ids = db.prepare(
+    `SELECT DISTINCT task_id AS id FROM events WHERE id > ? AND task_id IS NOT NULL`
+  ).all(last);
+  const getTask = db.prepare(`SELECT * FROM tasks WHERE id = ?`);
+  const getComments = db.prepare(`SELECT body FROM comments WHERE task_id = ? ORDER BY id`);
+  for (const { id: id2 } of ids) {
+    db.prepare(`DELETE FROM search_index WHERE kind='task' AND ref = ?`).run(String(id2));
+    const t = getTask.get(id2);
+    if (!t || t.archived_at) continue;
+    const body = [t.body ?? "", ...getComments.all(id2).map((c) => c.body)].filter(Boolean).join("\n");
+    db.prepare(
+      `INSERT INTO search_index (kind, ref, title, body) VALUES ('task', ?, ?, ?)`
+    ).run(String(id2), t.title, body);
+  }
+  db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_last_event_id', ?)`).run(String(max));
+  return true;
 }
 function sanitizeQuery(q) {
   const parts = [];

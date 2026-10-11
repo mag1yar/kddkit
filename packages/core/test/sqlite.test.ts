@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { Db, checkpointWal } from '../src/db.js';
 
 const file = (): string => join(mkdtempSync(join(tmpdir(), 'kdd-sqlite-')), 'k.db');
@@ -88,6 +88,13 @@ describe('Db', () => {
     expect(db.memory).toBe(false);
   });
 
+  it('name of a relative path is absolute', () => {
+    const p = file();
+    const db = new Db(relative(process.cwd(), p));
+    expect(db.name).toBe(p);
+    db.close();
+  });
+
   it('close is idempotent', () => {
     const db = new Db(':memory:');
     db.close();
@@ -133,7 +140,8 @@ describe('Db', () => {
   // later — a library consumer's own SQLite warning (emitted by hand here) reaches stderr.
   it('swallows the load-time SQLite warning, then restores process.emit', () => {
     const core = new URL('../dist/index.js', import.meta.url).href;
-    const script = `await import(${JSON.stringify(core)});
+    // Two copies of core in the same tick (distinct module URLs): the real emit must still come back.
+    const script = `await Promise.all([import(${JSON.stringify(core + '?a')}), import(${JSON.stringify(core + '?b')})]);
       setImmediate(() => setImmediate(() => process.emitWarning('late SQLite notice', 'ExperimentalWarning')));`;
     const r = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' });
     expect(r.status).toBe(0);

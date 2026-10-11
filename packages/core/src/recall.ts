@@ -7,88 +7,97 @@ import { parseDecisionMd } from './decisions.js';
 import { canSyncLegacyDecisions, assertLegacyDecisionSource } from './project_store.js';
 
 export function syncIndex(db: Db, decisionsDir: string): void {
-  // IMMEDIATE: reads the watermark/decisions and then writes — a deferred read lock could not be
-  // upgraded under a concurrent writer and would fail with SQLITE_BUSY instead of waiting.
-  db.transaction(() => {
-    if (canSyncLegacyDecisions(db, decisionsDir)) {
-      // решения: истина — файловая система
-      const files = existsSync(decisionsDir)
-        ? readdirSync(decisionsDir).filter((f) => f.endsWith('.md'))
-        : [];
-      const inDb = new Map(
-        (db.prepare(
-          `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`,
-        ).all() as {
-          slug: string; path: string; content_hash: string; created: string | null;
-          superseded_by: string | null; source_tasks: string;
-        }[])
-          .map((r) => [r.slug, r]),
-      );
-      const seen = new Set<string>();
-      for (const f of files) {
-        const slug = f.slice(0, -3);
-        seen.add(slug);
-        const path = join(decisionsDir, f);
-        if (!canSyncLegacyDecisions(db, dirname(realpathSync(path)))) continue;
-        const doc = parseDecisionMd(readFileSync(path, 'utf8'));
-        const title = doc.title || slug;
-        const supersededBy =
-          doc.status === 'superseded' ? (doc.supersededBy || '?') : (doc.supersededBy || null);
-        const sourceTasks = JSON.stringify(doc.sourceTasks);
-        const row = inDb.get(slug);
-        if (row && row.content_hash === doc.hash &&
-            (row.superseded_by ?? null) === (supersededBy ?? null)) {
-          if (row.path !== path || row.source_tasks !== sourceTasks ||
-              row.created !== (doc.created || null)) {
-            db.prepare(`UPDATE decisions SET path = ?, source_tasks = ?, created = ? WHERE slug = ?`)
-              .run(path, sourceTasks, doc.created || null, slug);
-          }
-          continue;
-        }
-        db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
-        db.prepare(
-          `INSERT OR REPLACE INTO decisions
-             (slug, title, path, content_hash, created, superseded_by, source_tasks)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        ).run(slug, title, path, doc.hash, doc.created || null, supersededBy, sourceTasks);
-        db.prepare(
-          `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`,
-        ).run(slug, title, doc.indexBody);
-      }
-      for (const slug of inDb.keys()) {
-        if (seen.has(slug)) continue;
-        db.prepare(`DELETE FROM decisions WHERE slug = ?`).run(slug);
-        db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
-      }
+  // Usually nothing changed: detect that lock-free first, so recall/show never wait on a writer.
+  // Only when there is something to write take IMMEDIATE (a deferred read lock cannot be upgraded
+  // under a concurrent writer) and redo the pass inside it — a concurrent change stays safe.
+  if (indexPass(db, decisionsDir, false)) db.transaction(() => { indexPass(db, decisionsDir, true); }).immediate();
+}
 
-    }
-
-    // задачи: журнал изменений — events
-    const last = Number(
-      (db.prepare(`SELECT value FROM meta WHERE key='fts_last_event_id'`).get() as
-        { value: string } | undefined)?.value ?? '0',
+// write=false: only report whether anything is stale (no writes, stops at the first difference).
+function indexPass(db: Db, decisionsDir: string, write: boolean): boolean {
+  if (canSyncLegacyDecisions(db, decisionsDir)) {
+    // решения: истина — файловая система
+    const files = existsSync(decisionsDir)
+      ? readdirSync(decisionsDir).filter((f) => f.endsWith('.md'))
+      : [];
+    const inDb = new Map(
+      (db.prepare(
+        `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`,
+      ).all() as {
+        slug: string; path: string; content_hash: string; created: string | null;
+        superseded_by: string | null; source_tasks: string;
+      }[])
+        .map((r) => [r.slug, r]),
     );
-    const max = (db.prepare(`SELECT MAX(id) AS m FROM events`).get() as { m: number | null }).m ?? 0;
-    if (max <= last) return;
-    const ids = db.prepare(
-      `SELECT DISTINCT task_id AS id FROM events WHERE id > ? AND task_id IS NOT NULL`,
-    ).all(last) as { id: number }[];
-    const getTask = db.prepare(`SELECT * FROM tasks WHERE id = ?`);
-    const getComments = db.prepare(`SELECT body FROM comments WHERE task_id = ? ORDER BY id`);
-    for (const { id } of ids) {
-      db.prepare(`DELETE FROM search_index WHERE kind='task' AND ref = ?`).run(String(id));
-      const t = getTask.get(id) as
-        { title: string; body: string | null; archived_at: number | null } | undefined;
-      if (!t || t.archived_at) continue;
-      const body = [t.body ?? '', ...(getComments.all(id) as { body: string }[]).map((c) => c.body)]
-        .filter(Boolean).join('\n');
+    const seen = new Set<string>();
+    for (const f of files) {
+      const slug = f.slice(0, -3);
+      seen.add(slug);
+      const path = join(decisionsDir, f);
+      if (!canSyncLegacyDecisions(db, dirname(realpathSync(path)))) continue;
+      const doc = parseDecisionMd(readFileSync(path, 'utf8'));
+      const title = doc.title || slug;
+      const supersededBy =
+        doc.status === 'superseded' ? (doc.supersededBy || '?') : (doc.supersededBy || null);
+      const sourceTasks = JSON.stringify(doc.sourceTasks);
+      const row = inDb.get(slug);
+      if (row && row.content_hash === doc.hash &&
+          (row.superseded_by ?? null) === (supersededBy ?? null)) {
+        if (row.path !== path || row.source_tasks !== sourceTasks ||
+            row.created !== (doc.created || null)) {
+          if (!write) return true;
+          db.prepare(`UPDATE decisions SET path = ?, source_tasks = ?, created = ? WHERE slug = ?`)
+            .run(path, sourceTasks, doc.created || null, slug);
+        }
+        continue;
+      }
+      if (!write) return true;
+      db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
       db.prepare(
-        `INSERT INTO search_index (kind, ref, title, body) VALUES ('task', ?, ?, ?)`,
-      ).run(String(id), t.title, body);
+        `INSERT OR REPLACE INTO decisions
+           (slug, title, path, content_hash, created, superseded_by, source_tasks)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(slug, title, path, doc.hash, doc.created || null, supersededBy, sourceTasks);
+      db.prepare(
+        `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`,
+      ).run(slug, title, doc.indexBody);
     }
-    db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_last_event_id', ?)`)
-      .run(String(max));
-  }).immediate();
+    for (const slug of inDb.keys()) {
+      if (seen.has(slug)) continue;
+      if (!write) return true;
+      db.prepare(`DELETE FROM decisions WHERE slug = ?`).run(slug);
+      db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
+    }
+
+  }
+
+  // задачи: журнал изменений — events
+  const last = Number(
+    (db.prepare(`SELECT value FROM meta WHERE key='fts_last_event_id'`).get() as
+      { value: string } | undefined)?.value ?? '0',
+  );
+  const max = (db.prepare(`SELECT MAX(id) AS m FROM events`).get() as { m: number | null }).m ?? 0;
+  if (max <= last) return false;
+  if (!write) return true;
+  const ids = db.prepare(
+    `SELECT DISTINCT task_id AS id FROM events WHERE id > ? AND task_id IS NOT NULL`,
+  ).all(last) as { id: number }[];
+  const getTask = db.prepare(`SELECT * FROM tasks WHERE id = ?`);
+  const getComments = db.prepare(`SELECT body FROM comments WHERE task_id = ? ORDER BY id`);
+  for (const { id } of ids) {
+    db.prepare(`DELETE FROM search_index WHERE kind='task' AND ref = ?`).run(String(id));
+    const t = getTask.get(id) as
+      { title: string; body: string | null; archived_at: number | null } | undefined;
+    if (!t || t.archived_at) continue;
+    const body = [t.body ?? '', ...(getComments.all(id) as { body: string }[]).map((c) => c.body)]
+      .filter(Boolean).join('\n');
+    db.prepare(
+      `INSERT INTO search_index (kind, ref, title, body) VALUES ('task', ?, ?, ?)`,
+    ).run(String(id), t.title, body);
+  }
+  db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_last_event_id', ?)`)
+    .run(String(max));
+  return true;
 }
 
 export interface RecallHit {

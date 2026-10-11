@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openDb } from '../src/db.js';
+import { Db, openDb } from '../src/db.js';
 import { addDecision } from '../src/decisions.js';
 import { recall, rebuild, sanitizeQuery, syncIndex } from '../src/recall.js';
 import { addTask, commentTask, archiveTask } from '../src/ops.js';
@@ -227,5 +227,30 @@ describe('sanitizeQuery', () => {
     expect(sanitizeQuery("don't NEAR(x) c++ *")).toBe('"don" "t" "NEAR" "x" "c"');
     expect(sanitizeQuery('foo "unbalanced')).toBe('"foo" "unbalanced"');
     expect(() => sanitizeQuery('*** :^ ()')).toThrow(/empty query/);
+  });
+});
+
+// recall с нечего индексировать не должен ждать чужого писателя: проверка изменений — без write-lock.
+describe('syncIndex — lock-free when nothing changed', () => {
+  it('recall succeeds while another connection holds BEGIN IMMEDIATE', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kdd-recall-lock-'));
+    const saved = process.env.KDD_HOME;
+    process.env.KDD_HOME = join(root, 'home');
+    const file = join(root, 'kdd.db');
+    const dir = join(root, 'decisions');
+    const a = openDb(file);
+    try {
+      addTask(a, { title: 'lockfree probe' }, { type: 'user' });
+      recall(a, dir, 'probe'); // index everything first
+      const b = new Db(file, { timeout: 200 });
+      a.exec('BEGIN IMMEDIATE');
+      try {
+        expect(recall(b, dir, 'probe').map((h) => h.title)).toEqual(['lockfree probe']);
+      } finally { a.exec('ROLLBACK'); b.close(); }
+    } finally {
+      a.close();
+      if (saved === undefined) delete process.env.KDD_HOME; else process.env.KDD_HOME = saved;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

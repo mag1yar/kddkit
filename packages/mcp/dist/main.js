@@ -2979,7 +2979,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve3.call(this, root, ref);
+      let _sch = resolve4.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a = root.localRefs) === null || _a === void 0 ? void 0 : _a[ref];
         const { schemaId } = this.opts;
@@ -3006,7 +3006,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve3(root, ref) {
+    function resolve4(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3637,7 +3637,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve3(baseURI, relativeURI, options) {
+    function resolve4(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const resolved = resolveComponent(parse3(baseURI, schemelessOptions), parse3(relativeURI, schemelessOptions), schemelessOptions, true);
       schemelessOptions.skipEscape = true;
@@ -3895,7 +3895,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize: normalize2,
-      resolve: resolve3,
+      resolve: resolve4,
       resolveComponent,
       equal,
       serialize,
@@ -18978,7 +18978,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve3) => setTimeout(resolve3, pollInterval));
+        await new Promise((resolve4) => setTimeout(resolve4, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -18995,7 +18995,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve3, reject) => {
+    return new Promise((resolve4, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -19073,7 +19073,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve3(parseResult.data);
+            resolve4(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -19334,12 +19334,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve3, reject) => {
+    return new Promise((resolve4, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve3, interval);
+      const timeoutId = setTimeout(resolve4, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -20439,7 +20439,7 @@ var McpServer = class {
     let task = createTaskResult.task;
     const pollInterval = task.pollInterval ?? 5e3;
     while (task.status !== "completed" && task.status !== "failed" && task.status !== "cancelled") {
-      await new Promise((resolve3) => setTimeout(resolve3, pollInterval));
+      await new Promise((resolve4) => setTimeout(resolve4, pollInterval));
       const updatedTask = await extra.taskStore.getTask(taskId);
       if (!updatedTask) {
         throw new McpError(ErrorCode.InternalError, `Task ${taskId} not found during polling`);
@@ -21088,12 +21088,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve3) => {
+    return new Promise((resolve4) => {
       const json = serializeMessage(message);
       if (this._stdout.write(json)) {
-        resolve3();
+        resolve4();
       } else {
-        this._stdout.once("drain", resolve3);
+        this._stdout.once("drain", resolve4);
       }
     });
   }
@@ -21102,7 +21102,7 @@ var StdioServerTransport = class {
 // ../core/dist/index.js
 import { createRequire } from "module";
 import { mkdirSync as mkdirSync2, renameSync as renameSync2, rmSync as rmSync2 } from "fs";
-import { dirname as dirname2, join as join2 } from "path";
+import { dirname as dirname2, join as join2, resolve as resolve2 } from "path";
 import { execFileSync } from "child_process";
 import { randomBytes } from "crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "fs";
@@ -21111,7 +21111,7 @@ import { homedir } from "os";
 import { execFileSync as execFileSync2 } from "child_process";
 import { createHash } from "crypto";
 import { homedir as homedir2 } from "os";
-import { join as join3, resolve as resolve2 } from "path";
+import { join as join3, resolve as resolve3 } from "path";
 import { realpathSync as realpathSync2 } from "fs";
 import { execFileSync as execFileSync3 } from "child_process";
 import { createHash as createHash2 } from "crypto";
@@ -21988,13 +21988,16 @@ function canSyncLegacyDecisions(db, decisionsDir) {
     return false;
   }
 }
+var FILTER = /* @__PURE__ */ Symbol.for("kddkit.sqliteWarningFilter");
 var emit = process.emit;
+var ours = emit[FILTER] === true;
 var filtered = function(name, ...args) {
   const w = args[0];
   if (name === "warning" && w?.name === "ExperimentalWarning" && /SQLite/.test(String(w.message))) return false;
   return emit.call(this, name, ...args);
 };
-process.emit = filtered;
+filtered[FILTER] = true;
+if (!ours) process.emit = filtered;
 {
   const [major, minor] = process.versions.node.split(".").map(Number);
   if (major < 22 || major === 22 && minor < 16 || major === 23)
@@ -22015,10 +22018,11 @@ var Connection = class extends DatabaseSync {
   // первой же чужой записи вместо того, чтобы подождать.
   constructor(path, options = {}) {
     super(path, { timeout: 5e3, ...options });
-    this.#path = path;
+    this.#path = path === ":memory:" || path === "" ? path : resolve2(path);
   }
-  // The path as given, not location(): that resolves symlinks (a symlinked KDD_DB would put
-  // attachments next to the target, while the CLI uses the link) and throws after close().
+  // Absolute (a relative KDD_DB would otherwise give relative attachment paths) but with symlinks
+  // kept — not location(): that resolves them (a symlinked KDD_DB would put attachments next to the
+  // target, while the CLI uses the link) and throws after close().
   #path;
   get name() {
     return this.#path;
@@ -22580,68 +22584,76 @@ function parseDecisionMd(raw) {
   };
 }
 function syncIndex(db, decisionsDir) {
-  db.transaction(() => {
-    if (canSyncLegacyDecisions(db, decisionsDir)) {
-      const files = existsSync5(decisionsDir) ? readdirSync4(decisionsDir).filter((f) => f.endsWith(".md")) : [];
-      const inDb = new Map(
-        db.prepare(
-          `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`
-        ).all().map((r) => [r.slug, r])
-      );
-      const seen = /* @__PURE__ */ new Set();
-      for (const f of files) {
-        const slug = f.slice(0, -3);
-        seen.add(slug);
-        const path = join6(decisionsDir, f);
-        if (!canSyncLegacyDecisions(db, dirname5(realpathSync4(path)))) continue;
-        const doc = parseDecisionMd(readFileSync4(path, "utf8"));
-        const title = doc.title || slug;
-        const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
-        const sourceTasks = JSON.stringify(doc.sourceTasks);
-        const row = inDb.get(slug);
-        if (row && row.content_hash === doc.hash && (row.superseded_by ?? null) === (supersededBy ?? null)) {
-          if (row.path !== path || row.source_tasks !== sourceTasks || row.created !== (doc.created || null)) {
-            db.prepare(`UPDATE decisions SET path = ?, source_tasks = ?, created = ? WHERE slug = ?`).run(path, sourceTasks, doc.created || null, slug);
-          }
-          continue;
-        }
-        db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
-        db.prepare(
-          `INSERT OR REPLACE INTO decisions
-             (slug, title, path, content_hash, created, superseded_by, source_tasks)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
-        ).run(slug, title, path, doc.hash, doc.created || null, supersededBy, sourceTasks);
-        db.prepare(
-          `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`
-        ).run(slug, title, doc.indexBody);
-      }
-      for (const slug of inDb.keys()) {
-        if (seen.has(slug)) continue;
-        db.prepare(`DELETE FROM decisions WHERE slug = ?`).run(slug);
-        db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
-      }
-    }
-    const last = Number(
-      db.prepare(`SELECT value FROM meta WHERE key='fts_last_event_id'`).get()?.value ?? "0"
-    );
-    const max = db.prepare(`SELECT MAX(id) AS m FROM events`).get().m ?? 0;
-    if (max <= last) return;
-    const ids = db.prepare(
-      `SELECT DISTINCT task_id AS id FROM events WHERE id > ? AND task_id IS NOT NULL`
-    ).all(last);
-    const getTask = db.prepare(`SELECT * FROM tasks WHERE id = ?`);
-    const getComments = db.prepare(`SELECT body FROM comments WHERE task_id = ? ORDER BY id`);
-    for (const { id: id2 } of ids) {
-      db.prepare(`DELETE FROM search_index WHERE kind='task' AND ref = ?`).run(String(id2));
-      const t = getTask.get(id2);
-      if (!t || t.archived_at) continue;
-      const body = [t.body ?? "", ...getComments.all(id2).map((c) => c.body)].filter(Boolean).join("\n");
-      db.prepare(
-        `INSERT INTO search_index (kind, ref, title, body) VALUES ('task', ?, ?, ?)`
-      ).run(String(id2), t.title, body);
-    }
-    db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_last_event_id', ?)`).run(String(max));
+  if (indexPass(db, decisionsDir, false)) db.transaction(() => {
+    indexPass(db, decisionsDir, true);
   }).immediate();
+}
+function indexPass(db, decisionsDir, write) {
+  if (canSyncLegacyDecisions(db, decisionsDir)) {
+    const files = existsSync5(decisionsDir) ? readdirSync4(decisionsDir).filter((f) => f.endsWith(".md")) : [];
+    const inDb = new Map(
+      db.prepare(
+        `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`
+      ).all().map((r) => [r.slug, r])
+    );
+    const seen = /* @__PURE__ */ new Set();
+    for (const f of files) {
+      const slug = f.slice(0, -3);
+      seen.add(slug);
+      const path = join6(decisionsDir, f);
+      if (!canSyncLegacyDecisions(db, dirname5(realpathSync4(path)))) continue;
+      const doc = parseDecisionMd(readFileSync4(path, "utf8"));
+      const title = doc.title || slug;
+      const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
+      const sourceTasks = JSON.stringify(doc.sourceTasks);
+      const row = inDb.get(slug);
+      if (row && row.content_hash === doc.hash && (row.superseded_by ?? null) === (supersededBy ?? null)) {
+        if (row.path !== path || row.source_tasks !== sourceTasks || row.created !== (doc.created || null)) {
+          if (!write) return true;
+          db.prepare(`UPDATE decisions SET path = ?, source_tasks = ?, created = ? WHERE slug = ?`).run(path, sourceTasks, doc.created || null, slug);
+        }
+        continue;
+      }
+      if (!write) return true;
+      db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
+      db.prepare(
+        `INSERT OR REPLACE INTO decisions
+           (slug, title, path, content_hash, created, superseded_by, source_tasks)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(slug, title, path, doc.hash, doc.created || null, supersededBy, sourceTasks);
+      db.prepare(
+        `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`
+      ).run(slug, title, doc.indexBody);
+    }
+    for (const slug of inDb.keys()) {
+      if (seen.has(slug)) continue;
+      if (!write) return true;
+      db.prepare(`DELETE FROM decisions WHERE slug = ?`).run(slug);
+      db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
+    }
+  }
+  const last = Number(
+    db.prepare(`SELECT value FROM meta WHERE key='fts_last_event_id'`).get()?.value ?? "0"
+  );
+  const max = db.prepare(`SELECT MAX(id) AS m FROM events`).get().m ?? 0;
+  if (max <= last) return false;
+  if (!write) return true;
+  const ids = db.prepare(
+    `SELECT DISTINCT task_id AS id FROM events WHERE id > ? AND task_id IS NOT NULL`
+  ).all(last);
+  const getTask = db.prepare(`SELECT * FROM tasks WHERE id = ?`);
+  const getComments = db.prepare(`SELECT body FROM comments WHERE task_id = ? ORDER BY id`);
+  for (const { id: id2 } of ids) {
+    db.prepare(`DELETE FROM search_index WHERE kind='task' AND ref = ?`).run(String(id2));
+    const t = getTask.get(id2);
+    if (!t || t.archived_at) continue;
+    const body = [t.body ?? "", ...getComments.all(id2).map((c) => c.body)].filter(Boolean).join("\n");
+    db.prepare(
+      `INSERT INTO search_index (kind, ref, title, body) VALUES ('task', ?, ?, ?)`
+    ).run(String(id2), t.title, body);
+  }
+  db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_last_event_id', ?)`).run(String(max));
+  return true;
 }
 function sanitizeQuery(q) {
   const parts = [];
