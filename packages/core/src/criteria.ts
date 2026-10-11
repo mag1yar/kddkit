@@ -1,6 +1,5 @@
-import { assertLegacyTaskMutation } from './authority.js';
 import type Database from 'better-sqlite3';
-import { redact } from './agent_events.js';
+import { redact } from './redact.js';
 import { now } from './db.js';
 import { KddError } from './errors.js';
 import { authorOf, type Actor } from './state.js';
@@ -15,7 +14,6 @@ export function listCriteria(db: Database.Database, taskId: number): Criterion[]
 
 function mustGetCriterion(db: Database.Database, taskId: number, id: number): Criterion {
   const c = db.prepare(`SELECT * FROM criteria WHERE id = ?`).get(id) as Criterion | undefined;
-  assertLegacyTaskMutation(db, [taskId, ...(c ? [c.task_id] : [])]);
   if (!c || c.task_id !== taskId) throw new KddError(`criterion #${id} not found on task #${taskId}`);
   return c;
 }
@@ -29,7 +27,6 @@ export function addCriterion(
 ): Criterion {
   if (!text.trim()) throw new KddError('criterion text must not be empty');
   return db.transaction(() => {
-    assertLegacyTaskMutation(db, [taskId]);
     mustGetTask(db, taskId);
     const pos = (db.prepare(
       `SELECT COALESCE(MAX(position), -1) + 1 AS p FROM criteria WHERE task_id = ?`,

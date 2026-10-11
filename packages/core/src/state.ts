@@ -1,11 +1,10 @@
 export type Status = 'backlog' | 'new' | 'in_progress' | 'review' | 'done';
 export const STATUSES: Status[] = ['backlog', 'new', 'in_progress', 'review', 'done'];
-export const MAX_FAILED_ATTEMPTS = 3; // K: подряд неудачных попыток -> авто-блок задачи
 
 export type Priority = 'low' | 'medium' | 'high' | 'urgent';
 export const PRIORITIES: Priority[] = ['low', 'medium', 'high', 'urgent'];
 
-// Тип работы. От него расходятся форма готовности, промпт воркера и тип коммита —
+// Тип работы. От него расходятся форма готовности, гейт claim и тип коммита —
 // это не ярлык. Словарь закрытый: расширяется миграцией и осознанно.
 export type Kind = 'feature' | 'bug' | 'chore' | 'research';
 export const KINDS: Kind[] = ['feature', 'bug', 'chore', 'research'];
@@ -48,7 +47,7 @@ export const authorOf = (a: Actor): string => (a.type === 'ai' ? `ai:${a.id ?? '
  * Личность агента из окружения. Общая для CLI и MCP: в одной сессии оба пути обязаны писаться
  * одним автором, иначе гейт «сдал — не принимаешь» обходится сменой транспорта, а две разные
  * сессии под общим id ловят ложный запрет.
- * KDD_SESSION — явное слово (его ставят tick/worker), дальше метки самого Claude Code. Без них
+ * KDD_SESSION — явное слово (ставится руками или обёрткой), дальше метки самого Claude Code. Без них
  * id нет, актор безымянный (`ai:?`) и неотличим от другого такого же — на этом сравнении держится
  * ещё и fence по lease, поэтому pid сессии берём как последнюю зацепку, а не как первую.
  */
@@ -80,8 +79,8 @@ export function checkMove(
       error: `you submitted this task for review yourself; accepting it is someone else's call — ask the user, and pass a reason if they told you to close it` };
   }
   // fence: задачу, занятую ЛЮБЫМ ai-актором (claimed_by 'ai:...'), не может двигать ДРУГОЙ актор.
-  // Держит tick-воркеров (ai:tick:...) друг от друга + ai-vs-ai ручные сессии. user-held и unclaimed
-  // (null) — НЕ трогаем (doc-режим). Свой токен -> allow. (reclaim-штраф отдельно keyed на ai:tick: в claim.ts.)
+  // Держит параллельные ai-сессии друг от друга. user-held и unclaimed
+  // (null) — НЕ трогаем (doc-режим). Свой токен -> allow.
   if (from === 'in_progress' && claimedBy?.startsWith('ai:') && claimedBy !== `ai:${actor.id ?? '?'}`) {
     return { ok: false,
       error: `lease lost (held by ${claimedBy}); you no longer own this task — stop work` };

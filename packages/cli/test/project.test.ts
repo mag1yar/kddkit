@@ -31,13 +31,13 @@ it('binds a clone/worktree and protects source decisions during backend recall',
   const task=cli(source,'add','shared','--json');
   const decision=cli(source,'decide','Original','--decision','primarytoken','--source-task',String(task.id),'--json');
   const clone=join(root,'clone');git(root,'clone','--no-hardlinks',source,clone);
-  cli(source,'project','bind',clone,'--repo',project.project.primary_repo_id,'--kind','managed','--json');
+  cli(source,'project','bind',clone,'--repo',project.project.primary_repo_id,'--json');
   const wt=join(root,'worktree');git(clone,'worktree','add','-b','worker',wt);
   expect(cli(wt,'project','show','--json').project.project_id).toBe(project.project.project_id);
   cli(wt,'comment',String(task.id),'from clone','--json');
   expect(cli(source,'show',String(task.id),'--json').comments[0].body).toBe('from clone');
   const backend=repo('backend');
-  cli(source,'project','add-repo',backend,'--purpose','backend','--access','context_only','--json');
+  cli(source,'project','add-repo',backend,'--purpose','backend','--json');
   const before=cli(source,'export');
   expect(cli(backend,'recall','primarytoken','--kind','decision','--json')).toHaveLength(1);
   const dir=join(backend,'.planning','decisions');mkdirSync(dir,{recursive:true});
@@ -51,6 +51,6 @@ it('binds a clone/worktree and protects source decisions during backend recall',
 it('does not create an unknown target store for project mutations',() => {
   const source=repo('source');
   env.KDD_DB=join(root,'unknown.db');
-  expect(() => cli(source,'project','add-repo',repo('backend'),'--purpose','backend','--access','context_only','--json')).toThrow();
+  expect(() => cli(source,'project','add-repo',repo('backend'),'--purpose','backend','--json')).toThrow();
   expect(existsSync(env.KDD_DB)).toBe(false);
 });

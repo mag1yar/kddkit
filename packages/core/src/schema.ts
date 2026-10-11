@@ -519,4 +519,35 @@ BEGIN SELECT RAISE(ABORT,'immutable retirement receipt'); END;
 CREATE TRIGGER retirement_no_delete BEFORE DELETE ON work_item_retirements
 BEGIN SELECT RAISE(ABORT,'immutable retirement'); END;
   `,
+  // v20: оркестратор и tick вырезаны (#173). Таблицы пустые на всех живых досках (2026-10-11).
+  // Порядок DROP — от потомков к родителям: foreign_keys=ON, DROP родителя делает неявный DELETE.
+  // Но owners → retirements → owners — цикл, порядком его не развязать: проверка FK откладывается
+  // до коммита (pragma сбрасывается сама на коммите), а к коммиту обе таблицы уже снесены.
+  // Схема на выходе та же — живые доски, прошедшие v20 без этой строки, ничем не отличаются.
+  `PRAGMA defer_foreign_keys = ON;
+DROP TABLE runtime_events; DROP TABLE runtime_attempts; DROP TABLE runtime_sessions;
+DROP TABLE work_item_retirements; DROP TABLE execution_handoffs; DROP TABLE work_item_owners;
+DROP TABLE work_item_results; DROP TABLE work_item_dependencies; DROP TABLE work_item_revisions;
+DROP TABLE work_items; DROP TABLE run_input_snapshots; DROP TABLE run_authorities;
+DROP TABLE managed_task_policy; DROP TABLE memory_revisions; DROP TABLE memory_entries;
+DROP TABLE role_skill_files; DROP TABLE role_revisions; DROP TABLE role_profiles;
+DROP TABLE agent_events; DROP INDEX idx_memory_import_commands;
+ALTER TABLE tasks DROP COLUMN execution_mode;
+ALTER TABLE tasks DROP COLUMN failed_attempts;
+ALTER TABLE repositories DROP COLUMN access;
+ALTER TABLE project DROP COLUMN autonomy_enabled;
+ALTER TABLE project DROP COLUMN default_execution_mode;
+-- kind держит CHECK('source','managed'): DROP COLUMN его не снимет, поэтому пересборка.
+-- managed-строки сохраняются: это просто ещё один чекаут того же репо.
+CREATE TABLE repository_bindings_v20 (
+  common_dir TEXT PRIMARY KEY,
+  repo_id TEXT NOT NULL REFERENCES repositories(repo_id),
+  checkout_path TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+INSERT INTO repository_bindings_v20 SELECT common_dir, repo_id, checkout_path, created_at FROM repository_bindings;
+DROP TABLE repository_bindings;
+ALTER TABLE repository_bindings_v20 RENAME TO repository_bindings;
+CREATE INDEX idx_repository_bindings_repo ON repository_bindings(repo_id);
+  `,
 ];

@@ -73,8 +73,8 @@ export const isActive = (f: Filters): boolean =>
   f.q.trim() !== '' || f.track.length > 0 || f.area.length > 0
   || f.kind.length > 0 || f.priority.length > 0 || f.state.length > 0;
 
-// Ровно то, что рисуют бейджи карточки: ready — очередь агента, no_criteria — задача,
-// которая выглядит готовой, а claimNext её не возьмёт.
+// Ровно то, что рисуют бейджи карточки: ready — new, не blocked и не research (READY_SQL),
+// no_criteria — ready-задача, которую `kdd claim` не отдаст: критериев нет.
 const STATE_PREDICATE: Record<FilterState, (t: Task) => boolean> = {
   ready: (t) => t.ready === 1,
   no_criteria: (t) => t.ready === 1 && t.criteria_total === 0,

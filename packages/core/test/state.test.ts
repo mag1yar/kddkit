@@ -99,10 +99,10 @@ describe('agentId', () => {
     }
   });
 
-  it('KDD_SESSION wins: tick/worker подставляют его сами', () => {
-    process.env.KDD_SESSION = 'tick:1-0';
+  it('KDD_SESSION wins: явное слово сильнее меток Claude Code', () => {
+    process.env.KDD_SESSION = 'my-session';
     process.env.CLAUDE_CODE_SESSION_ID = 'abcdef12-3456';
-    expect(agentId()).toBe('tick:1-0');
+    expect(agentId()).toBe('my-session');
   });
 
   it('иначе короткий id сессии Claude Code', () => {

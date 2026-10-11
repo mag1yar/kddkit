@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { getActor } from '../src/context.js';
 
 const keys = [
-  'KDD_ACTOR', 'KDD_SESSION', 'CLAUDECODE', 'CLAUDE_CODE_SESSION_ID',
+  'KDD_ACTOR', 'KDD_SESSION', 'CLAUDECODE', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_PID',
   'CODEX_SESSION_ID', 'CODEX_THREAD_ID',
 ] as const;
 const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
@@ -36,7 +36,7 @@ describe('getActor', () => {
     });
   });
 
-  it('keeps the full Claude session separate from actor id and skips managed workers', () => {
+  it('keeps the full Claude session separate from actor id and KDD_SESSION overrides the detected id', () => {
     for (const key of keys) delete process.env[key];
     process.env.CLAUDECODE = '1';
     process.env.CLAUDE_CODE_SESSION_ID = 'abcdef12-3456-7890';
@@ -44,8 +44,8 @@ describe('getActor', () => {
       type: 'ai', id: 'cc:abcdef12',
       manualSession: { client: 'claude', sessionId: 'abcdef12-3456-7890', cwd: process.cwd() },
     });
-    process.env.KDD_SESSION = 'tick:1-0';
-    expect(getActor()).toEqual({ type: 'ai', id: 'tick:1-0' });
+    process.env.KDD_SESSION = 'manual-1';
+    expect(getActor()).toEqual({ type: 'ai', id: 'manual-1' });
   });
 
   it('uses a valid Codex thread when the preferred session ID is malformed', () => {

@@ -1,4 +1,3 @@
-import { assertLegacyTaskMutation } from './authority.js';
 import type Database from 'better-sqlite3';
 import { now } from './db.js';
 import { KddError } from './errors.js';
@@ -54,8 +53,6 @@ export function editTrack(
 export function deleteTrack(db: Database.Database, id: number): void {
   mustGetTrack(db, id);
   db.transaction(() => {
-    const ids = (db.prepare('SELECT id FROM tasks WHERE track_id=?').all(id) as { id: number }[]).map(task => task.id);
-    assertLegacyTaskMutation(db, ids);
     db.prepare(`UPDATE tasks SET track_id = NULL WHERE track_id = ?`).run(id);
     db.prepare(`DELETE FROM tracks WHERE id = ?`).run(id);
   }).immediate();

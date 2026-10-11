@@ -50,34 +50,24 @@ export function resolveToplevel(cwd: string = process.cwd()): string {
     return execFileSync('git', ['rev-parse', '--show-toplevel'],
       { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch {
-    throw new KddError('not in a git repository (kdd tick resolves worker cwd via git)');
+    throw new KddError('not in a git repository (kdd resolves the checkout via git)');
   }
 }
 
-// autoTickEnabled едет вместе со списком не для красоты: планировщику на старте нужно знать
-// это про каждый проект, а readonly-коннект тут уже открыт. Спрашивать отдельно значило бы
-// открывать базу на запись — а openDb прогоняет миграции, и сервер молча менял бы схему досок
-// репозиториев, которые человек в этой сессии даже не открывал.
-export function listProjects(): { dbPath: string; projectPath: string; autoTickEnabled: boolean }[] {
+export function listProjects(): { dbPath: string; projectPath: string }[] {
   const home = kddHome();
   if (!existsSync(home)) return [];
-  const out: { dbPath: string; projectPath: string; autoTickEnabled: boolean }[] = [];
+  const out: { dbPath: string; projectPath: string }[] = [];
   for (const entry of readdirSync(home, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const dbPath = join(home, entry.name, 'kdd.db');
     if (!existsSync(dbPath)) continue;
     try {
       const db = new Database(dbPath, { readonly: true });
-      const rows = db.prepare(
-        `SELECT key, value FROM meta WHERE key IN ('project_path','autotick_enabled')`,
-      ).all() as { key: string; value: string }[];
+      const row = db.prepare(`SELECT value FROM meta WHERE key = 'project_path'`).get() as
+        { value: string } | undefined;
       db.close();
-      const meta = new Map(rows.map((r) => [r.key, r.value]));
-      out.push({
-        dbPath,
-        projectPath: meta.get('project_path') ?? '(unknown)',
-        autoTickEnabled: meta.get('autotick_enabled') === '1',
-      });
+      out.push({ dbPath, projectPath: row?.value ?? '(unknown)' });
     } catch { /* повреждённая база — пропускаем, не падаем */ }
   }
   return out;

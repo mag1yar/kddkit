@@ -46,10 +46,10 @@ describe('export CLI', () => {
       INSERT INTO tracks (id,name,description,status,created_at)
         VALUES (1,'Continuity',NULL,'active',100);
       INSERT INTO tasks (id,title,body,status,priority,area,position,archived_at,
-                         created_at,updated_at,track_id,claimed_by,claim_expires,failed_attempts)
-        VALUES (2,'Archived',NULL,'done','medium',NULL,2,150,101,150,NULL,NULL,NULL,0),
+                         created_at,updated_at,track_id,claimed_by,claim_expires)
+        VALUES (2,'Archived',NULL,'done','medium',NULL,2,150,101,150,NULL,NULL,NULL),
                (1,'Current','Board body','in_progress','high','export',1,NULL,100,120,1,
-                'user',999,2);
+                'user',999);
       INSERT INTO criteria (id,task_id,text,checked_at,evidence,checked_by,position,created_at)
         VALUES (1,1,'Export checked',110,'test passed','ai:review',0,102),
                (2,2,'Pending',NULL,NULL,NULL,0,103);

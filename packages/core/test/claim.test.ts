@@ -3,14 +3,9 @@ import type Database from 'better-sqlite3';
 import { openDb } from '../src/db.js';
 import { addTask, moveTask, placeTask } from '../src/ops.js';
 import { addCriterion, setCriterionChecked } from '../src/criteria.js';
-import {
-  claimTask, claimNext, renewClaim, reclaimExpired, releaseClaim, stopWorkers,
-  DEFAULT_TTL,
-} from '../src/claim.js';
-import { MAX_FAILED_ATTEMPTS } from '../src/state.js';
+import { claimTask, renewClaim, DEFAULT_TTL } from '../src/claim.js';
 import { now } from '../src/db.js';
 import { KddError } from '../src/errors.js';
-import { lastAgentEventKind, appendAgentEvent, runProduced } from '../src/agent_events.js';
 
 let db: Database.Database;
 beforeEach(() => { db = openDb(':memory:', 'p'); });
@@ -61,17 +56,6 @@ describe('claim ops', () => {
       .toEqual({ action: 'claim_rejected' });
   });
 
-  it('claimNext picks priority then FIFO, skips unclaimable, returns null when empty', () => {
-    expect(claimNext(db, ai)).toBeNull();                       // пустая очередь
-    const low = withCriteria('low');
-    const high = addTask(db, { title: 'high', priority: 'high' }, user);
-    addCriterion(db, high.id, 'done', user);
-    addTask(db, { title: 'no-crit' }, user);                    // без критериев — пропустить
-    expect(claimNext(db, ai)!.id).toBe(high.id);                // приоритет вперёд
-    expect(claimNext(db, ai)!.id).toBe(low);                    // потом FIFO
-    expect(claimNext(db, ai)).toBeNull();                       // остались только неclaimable
-  });
-
   it('renew extends lease for owner, fails for non-owner', () => {
     const id = withCriteria('t');
     claimTask(db, id, ai);
@@ -83,97 +67,55 @@ describe('claim ops', () => {
     expect(renewClaim(db, id, ai2).ok).toBe(false);             // чужой lease
   });
 
-  // B1: механическое продление (heartbeat супервизора) — не действие доски. Окна событий
-  // капированы, и удар раз в ttl/3 вытеснил бы из них claim/move/block — всю настоящую историю.
-  it('renew with log:false extends the lease but writes no event', () => {
+  it('claimTask reclaims an expired lease, logs reclaimed, and leaves other leases alone', () => {
     const id = withCriteria('t');
-    claimTask(db, id, ai);
-    const events = () => (db.prepare(
-      `SELECT COUNT(*) c FROM events WHERE task_id=? AND action='claim_renewed'`).get(id) as any).c;
-    const before = (db.prepare(`SELECT claim_expires e FROM tasks WHERE id=?`).get(id) as any).e;
-
-    expect(renewClaim(db, id, ai, 1800, { log: false }).ok).toBe(true);
-    expect((db.prepare(`SELECT claim_expires e FROM tasks WHERE id=?`).get(id) as any).e)
-      .toBeGreaterThan(before);
-    expect(events()).toBe(0);
-
-    renewClaim(db, id, ai, 1800); // человек через `kdd claim --renew` — это действие, логируем
-    expect(events()).toBe(1);
+    const other = withCriteria('o');
+    claimTask(db, id, ai, 900);
+    claimTask(db, other, ai, 900);
+    db.prepare(`UPDATE tasks SET claim_expires = ? WHERE id IN (?, ?)`).run(now() - 1, id, other); // форсим истечение
+    expect(claimTask(db, id, ai2).ok).toBe(true);
+    const events = db.prepare(`SELECT action, detail FROM events WHERE task_id=? AND action='reclaimed'`).all(id) as any[];
+    expect(JSON.parse(events[0].detail).former).toBe('ai:s1');
+    // чужой просроченный лиз ждёт своего claim
+    expect(db.prepare(`SELECT status, claimed_by FROM tasks WHERE id=?`).get(other))
+      .toEqual({ status: 'in_progress', claimed_by: 'ai:s1' });
   });
 
-  it('reclaimExpired returns expired lease to new, clears claim, logs reclaimed', () => {
+  it('renewClaim refuses a lease that already expired', () => {
     const id = withCriteria('t');
     claimTask(db, id, ai, 900);
-    db.prepare(`UPDATE tasks SET claim_expires = ? WHERE id = ?`).run(now() - 1, id); // форсим истечение
-    expect(reclaimExpired(db).map((r) => r.id)).toEqual([id]);
-    const t = db.prepare(`SELECT status, claimed_by FROM tasks WHERE id=?`).get(id);
-    expect(t).toEqual({ status: 'new', claimed_by: null });
-    // после reclaim задача снова берётся
-    expect(claimNext(db, ai2)!.id).toBe(id);
+    db.prepare(`UPDATE tasks SET claim_expires = ? WHERE id = ?`).run(now() - 1, id);
+    expect(renewClaim(db, id, ai).ok).toBe(false);
   });
 
   it('DEFAULT_TTL is 15 minutes', () => { expect(DEFAULT_TTL).toBe(900); });
 
-  it('rejects invalid ttl (0, NaN) in claimTask, claimNext, renewClaim', () => {
+  it('rejects invalid ttl (0, NaN) in claimTask, renewClaim', () => {
     const id = withCriteria('t');
     expect(() => claimTask(db, id, ai, 0)).toThrow(KddError);
     expect(() => claimTask(db, id, ai, NaN)).toThrow(KddError);
-    expect(() => claimNext(db, ai, 0)).toThrow(KddError);
-    expect(() => claimNext(db, ai, NaN)).toThrow(KddError);
     claimTask(db, id, ai); // hold a lease so renewClaim has something to validate against
     expect(() => renewClaim(db, id, ai, 0)).toThrow(KddError);
     expect(() => renewClaim(db, id, ai, NaN)).toThrow(KddError);
   });
 });
 
-// A2: инвариант «реклеймить чужой lease можно только вместе с его процессом» обязан держаться
-// на ВСЕХ путях claim, а не только внутри tick — иначе человек забирает задачу у живого воркера.
-describe('taking over an expired ai:tick lease', () => {
-  const tickActor = { type: 'ai' as const, id: 'tick:1-0' };
-  const expiredTick = (title = 't') => {
-    const id = withCriteria(title);
-    claimTask(db, id, tickActor, 900);
-    db.prepare(`UPDATE tasks SET claim_expires = ? WHERE id = ?`).run(now() - 1, id);
-    return id;
-  };
-
-  it('claimNext without a killer refuses it — the worker may still be alive', () => {
-    expiredTick();
-    expect(claimNext(db, ai2)).toBeNull();
-    expect(db.prepare(`SELECT status, claimed_by FROM tasks WHERE id=1`).get())
-      .toEqual({ status: 'in_progress', claimed_by: 'ai:tick:1-0' });
-  });
-
-  it('claimTask without a killer refuses it', () => {
-    const id = expiredTick();
-    const r = claimTask(db, id, ai2);
-    expect(r.ok).toBe(false);
-    expect(db.prepare(`SELECT claimed_by FROM tasks WHERE id=?`).get(id))
-      .toEqual({ claimed_by: 'ai:tick:1-0' });
-  });
-
-  it('with a killer: kills first, then takes the task', () => {
-    const id = expiredTick();
-    const killed: number[] = [];
-    const t = claimNext(db, ai2, 900, { kill: (ids) => { killed.push(...ids); return new Map(ids.map((i) => [i, 'gone' as const])); } });
-    expect(killed).toEqual([id]);
-    expect(t!.id).toBe(id);
-    expect(t!.claimed_by).toBe('ai:s2');
-  });
-
-  it('with a killer that reports stuck: lease untouched, claim refused', () => {
-    const id = expiredTick();
-    const r = claimTask(db, id, ai2, 900, { kill: (ids) => new Map(ids.map((i) => [i, 'stuck' as const])) });
-    expect(r.ok).toBe(false);
-    expect(db.prepare(`SELECT status, claimed_by FROM tasks WHERE id=?`).get(id))
-      .toEqual({ status: 'in_progress', claimed_by: 'ai:tick:1-0' });
-  });
-
-  it('an expired NON-tick lease still reclaims without a killer (no process behind it)', () => {
+describe('expired lease', () => {
+  // За лизом нет процесса: истёк — слот свободен, следующий claim забирает задачу сам.
+  it('claimTask takes over an expired ai lease', () => {
     const id = withCriteria('t');
-    claimTask(db, id, { type: 'user' }, 900);
+    claimTask(db, id, ai, 900);
     db.prepare(`UPDATE tasks SET claim_expires = ? WHERE id = ?`).run(now() - 1, id);
-    expect(claimNext(db, ai2)!.id).toBe(id);
+    const r = claimTask(db, id, ai2);
+    expect(r.ok && r.task.claimed_by).toBe('ai:s2');
+  });
+
+  it('an expired USER lease is taken over like any other', () => {
+    const id = withCriteria('t');
+    claimTask(db, id, user);
+    db.prepare(`UPDATE tasks SET claim_expires = 1 WHERE id=?`).run(id);
+    const r = claimTask(db, id, ai);
+    expect(r.ok && r.task.claimed_by).toBe('ai:s1');
   });
 });
 
@@ -194,7 +136,7 @@ describe('claim invariant on move', () => {
     moveTask(db, id, 'new', user);
     expect(db.prepare(`SELECT claimed_by FROM tasks WHERE id=?`).get(id)).toEqual({ claimed_by: null });
     // и снова берётся
-    expect(claimNext(db, ai2)!.id).toBe(id);
+    expect(claimTask(db, id, ai2).ok).toBe(true);
   });
 });
 
@@ -208,16 +150,7 @@ describe('run-token fence', () => {
     return t.id;
   }
 
-  it('rejects an ai move from in_progress when the lease is held by another tick worker', () => {
-    const db = openDb(':memory:');
-    const id = readyClaimed(db, 's1');
-    // симулируем reclaim+respawn: задачу теперь держит другой tick-воркер
-    db.prepare(`UPDATE tasks SET claimed_by='ai:tick:999-0' WHERE id=?`).run(id);
-    expect(() => moveTask(db, id, 'review', { type: 'ai', id: 's1' }))
-      .toThrow(/lease lost/);
-  });
-
-  it('rejects an ai move when the lease is held by another (non-tick) ai session', () => {
+  it('rejects an ai move when the lease is held by another ai session', () => {
     const db = openDb(':memory:');
     const id = readyClaimed(db, 's1');
     db.prepare(`UPDATE tasks SET claimed_by='ai:s2' WHERE id=?`).run(id); // другая ai-сессия
@@ -225,19 +158,17 @@ describe('run-token fence', () => {
       .toThrow(/lease lost/);
   });
 
-  it('allows the holder to move to review and resets failed_attempts', () => {
+  it('allows the holder to move to review', () => {
     const db = openDb(':memory:');
     const id = readyClaimed(db, 's1');
-    db.prepare(`UPDATE tasks SET failed_attempts=2 WHERE id=?`).run(id);
     const t = moveTask(db, id, 'review', { type: 'ai', id: 's1' });
     expect(t.status).toBe('review');
-    expect(t.failed_attempts).toBe(0);
   });
 
   it('never fences a user actor', () => {
     const db = openDb(':memory:');
     const id = readyClaimed(db, 's1');
-    db.prepare(`UPDATE tasks SET claimed_by='ai:tick:999-0' WHERE id=?`).run(id);
+    db.prepare(`UPDATE tasks SET claimed_by='ai:s2' WHERE id=?`).run(id);
     expect(() => moveTask(db, id, 'review', { type: 'user' })).not.toThrow();
   });
 
@@ -258,290 +189,12 @@ describe('run-token fence', () => {
     expect(() => moveTask(db, t.id, 'review', { type: 'ai', id: 's9' })).not.toThrow();
   });
 
-  it('placeTask fences an ai move on a task held by another tick worker', () => {
+  it('placeTask fences an ai move on a task held by another ai session', () => {
     const db = openDb(':memory:');
     const id = readyClaimed(db, 's1');
-    db.prepare(`UPDATE tasks SET claimed_by='ai:tick:999-0' WHERE id=?`).run(id);
+    db.prepare(`UPDATE tasks SET claimed_by='ai:s2' WHERE id=?`).run(id);
     expect(() => placeTask(db, id, 'review', [id], { type: 'ai', id: 's1' }))
       .toThrow(/lease lost/);
   });
 
-  it('placeTask resets failed_attempts when the holder reaches review', () => {
-    const db = openDb(':memory:');
-    const id = readyClaimed(db, 's1');
-    db.prepare(`UPDATE tasks SET failed_attempts=2 WHERE id=?`).run(id);
-    const t = placeTask(db, id, 'review', [id], { type: 'ai', id: 's1' });
-    expect(t.status).toBe('review');
-    expect(t.failed_attempts).toBe(0);
-  });
-});
-
-describe('failure accounting', () => {
-  // tick-спаун: claimed_by='ai:tick:1-0' -> reclaim штрафует (Fix B).
-  function claimedExpired(db: ReturnType<typeof openDb>) {
-    const t = addTask(db, { title: 'w' }, { type: 'user' });
-    const c = addCriterion(db, t.id, 'd', { type: 'user' });
-    setCriterionChecked(db, t.id, c.id, true, { type: 'user' });
-    claimTask(db, t.id, { type: 'ai', id: 'tick:1-0' });
-    db.prepare(`UPDATE tasks SET claim_expires = 1 WHERE id=?`).run(t.id); // истёк в прошлом
-    return t.id;
-  }
-
-  it('reclaim increments failed_attempts and returns task to new', () => {
-    const db = openDb(':memory:');
-    const id = claimedExpired(db);
-    reclaimExpired(db);
-    const t = db.prepare(`SELECT status, failed_attempts, blocked FROM tasks WHERE id=?`).get(id) as any;
-    expect(t.status).toBe('new');
-    expect(t.failed_attempts).toBe(1);
-    expect(t.blocked).toBe(0);
-  });
-
-  it('auto-blocks after K reclaims', () => {
-    const db = openDb(':memory:');
-    const id = claimedExpired(db);
-    for (let i = 0; i < MAX_FAILED_ATTEMPTS; i++) {
-      db.prepare(`UPDATE tasks SET status='in_progress', claimed_by='ai:tick:1-0', claim_expires=1 WHERE id=?`).run(id);
-      reclaimExpired(db);
-    }
-    const t = db.prepare(`SELECT blocked, failed_attempts FROM tasks WHERE id=?`).get(id) as any;
-    expect(t.failed_attempts).toBeGreaterThanOrEqual(MAX_FAILED_ATTEMPTS);
-    expect(t.blocked).toBe(1);
-  });
-
-  it('reclaim of a USER-claimed expired lease returns to new without counting a failure', () => {
-    const db = openDb(':memory:');
-    const t = addTask(db, { title: 'w' }, { type: 'user' });
-    const c = addCriterion(db, t.id, 'd', { type: 'user' });
-    setCriterionChecked(db, t.id, c.id, true, { type: 'user' });
-    claimTask(db, t.id, { type: 'user' }); // claimed_by='user'
-    db.prepare(`UPDATE tasks SET claim_expires = 1 WHERE id=?`).run(t.id);
-    reclaimExpired(db);
-    const row = db.prepare(`SELECT status, failed_attempts FROM tasks WHERE id=?`).get(t.id) as any;
-    expect(row.status).toBe('new');
-    expect(row.failed_attempts).toBe(0);
-  });
-
-  it('releaseClaim returns task to new and counts a failure', () => {
-    const db = openDb(':memory:');
-    const id = claimedExpired(db);
-    db.prepare(`UPDATE tasks SET claim_expires = ${2 ** 31} WHERE id=?`).run(id); // не истёк
-    releaseClaim(db, id, { type: 'ai', id: 'tick:1-0' }, 'spawn failed');
-    const t = db.prepare(`SELECT status, claimed_by, failed_attempts FROM tasks WHERE id=?`).get(id) as any;
-    expect(t.status).toBe('new');
-    expect(t.claimed_by).toBeNull();
-    expect(t.failed_attempts).toBe(1);
-  });
-});
-
-describe('reclaimExpired closes orphaned agent-runs', () => {
-  // helper: claim under a tick-worker actor, then force the lease expired.
-  // claimed_by = 'ai:tick:1-0'  →  agent_events worker_id = 'tick:1-0'
-  const tickActor = { type: 'ai' as const, id: 'tick:1-0' };
-  const expireTick = (title = 't') => {
-    const id = withCriteria(title);
-    claimTask(db, id, tickActor, 900);
-    db.prepare(`UPDATE tasks SET claim_expires = ? WHERE id = ?`).run(now() - 1, id);
-    return id;
-  };
-
-  it('died mid-run (dangling run_start) → writes error + run_end', () => {
-    const id = expireTick();
-    appendAgentEvent(db, id, 'tick:1-0', 'run_start', { detail: { head: 'aaa' } });
-    reclaimExpired(db);
-    const evs = db.prepare(
-      `SELECT kind, detail FROM agent_events WHERE task_id=? AND worker_id='tick:1-0' ORDER BY id`,
-    ).all(id) as { kind: string; detail: string }[];
-    expect(evs.map((e) => e.kind)).toEqual(['run_start', 'error', 'run_end']);
-    expect(JSON.parse(evs[1].detail).message).toMatch(/died/);
-    expect(JSON.parse(evs[2].detail)).toEqual({ exitCode: null });
-    expect(lastAgentEventKind(db, id, 'tick:1-0')).toBe('run_end');
-    // синтетический run_end без head → runProduced null (контракт #9: убитый ран = unknown, не действовать)
-    expect(runProduced(db, id)).toBeNull();
-  });
-
-  it('never started (no agent_events) → writes error ONLY, no run_end', () => {
-    const id = expireTick();
-    reclaimExpired(db);
-    const evs = db.prepare(
-      `SELECT kind, detail FROM agent_events WHERE task_id=? AND worker_id='tick:1-0' ORDER BY id`,
-    ).all(id) as { kind: string; detail: string }[];
-    // рана не было (нет run_start) → закрывать нечего. Только error: run_end-сирота без run_start
-    // спарился бы в task-scoped runProduced с run_start предыдущего воркера и замаскировал его результат.
-    expect(evs.map((e) => e.kind)).toEqual(['error']);
-    expect(JSON.parse(evs[0].detail).message).toMatch(/never started/);
-  });
-
-  it('never-started reclaim does NOT mask a prior worker\'s committed run', () => {
-    // воркер A: завершённый закоммиченный ран (run_start head=A, run_end head=B).
-    const id = withCriteria('t');
-    claimTask(db, id, { type: 'ai', id: 'tick:1-0' }, 900);
-    appendAgentEvent(db, id, 'tick:1-0', 'run_start', { detail: { head: 'A' } });
-    appendAgentEvent(db, id, 'tick:1-0', 'run_end', { detail: { exitCode: 0, head: 'B' } });
-    db.prepare(`UPDATE tasks SET claim_expires = ? WHERE id = ?`).run(now() - 1, id);
-    reclaimExpired(db); // reclaim воркера A: last=run_end → guard, ничего не пишет
-    // задача снова взята воркером B, который не стартовал, и его lease истёк
-    claimTask(db, id, { type: 'ai', id: 'tick:2-0' }, 900);
-    db.prepare(`UPDATE tasks SET claim_expires = ? WHERE id = ?`).run(now() - 1, id);
-    reclaimExpired(db); // reclaim воркера B: never-started → только error, НЕ run_end-сирота
-    // результат рана A цел: без сиротского run_end runProduced видит настоящий run_end (head=B)
-    expect(runProduced(db, id)).toEqual({ before: 'A', after: 'B', committed: true });
-  });
-
-  it('already-closed run → no second run_end', () => {
-    const id = expireTick();
-    appendAgentEvent(db, id, 'tick:1-0', 'run_start', { detail: { head: 'aaa' } });
-    appendAgentEvent(db, id, 'tick:1-0', 'run_end', { detail: { exitCode: 0, head: 'aaa' } });
-    reclaimExpired(db);
-    const kinds = (db.prepare(
-      `SELECT kind FROM agent_events WHERE task_id=? AND worker_id='tick:1-0' ORDER BY id`,
-    ).all(id) as { kind: string }[]).map((e) => e.kind);
-    expect(kinds).toEqual(['run_start', 'run_end']); // guard: не добавили второй run_end
-  });
-
-  it('non-tick lease → no synthetic agent_events', () => {
-    const id = withCriteria('t');
-    claimTask(db, id, ai, 900); // ai = {type:'ai', id:'s1'} → claimed_by 'ai:s1' (не tick)
-    db.prepare(`UPDATE tasks SET claim_expires = ? WHERE id = ?`).run(now() - 1, id);
-    reclaimExpired(db);
-    const n = (db.prepare(`SELECT COUNT(*) c FROM agent_events WHERE task_id=?`).get(id) as any).c;
-    expect(n).toBe(0);
-  });
-
-  it('run-close write failure does not roll back the reclaim (best-effort)', () => {
-    const id = expireTick();
-    appendAgentEvent(db, id, 'tick:1-0', 'run_start', { detail: { head: 'aaa' } }); // died mid-run
-    db.exec('DROP TABLE agent_events'); // форсим реальный провал INSERT'а в closeOrphanRun
-    expect(() => reclaimExpired(db)).not.toThrow();
-    // задача всё равно реклейм: closeOrphanRun упал, но try/catch не дал ему откатить sweep
-    expect(db.prepare(`SELECT status, claimed_by FROM tasks WHERE id=?`).get(id))
-      .toEqual({ status: 'new', claimed_by: null });
-  });
-});
-
-// #112: тумблер авто-тика гасил только планировщик — уже спауненные агенты продолжали
-// править файлы и коммитить. Человек считал, что автономия выключена.
-describe('stopWorkers', () => {
-  const tickActor = (i: number) => ({ type: 'ai' as const, id: `tick:1-${i}` });
-  const claimed = (title: string, i = 0) => {
-    const id = withCriteria(title);
-    claimTask(db, id, tickActor(i), 900); // lease СВЕЖИЙ: стоп не ждёт TTL
-    return id;
-  };
-
-  it('kills live tick workers and returns their tasks to new', () => {
-    const a = claimed('a', 0);
-    const b = claimed('b', 1);
-    const killed: number[] = [];
-    const r = stopWorkers(db, (ids) => { killed.push(...ids); return new Map(ids.map((i) => [i, 'gone' as const])); });
-    expect(killed.sort()).toEqual([a, b]);
-    expect(r).toEqual({ killed: 2, released: 2, stuck: 0 });
-    expect(db.prepare(`SELECT COUNT(*) c FROM tasks WHERE status='in_progress'`).get())
-      .toEqual({ c: 0 });
-  });
-
-  it('a worker that survived SIGKILL keeps its lease — only the dead are released', () => {
-    const a = claimed('a', 0);
-    const b = claimed('b', 1);
-    const r = stopWorkers(db, (ids) =>
-      new Map(ids.map((i) => [i, i === a ? 'stuck' as const : 'gone' as const])));
-    expect(r).toEqual({ killed: 1, released: 1, stuck: 1 });
-    expect(db.prepare(`SELECT status, claimed_by FROM tasks WHERE id=?`).get(a))
-      .toEqual({ status: 'in_progress', claimed_by: 'ai:tick:1-0' });
-    expect(db.prepare(`SELECT status, claimed_by FROM tasks WHERE id=?`).get(b))
-      .toEqual({ status: 'new', claimed_by: null });
-  });
-
-  it('without a killer nothing is released: an unstoppable slot is a busy slot', () => {
-    const a = claimed('a');
-    expect(stopWorkers(db)).toEqual({ killed: 0, released: 0, stuck: 1 });
-    expect(db.prepare(`SELECT status FROM tasks WHERE id=?`).get(a))
-      .toEqual({ status: 'in_progress' });
-  });
-
-  // Человек нажал «стоп» — задача не виновата. Иначе три щелчка тумблером = авто-блок.
-  it('does not count a failed attempt', () => {
-    const a = claimed('a');
-    stopWorkers(db, (ids) => new Map(ids.map((i) => [i, 'gone' as const])));
-    expect(db.prepare(`SELECT failed_attempts, blocked FROM tasks WHERE id=?`).get(a))
-      .toEqual({ failed_attempts: 0, blocked: 0 });
-  });
-
-  // За ручным user-claim процесса нет: убивать нечего, и отбирать чужую задачу стоп не вправе.
-  it('leaves a manual user claim alone', () => {
-    const id = withCriteria('mine');
-    claimTask(db, id, user, 900);
-    expect(stopWorkers(db, (ids) => new Map(ids.map((i) => [i, 'gone' as const])))).toEqual({ killed: 0, released: 0, stuck: 0 });
-    expect(db.prepare(`SELECT status, claimed_by FROM tasks WHERE id=?`).get(id))
-      .toEqual({ status: 'in_progress', claimed_by: 'user' });
-  });
-
-  // Снимок берётся до убийства, а kill спит секундами: за это время воркер успевает честно
-  // дописать работу и уйти в review. Вернуть такую задачу в new — значит посадить на готовое
-  // второго агента следующим тиком.
-  it('leaves alone a task the worker finished during the kill window', () => {
-    const a = claimed('a', 0);
-    const b = claimed('b', 1);
-    const r = stopWorkers(db, (ids) => {
-      // имитируем окно: пока идёт убийство, воркер b доводит свою задачу до review сам
-      db.prepare(
-        `UPDATE tasks SET status='review', claimed_by=NULL, claim_expires=NULL WHERE id=?`).run(b);
-      return new Map(ids.map((i) => [i, 'gone' as const]));
-    });
-    expect(r).toEqual({ killed: 2, released: 1, stuck: 0 }); // убили обоих, освободили только a
-    expect(db.prepare(`SELECT status, claimed_by FROM tasks WHERE id=?`).get(b))
-      .toEqual({ status: 'review', claimed_by: null });
-    // и никакого 'released' в истории готовой задачи
-    expect(db.prepare(`SELECT COUNT(*) c FROM events WHERE task_id=? AND action='released'`).get(b))
-      .toEqual({ c: 0 });
-  });
-
-  it('closes the orphaned run so the feed does not show a dead worker as live', () => {
-    const id = claimed('a');
-    appendAgentEvent(db, id, 'tick:1-0', 'run_start', { detail: { head: 'aaa' } });
-    stopWorkers(db, (ids) => new Map(ids.map((i) => [i, 'gone' as const])));
-    const evs = db.prepare(
-      `SELECT kind, detail FROM agent_events WHERE task_id=? ORDER BY id`,
-    ).all(id) as { kind: string; detail: string }[];
-    expect(evs.map((e) => e.kind)).toEqual(['run_start', 'error', 'run_end']);
-    expect(JSON.parse(evs[1].detail).message).toMatch(/stopped by hand/);
-  });
-});
-
-import * as core from '../src/index.js';
-it('excludes orchestrated work from explicit and queued legacy claims before unrelated reaping',async()=>{
-  const orchestrated=withCriteria('orch'),manual=withCriteria('manual'),handle=core.openController(db);
-  const intent=core.beginHandoff(handle,{commandId:'mode',task:{projectId:core.projectOf(db).project_id,taskId:orchestrated},
-    expectedMode:'manual',targetMode:'orchestrated',expectedOwners:[]});
-  await core.finishHandoff(handle,{handoffId:intent.id});
-  db.prepare("UPDATE tasks SET status='in_progress',claimed_by='ai:tick:unrelated',claim_expires=0 WHERE id=?").run(manual);
-  const events=db.prepare('SELECT * FROM events').all();let called=false;
-  expect(core.claimTask(db,orchestrated,user,60,{kill:()=>{called=true;return new Map()}})).toEqual({ok:false,error:'orchestrated task requires controller execution'});
-  expect(called).toBe(false);expect(db.prepare('SELECT * FROM events').all()).toEqual(events);
-  expect(core.mustGetTask(db,manual).claimed_by).toBe('ai:tick:unrelated');
-  db.prepare("UPDATE tasks SET status='new',claimed_by=NULL,claim_expires=NULL WHERE id=?").run(manual);
-  expect(core.claimNext(db,user)?.id).toBe(manual);
-  expect(core.mustGetTask(db,orchestrated).claimed_by).toBeNull();
-});
-it('never passes orchestrated or handoff rows to the legacy killer and leaves their leases unchanged',()=>{
-  const manual=withCriteria('manual'),orch=withCriteria('orch'),pending=withCriteria('handoff');
-  const handle=core.openController(db),ref={projectId:core.projectOf(db).project_id,taskId:pending};
-  core.beginHandoff(handle,{commandId:'intent',task:ref,expectedMode:'manual',targetMode:'orchestrated',expectedOwners:[]});
-  db.prepare("UPDATE tasks SET execution_mode='orchestrated' WHERE id=?").run(orch);
-  db.exec("UPDATE tasks SET status='in_progress',claimed_by='ai:tick:fixture',claim_expires=0");
-  const before=db.prepare('SELECT * FROM tasks WHERE id IN (?,?) ORDER BY id').all(orch,pending);
-  const killed:number[]=[];const kill:core.KillFn=ids=>{killed.push(...ids);return new Map(ids.map(id=>[id,'gone']))};
-  expect(core.expiredLeases(db).map(t=>t.id)).toEqual([manual]);
-  expect(core.reapExpired(db,kill).reclaimed.map(t=>t.id)).toEqual([manual]);
-  expect(killed).toEqual([manual]);expect(core.stopWorkers(db,kill).released).toBe(0);
-  expect(core.renewClaim(db,orch,user).ok).toBe(false);
-  expect(()=>core.releaseClaim(db,orch,user,'owner said stop')).toThrow(/orchestrated/);
-  expect(()=>core.recordFailedAttempt(db,orch,user,'failed')).toThrow(/orchestrated/);
-  expect(db.prepare('SELECT * FROM tasks WHERE id IN (?,?) ORDER BY id').all(orch,pending)).toEqual(before);
-});
-it('rechecks legacy eligibility after an outside-transaction killer changes the mode',()=>{
-  const id=withCriteria('legacy');claimTask(db,id,{type:'ai',id:'tick:fixture'});
-  const result=core.stopWorkers(db,ids=>{expect(ids).toEqual([id]);db.prepare("UPDATE tasks SET execution_mode='orchestrated' WHERE id=?").run(id);return new Map([[id,'gone']])});
-  expect(result).toEqual({killed:1,released:0,stuck:0});
-  expect(core.mustGetTask(db,id)).toMatchObject({status:'in_progress',claimed_by:'ai:tick:fixture',execution_mode:'orchestrated'});
 });

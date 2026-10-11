@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync, renameSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { KddError } from './errors.js';
-import { initializeProjectStore, canonicalProjectPath, canonicalCommonDir, bindingsOf, projectOf } from './project_store.js';
+import { initializeProjectStore, canonicalProjectPath, canonicalCommonDir, primarySource, projectOf } from './project_store.js';
 import { homedir } from 'node:os';
 import { MIGRATIONS } from './schema.js';
 export { MIGRATIONS } from './schema.js';
@@ -17,7 +17,7 @@ export const now = (): number => Math.floor(Date.now() / 1000);
 function backupBeforeMigrate(db: Database.Database, dbPath: string, from: number): void {
   const backup = `${dbPath}.v${from}.bak`;
   // Пишем в СВОЙ временный файл и переименовываем: одну и ту же доску открывают несколько
-  // процессов (сервер UI, `kdd tick`, терминал), и все они после апгрейда мигрируют её
+  // процессов (сервер UI, MCP, терминал), и все они после апгрейда мигрируют её
   // наперегонки. С общим именем один сносил бы файл, который другой ещё пишет, — копия
   // исчезала бы ровно тогда, когда она нужна. rename атомарен, tmp у каждого свой.
   const tmp = `${backup}.${process.pid}.tmp`;
@@ -96,7 +96,7 @@ export function openDb(dbPath: string, projectPath?: string, checkout?: string):
 // файл подрежет следующий, кто закроется последним.
 export function checkpointWal(db: Database.Database): void {
   // busy_timeout на время чекпоинта снимаем: TRUNCATE ждёт, пока разойдутся ВСЕ читатели, и с
-  // общими 5 секундами выход из UI с тремя живыми воркерами вис бы по пять секунд на каждый
+  // общими 5 секундами выход из UI с тремя живыми сессиями вис бы по пять секунд на каждый
   // проект в пуле. Обрезка — оппортунистическая уборка, а не обязательство: не вышло сейчас —
   // выйдет у того, кто закроется последним.
   try {
@@ -106,7 +106,7 @@ export function checkpointWal(db: Database.Database): void {
   finally { try { db.pragma('busy_timeout = 5000'); } catch { /* уже закрыта */ } }
 }
 
-// Закрытие долгоживущего клиента (сервер UI, `kdd tick --watch`, супервизор воркера):
+// Закрытие долгоживущего клиента (сервер UI, MCP):
 // единственный момент, когда обрезать WAL и дёшево, и заведомо безопасно.
 export function closeDb(db: Database.Database): void {
   checkpointWal(db);
@@ -124,8 +124,8 @@ export function projectPathOf(db: Database.Database): string | null {
 // git common-dir, и вывести toplevel из него нельзя: у submodule он лежит в
 // <super>/.git/modules/<name>, у `git init --separate-git-dir` — вообще вне репозитория,
 // у bare-репо с linked worktree — сам по себе. Пишут те, кто резолвил toplevel из настоящего
-// cwd внутри репозитория (`kdd tick`, `kdd ui`); читают те, кому нужен cwd для дочерних
-// процессов, но у кого нет своего cwd в проекте (планировщик web-сервера).
+// cwd внутри репозитория (`kdd ui`); читают те, кому нужен рабочий каталог проекта,
+// но у кого нет своего cwd в нём (web-сервер, мультиплексирующий проекты).
 export function projectToplevelOf(db: Database.Database): string | null {
   return (db.prepare(`SELECT value FROM meta WHERE key = 'project_toplevel'`).get() as
     { value: string } | undefined)?.value ?? null;
@@ -136,7 +136,7 @@ export function setProjectToplevel(db: Database.Database, toplevel: string): voi
   if (primary) {
     try {
       const common = canonicalCommonDir(toplevel);
-      if (!bindingsOf(db).some(b => b.repo_id === primary && b.kind === 'source' && b.common_dir === common)) return;
+      if (primarySource(db)?.common_dir !== common) return;
     } catch { return; }
   }
   db.transaction(() => {

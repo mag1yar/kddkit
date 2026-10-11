@@ -188,11 +188,10 @@ file first if it lives elsewhere. Detach with `update_task { id, detach:
 
 Every task carries a `kind` from a closed vocabulary — `feature` (default), `bug`,
 `chore`, `research` — set or changed with `update_task { id, edit: { kind } }`.
-`research` is excluded from the claim protocol: the queue walk (`kdd claim` with no
-id, and `kdd tick`) never surfaces a `research` task to anyone — not because it is
-`ai`-only work, but because its deliverable is a recorded decision, not a commit,
-and the queue has no one to hand it to. A human takes one on purpose with an
-explicit `kdd claim <id>`. This is a different `kind` from `kdd recall --kind`
+`research` is excluded from `ai` claims: `kdd claim <id>` refuses an `ai` actor on a
+`research` task, because its deliverable is a recorded decision, not a commit. A human
+takes one on purpose with an explicit `kdd claim <id>`. (`kdd claim` also refuses a task
+with no acceptance criteria.) This is a different `kind` from `kdd recall --kind`
 (result type) and `kdd link --kind` (link type) above — same word, three
 vocabularies.
 

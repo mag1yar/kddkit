@@ -6,7 +6,7 @@ import { STATUSES, type Board as BoardData, type Status, type Task } from '../sr
 
 const task = (over: Partial<Task> = {}): Task => ({
   id: 1, title: 'do a thing', body: null, status: 'new', blocked: 0, block_reason: null,
-  priority: 'medium', kind: 'feature', area: null, parent_id: null, execution_mode: 'manual', track_id: null, ready: 1,
+  priority: 'medium', kind: 'feature', area: null, parent_id: null, track_id: null, ready: 1,
   criteria_checked: 0, criteria_total: 0, created_at: 0, updated_at: 0, ...over,
 });
 
@@ -24,7 +24,7 @@ const show = (t: Task) => {
 afterEach(cleanup);
 
 // #87: за одну сессию об это споткнулись трижды. Задача без критериев лежит в new, выглядит
-// готовой — а claimNext её не видит, и авто-тик молча рапортует spawned 0.
+// готовой — а `kdd claim` её не отдаёт, пока критериев нет.
 describe('«no criteria» marker', () => {
   it('is on a ready card with zero criteria', () => {
     show(task());
@@ -50,8 +50,8 @@ describe('«no criteria» marker', () => {
     expect(screen.queryByText('no criteria')).toBeNull();
   });
 
-  // READY_SQL (core/queries.ts) теперь исключает kind='research' тем же условием, что
-  // CLAIMABLE_SQL — сервер никогда не отдаёт research с ready=1, значит эта карточка (new,
+  // READY_SQL (core/queries.ts) исключает kind='research' — сервер никогда не отдаёт
+  // research с ready=1, значит эта карточка (new,
   // не blocked, не archived) реально приходит с ready=0, и условие бейджа (task.ready === 1)
   // само гасит его без отдельного kind-исключения на клиенте.
   it('is not shown on a new research card even with zero criteria', () => {
@@ -63,9 +63,9 @@ describe('«no criteria» marker', () => {
 // research лежит в new и выглядит готовой, но ready теперь честно 0 (READY_SQL её исключает) —
 // единственная подсказка о том, что агент её не возьмёт, это сам kind-бейдж.
 describe('research kind badge', () => {
-  it('warns that an agent will never take it', () => {
+  it('warns that an agent cannot claim it', () => {
     show(task({ kind: 'research', ready: 0, criteria_total: 1, criteria_checked: 0 }));
-    expect(screen.getByTitle('an agent will never pick up this task')).toBeTruthy();
+    expect(screen.getByTitle('an agent cannot claim this task')).toBeTruthy();
   });
 });
 

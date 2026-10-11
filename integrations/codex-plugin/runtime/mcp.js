@@ -21115,25 +21115,23 @@ import { homedir as homedir2 } from "os";
 import { join as join3, resolve as resolve2 } from "path";
 import Database3 from "better-sqlite3";
 import { realpathSync as realpathSync2 } from "fs";
-import { createHash as createHash3 } from "crypto";
-import Database4 from "better-sqlite3";
-import { existsSync as existsSync4, readFileSync as readFileSync5, readdirSync as readdirSync5, realpathSync as realpathSync6 } from "fs";
-import { dirname as dirname4, join as join6 } from "path";
-import { createHash as createHash6 } from "crypto";
+import { execFileSync as execFileSync3 } from "child_process";
+import { createHash as createHash2 } from "crypto";
 import {
-  existsSync as existsSync5,
-  mkdirSync as mkdirSync4,
-  readFileSync as readFileSync6,
+  existsSync as existsSync3,
+  mkdirSync as mkdirSync3,
+  readFileSync as readFileSync2,
   renameSync as renameSync3,
   rmSync as rmSync3,
-  statSync as statSync2,
-  writeFileSync as writeFileSync3
+  statSync,
+  writeFileSync as writeFileSync2
 } from "fs";
-import { basename as basename3, dirname as dirname5, extname, join as join7 } from "path";
-import Database5 from "better-sqlite3";
-import { execFileSync as execFileSync9 } from "child_process";
-import { existsSync as existsSync11, readFileSync as readFileSync13, readdirSync as readdirSync8, realpathSync as realpathSync13 } from "fs";
-import { dirname as dirname10, join as join12 } from "path";
+import { basename as basename2, dirname as dirname3, extname, join as join4 } from "path";
+import { createHash as createHash3 } from "crypto";
+import { existsSync as existsSync5, readFileSync as readFileSync4, readdirSync as readdirSync4, realpathSync as realpathSync4 } from "fs";
+import { dirname as dirname5, join as join6 } from "path";
+import { existsSync as existsSync7, readFileSync as readFileSync7, readdirSync as readdirSync5, realpathSync as realpathSync6 } from "fs";
+import { dirname as dirname7, join as join8 } from "path";
 var CAPS = {
   briefBytes: 4096,
   // JSON/MCP payload для детерминированного resume-пакета
@@ -21178,24 +21176,9 @@ var CAPS = {
   // бюджет текстовой выдачи kdd recall
   recallTitleChars: 60,
   trackDescChars: 200,
-  // Единственные капы на ЗАПИСЬ. Всё выше режет выдачу — эти режут то, что вообще ложится в базу:
-  // фид воркера принимает сырой ввод/вывод инструментов, и один `Read` большого файла кладёт
-  // сотни КБ одной строкой в базу, которую шарят все worktree проекта.
-  fileBytes: 20 * 1024 * 1024,
+  // Кап на ЗАПИСЬ: всё выше режет выдачу, этот — то, что вообще ложится в базу.
+  fileBytes: 20 * 1024 * 1024
   // потолок вложения: доска личная, но 20 MB картинки хватает всем
-  skillFileBytes: 1024 * 1024,
-  skillFileCount: 128,
-  skillTotalBytes: 8 * 1024 * 1024,
-  agentFieldChars: 4096,
-  // строковый лист в detail (вывод тула, аргумент, текст ответа)
-  agentDetailItems: 64,
-  // элементов массива в detail — content-блоков у тула бывает много
-  agentDetailBytes: 65536,
-  // весь detail после капа листьев; выше — пишем только размер
-  agentEventDays: 7,
-  // столько живёт подробный фид завершённой задачи (см. pruneAgentEvents)
-  agentPruneBatch: 5e3
-  // строк за один проход ротации: DELETE держит write-lock, рядом пишут воркеры
 };
 function capText(s, n) {
   if (s.length <= n) return s;
@@ -21727,11 +21710,41 @@ CREATE TRIGGER retirement_terminal BEFORE UPDATE ON work_item_retirements WHEN O
 BEGIN SELECT RAISE(ABORT,'immutable retirement receipt'); END;
 CREATE TRIGGER retirement_no_delete BEFORE DELETE ON work_item_retirements
 BEGIN SELECT RAISE(ABORT,'immutable retirement'); END;
+  `,
+  // v20: оркестратор и tick вырезаны (#173). Таблицы пустые на всех живых досках (2026-10-11).
+  // Порядок DROP — от потомков к родителям: foreign_keys=ON, DROP родителя делает неявный DELETE.
+  // Но owners → retirements → owners — цикл, порядком его не развязать: проверка FK откладывается
+  // до коммита (pragma сбрасывается сама на коммите), а к коммиту обе таблицы уже снесены.
+  // Схема на выходе та же — живые доски, прошедшие v20 без этой строки, ничем не отличаются.
+  `PRAGMA defer_foreign_keys = ON;
+DROP TABLE runtime_events; DROP TABLE runtime_attempts; DROP TABLE runtime_sessions;
+DROP TABLE work_item_retirements; DROP TABLE execution_handoffs; DROP TABLE work_item_owners;
+DROP TABLE work_item_results; DROP TABLE work_item_dependencies; DROP TABLE work_item_revisions;
+DROP TABLE work_items; DROP TABLE run_input_snapshots; DROP TABLE run_authorities;
+DROP TABLE managed_task_policy; DROP TABLE memory_revisions; DROP TABLE memory_entries;
+DROP TABLE role_skill_files; DROP TABLE role_revisions; DROP TABLE role_profiles;
+DROP TABLE agent_events; DROP INDEX idx_memory_import_commands;
+ALTER TABLE tasks DROP COLUMN execution_mode;
+ALTER TABLE tasks DROP COLUMN failed_attempts;
+ALTER TABLE repositories DROP COLUMN access;
+ALTER TABLE project DROP COLUMN autonomy_enabled;
+ALTER TABLE project DROP COLUMN default_execution_mode;
+-- kind \u0434\u0435\u0440\u0436\u0438\u0442 CHECK('source','managed'): DROP COLUMN \u0435\u0433\u043E \u043D\u0435 \u0441\u043D\u0438\u043C\u0435\u0442, \u043F\u043E\u044D\u0442\u043E\u043C\u0443 \u043F\u0435\u0440\u0435\u0441\u0431\u043E\u0440\u043A\u0430.
+-- managed-\u0441\u0442\u0440\u043E\u043A\u0438 \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u044E\u0442\u0441\u044F: \u044D\u0442\u043E \u043F\u0440\u043E\u0441\u0442\u043E \u0435\u0449\u0451 \u043E\u0434\u0438\u043D \u0447\u0435\u043A\u0430\u0443\u0442 \u0442\u043E\u0433\u043E \u0436\u0435 \u0440\u0435\u043F\u043E.
+CREATE TABLE repository_bindings_v20 (
+  common_dir TEXT PRIMARY KEY,
+  repo_id TEXT NOT NULL REFERENCES repositories(repo_id),
+  checkout_path TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+INSERT INTO repository_bindings_v20 SELECT common_dir, repo_id, checkout_path, created_at FROM repository_bindings;
+DROP TABLE repository_bindings;
+ALTER TABLE repository_bindings_v20 RENAME TO repository_bindings;
+CREATE INDEX idx_repository_bindings_repo ON repository_bindings(repo_id);
   `
 ];
 function projectOf(db) {
-  const row = db.prepare("SELECT project_id,primary_repo_id,legacy_decisions_dir,autonomy_enabled,default_execution_mode,created_at FROM project WHERE singleton=1").get();
-  return { ...row, autonomy_enabled: row.autonomy_enabled === 1 };
+  return db.prepare("SELECT project_id,primary_repo_id,legacy_decisions_dir,created_at FROM project WHERE singleton=1").get();
 }
 function bindingsOf(db) {
   return db.prepare("SELECT * FROM repository_bindings ORDER BY common_dir").all();
@@ -21920,8 +21933,8 @@ function initializeProjectStore(db, dbPath, home, projectPath, checkout = proces
         if (!decisionsDir && sourceCaller && options.configuredDecisions) decisionsDir = canonicalProjectPath(options.configuredDecisions);
       }
       const repoId = id();
-      db.prepare("INSERT INTO repositories VALUES(?,?,?,NULL,?)").run(repoId, "primary", "implementation", time3());
-      db.prepare("INSERT INTO repository_bindings VALUES(?,?,?,?,?)").run(common, repoId, paths[0], "source", time3());
+      db.prepare("INSERT INTO repositories VALUES(?,?,NULL,?)").run(repoId, "primary", time3());
+      db.prepare("INSERT INTO repository_bindings VALUES(?,?,?,?)").run(common, repoId, paths[0], time3());
       db.prepare("UPDATE project SET primary_repo_id=?,legacy_decisions_dir=? WHERE singleton=1").run(repoId, decisionsDir ?? join(paths[0], ".planning", "decisions"));
     }).immediate();
     const binding = bindingsOf(db).find((b) => b.common_dir === common);
@@ -21942,11 +21955,27 @@ function listProjectCheckouts(home) {
     return [...checkoutPaths, ...commons.filter((p) => existsSync(p)).flatMap((common) => worktrees(realpathSync(common)))];
   })))];
 }
+function primarySource(db) {
+  const source = meta(db, "project_path");
+  if (!source) return void 0;
+  const primary = projectOf(db).primary_repo_id;
+  const p = canonicalProjectPath(source);
+  const bindings = bindingsOf(db).filter((b) => b.repo_id === primary);
+  const direct = bindings.find((b) => b.common_dir === p || b.checkout_path === p);
+  if (direct) return direct;
+  let common;
+  try {
+    if (!existsSync(p)) return void 0;
+    common = canonicalCommonDir(p);
+  } catch {
+    return void 0;
+  }
+  return bindings.find((b) => b.common_dir === common);
+}
 function canSyncLegacyDecisions(db, decisionsDir) {
   const project = projectOf(db);
   if (!project.primary_repo_id && db.memory) return true;
-  const bindings = bindingsOf(db);
-  const source = bindings.find((b) => b.repo_id === project.primary_repo_id && b.kind === "source");
+  const source = primarySource(db);
   if (project.primary_repo_id && (!source || !existsSync(source.common_dir))) return false;
   const path = canonicalProjectPath(decisionsDir);
   if (project.legacy_decisions_dir && (!source || resolve(project.legacy_decisions_dir) !== join(source.checkout_path, ".planning", "decisions"))) {
@@ -21957,7 +21986,7 @@ function canSyncLegacyDecisions(db, decisionsDir) {
   while (!existsSync(ancestor) && dirname(ancestor) !== ancestor) ancestor = dirname(ancestor);
   try {
     const common = canonicalCommonDir(ancestor);
-    return bindings.some((b) => b.repo_id === project.primary_repo_id && b.kind === "source" && b.common_dir === common);
+    return source?.common_dir === common;
   } catch {
     return false;
   }
@@ -22046,10 +22075,10 @@ function resolveDbPath(cwd = process.cwd()) {
   } catch {
     throw new KddError("not in a git repository (kdd resolves its store via git)");
   }
-  const registered2 = lookupProjectStore(realpathSync2(common), kddHome());
-  if (registered2) return registered2;
-  const hash2 = createHash("sha256").update(common).digest("hex").slice(0, 16);
-  return { dbPath: join3(kddHome(), hash2, "kdd.db"), projectPath: common };
+  const registered = lookupProjectStore(realpathSync2(common), kddHome());
+  if (registered) return registered;
+  const hash = createHash("sha256").update(common).digest("hex").slice(0, 16);
+  return { dbPath: join3(kddHome(), hash, "kdd.db"), projectPath: common };
 }
 function resolveDecisionsDir(cwd = process.cwd()) {
   if (process.env.KDD_DECISIONS_DIR) return process.env.KDD_DECISIONS_DIR;
@@ -22145,8 +22174,8 @@ var SECRETS = [
   // Только форма ДАМПА окружения: имя с начала строки, `=` без пробелов, значение без
   // пробелов. Не «любое упоминание» — ревью поймало, что широкая версия съедала
   // `API_KEY: string;` и `const GITHUB_TOKEN = cfg.token` в обычном исходнике, который
-  // агент правит через Edit. Редакция стоит ДО записи, то есть портила бы файл навсегда:
-  // читающий фид не отличил бы правку аннотации типа от правки секрета. Двоеточие ушло
+  // агент цитирует в комментарии. Редакция стоит ДО записи, то есть портила бы текст навсегда:
+  // читающий не отличил бы аннотацию типа от секрета. Двоеточие ушло
   // целиком (YAML-секрет реже, чем TS-аннотация), длина имени ограничена — с ней regex
   // линеен, а прежний `[A-Z0-9_]*(?:TOKEN|…)` откатывался квадратично.
   [
@@ -22158,6 +22187,261 @@ function redact(s) {
   let out = s;
   for (const [re, to] of SECRETS) out = out.replace(re, to);
   return out;
+}
+function mustGetTrack(db, id2) {
+  const t = db.prepare(`SELECT * FROM tracks WHERE id = ?`).get(id2);
+  if (!t) throw new KddError(`track #${id2} not found`);
+  return t;
+}
+function listTracks(db, opts = {}) {
+  const where = opts.status ? `WHERE tr.status = @status` : "";
+  return db.prepare(
+    `SELECT tr.*, COUNT(t.id) AS open_tasks
+     FROM tracks tr
+     LEFT JOIN tasks t ON t.track_id = tr.id AND t.archived_at IS NULL AND t.status <> 'done'
+     ${where}
+     GROUP BY tr.id ORDER BY tr.status, tr.name`
+  ).all({ status: opts.status ?? null });
+}
+function appendEvent(db, taskId, actor, action, detail, opts) {
+  const r = db.prepare(
+    `INSERT INTO events (task_id, actor_type, actor_id, action, detail, created_at,
+                         parent_id, type, level)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    taskId,
+    actor.type,
+    actor.id ?? null,
+    action,
+    detail ? JSON.stringify(detail) : null,
+    now(),
+    opts?.parent_id ?? null,
+    opts?.type ?? null,
+    opts?.level ?? "info"
+  );
+  return Number(r.lastInsertRowid);
+}
+function appendTaskMutationEvent(db, taskId, actor, action, detail, opts) {
+  const session = actor.type === "ai" ? actor.manualSession : void 0;
+  if (!session) return appendEvent(db, taskId, actor, action, detail, opts);
+  const git2 = (args) => {
+    try {
+      return execFileSync3("git", args, {
+        cwd: session.cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"]
+      }).trim() || void 0;
+    } catch {
+      return void 0;
+    }
+  };
+  const worktree = git2(["rev-parse", "--show-toplevel"]);
+  const branch = worktree ? git2(["symbolic-ref", "--quiet", "--short", "HEAD"]) : void 0;
+  const head = worktree ? git2(["rev-parse", "--verify", "HEAD"]) : void 0;
+  return appendEvent(db, taskId, actor, action, {
+    ...detail ?? {},
+    manual_provenance: {
+      client: session.client,
+      ...normalizeSessionId(session.sessionId) ? { session_id: session.sessionId } : {},
+      ...worktree ? { worktree } : {},
+      ...branch ? { branch } : {},
+      ...head ? { head_commit: head } : {}
+    }
+  }, opts);
+}
+function mustGetTask(db, id2) {
+  const t = db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id2);
+  if (!t) throw new KddError(`task #${id2} not found`);
+  return t;
+}
+function checkPriority(p) {
+  if (!PRIORITIES.includes(p)) {
+    throw new KddError(`invalid priority '${p}'; allowed: ${PRIORITIES.join(", ")}`);
+  }
+}
+function checkKind(k) {
+  if (!KINDS.includes(k)) {
+    throw new KddError(`invalid kind '${k}'; allowed: ${KINDS.join(", ")}`);
+  }
+}
+function editTask(db, id2, patch, actor) {
+  if (patch.priority !== void 0) checkPriority(patch.priority);
+  if (patch.kind !== void 0) checkKind(patch.kind);
+  if (patch.track_id != null) mustGetTrack(db, patch.track_id);
+  const fields = Object.keys(patch).filter((k) => patch[k] !== void 0);
+  if (fields.some((key) => !["title", "body", "priority", "area", "track_id", "kind"].includes(key))) throw new KddError("invalid task patch");
+  if (fields.length === 0) throw new KddError("nothing to edit");
+  return db.transaction(() => {
+    mustGetTask(db, id2);
+    const sets = fields.map((f) => `${f} = ?`).join(", ");
+    db.prepare(`UPDATE tasks SET ${sets}, updated_at = ? WHERE id = ?`).run(...fields.map((f) => patch[f]), now(), id2);
+    appendTaskMutationEvent(db, id2, actor, "edited", { fields });
+    return mustGetTask(db, id2);
+  }).immediate();
+}
+function commentTask(db, id2, body, actor) {
+  if (!body.trim()) throw new KddError("comment must not be empty");
+  const text = actor.type === "ai" ? redact(body) : body;
+  return db.transaction(() => {
+    mustGetTask(db, id2);
+    const r = db.prepare(
+      `INSERT INTO comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)`
+    ).run(id2, authorOf(actor), text, now());
+    appendTaskMutationEvent(db, id2, actor, "commented");
+    return db.prepare(`SELECT * FROM comments WHERE id = ?`).get(Number(r.lastInsertRowid));
+  }).immediate();
+}
+function checkStatus(s) {
+  if (!STATUSES.includes(s)) {
+    throw new KddError(`invalid status '${s}'; allowed: ${STATUSES.join(", ")}`);
+  }
+}
+function openCriteria(db, taskId) {
+  return db.prepare(
+    `SELECT COUNT(*) AS c FROM criteria WHERE task_id = ? AND checked_at IS NULL`
+  ).get(taskId).c;
+}
+function submittedBy(db, taskId) {
+  const r = db.prepare(
+    `SELECT actor_type, actor_id FROM events
+      WHERE task_id = ? AND action = 'moved' AND detail LIKE '%"to":"review"%'
+      ORDER BY id DESC LIMIT 1`
+  ).get(taskId);
+  return r ? authorOf({ type: r.actor_type, id: r.actor_id ?? void 0 }) : null;
+}
+function nextPosition(db, status) {
+  return db.prepare(
+    `SELECT COALESCE(MAX(position), -1) + 1 AS p
+     FROM tasks WHERE status = ? AND archived_at IS NULL`
+  ).get(status).p;
+}
+function moveTask(db, id2, to, actor, reason) {
+  checkStatus(to);
+  return db.transaction(() => {
+    const t = mustGetTask(db, id2);
+    const submitter = t.status === "review" ? submittedBy(db, id2) : null;
+    const res = checkMove(t.status, to, actor, reason, openCriteria(db, id2), t.claimed_by, submitter);
+    if (!res.ok) throw new KddError(res.error);
+    const self = t.status === "review" && to === "done" && submitter === authorOf(actor);
+    const leaving = t.status === "in_progress" && to !== "in_progress";
+    db.prepare(
+      `UPDATE tasks SET status = ?, position = ?, updated_at = ?${leaving ? ", claimed_by = NULL, claim_expires = NULL" : ""}
+       WHERE id = ?`
+    ).run(to, nextPosition(db, to), now(), id2);
+    appendTaskMutationEvent(db, id2, actor, "moved", {
+      from: t.status,
+      to,
+      ...reason ? { reason } : {},
+      ...self ? { self_accepted: true } : {}
+    });
+    if (reason) {
+      db.prepare(
+        `INSERT INTO comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)`
+      ).run(id2, authorOf(actor), reason, now());
+    }
+    return mustGetTask(db, id2);
+  }).immediate();
+}
+function listCriteria(db, taskId) {
+  return db.prepare(
+    `SELECT * FROM criteria WHERE task_id = ? ORDER BY position, id`
+  ).all(taskId);
+}
+var MIME = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  bmp: "image/bmp",
+  ico: "image/x-icon",
+  tif: "image/tiff",
+  tiff: "image/tiff",
+  svg: "image/svg+xml",
+  pdf: "application/pdf",
+  zip: "application/zip",
+  json: "application/json",
+  csv: "text/csv",
+  md: "text/markdown",
+  txt: "text/plain",
+  log: "text/plain"
+};
+var filesDir = (dbPath) => {
+  if (dbPath === ":memory:") throw new KddError("attachments need a real board file, not :memory:");
+  return join4(dirname3(dbPath), "files");
+};
+var filePath = (dbPath, f) => join4(filesDir(dbPath), `${f.sha256}.${f.ext}`);
+function listFiles(db, taskId) {
+  return db.prepare(`SELECT * FROM files WHERE task_id = ? ORDER BY id`).all(taskId);
+}
+function getFile(db, id2) {
+  return db.prepare(`SELECT * FROM files WHERE id = ?`).get(id2);
+}
+function attachFile(db, dbPath, taskId, srcPath, opts, actor) {
+  return db.transaction(() => {
+    let data;
+    try {
+      const stat = statSync(srcPath);
+      if (stat.isDirectory()) throw new KddError(`${srcPath} is a directory`);
+      if (stat.size > CAPS.fileBytes) {
+        throw new KddError(`file is ${stat.size} bytes, the limit is ${CAPS.fileBytes}`);
+      }
+      data = readFileSync2(srcPath);
+    } catch (e) {
+      if (e instanceof KddError) throw e;
+      throw new KddError(`cannot read ${srcPath}: ${e.message}`);
+    }
+    mustGetTask(db, taskId);
+    const sha256 = createHash2("sha256").update(data).digest("hex");
+    const ext = (extname(srcPath).slice(1) || "bin").toLowerCase();
+    const target = join4(filesDir(dbPath), `${sha256}.${ext}`);
+    if (!existsSync3(target)) {
+      mkdirSync3(filesDir(dbPath), { recursive: true });
+      const tmp = `${target}.${process.pid}.tmp`;
+      writeFileSync2(tmp, data);
+      renameSync3(tmp, target);
+    }
+    const name = capText(basename2(srcPath), CAPS.fileNameChars);
+    const r = db.prepare(
+      `INSERT INTO files (task_id, sha256, ext, original_name, mime_type, size_bytes,
+                          description, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(task_id, sha256) DO NOTHING`
+    ).run(
+      taskId,
+      sha256,
+      ext,
+      name,
+      MIME[ext] ?? null,
+      data.length,
+      opts.description ?? null,
+      now()
+    );
+    const row = db.prepare(`SELECT * FROM files WHERE task_id = ? AND sha256 = ?`).get(taskId, sha256);
+    if (r.changes === 0) {
+      if (opts.description && opts.description !== row.description) {
+        db.prepare(`UPDATE files SET description = ? WHERE id = ?`).run(opts.description, row.id);
+        appendTaskMutationEvent(db, taskId, actor, "file_attached", { id: row.id, name, described: true });
+        db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
+        return { ...row, description: opts.description };
+      }
+      return row;
+    }
+    appendTaskMutationEvent(db, taskId, actor, "file_attached", { id: row.id, name });
+    db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
+    return row;
+  }).immediate();
+}
+function detachFile(db, dbPath, fileId, actor) {
+  db.transaction(() => {
+    const f = getFile(db, fileId);
+    if (!f) throw new KddError(`file #${fileId} not found`);
+    db.prepare(`DELETE FROM files WHERE id = ?`).run(fileId);
+    appendTaskMutationEvent(db, f.task_id, actor, "file_detached", { id: fileId, name: f.original_name });
+    db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), f.task_id);
+    const left = db.prepare(`SELECT COUNT(*) AS c FROM files WHERE sha256 = ? AND ext = ?`).get(f.sha256, f.ext).c;
+    if (left === 0) rmSync3(filePath(dbPath, f), { force: true });
+  }).immediate();
 }
 var normalize = (s) => s.replace(/\r\n/g, "\n").trim();
 function contentHash(title, body) {
@@ -22186,17 +22470,17 @@ function parseSourceTasks(value) {
   }
 }
 function parseDecisionMd(raw) {
-  const text2 = raw.replace(/\r\n/g, "\n");
+  const text = raw.replace(/\r\n/g, "\n");
   const fm = {};
-  let rest = text2;
-  if (text2.startsWith("---\n")) {
-    const end = text2.indexOf("\n---\n", 4);
+  let rest = text;
+  if (text.startsWith("---\n")) {
+    const end = text.indexOf("\n---\n", 4);
     if (end !== -1) {
-      for (const line of text2.slice(4, end).split("\n")) {
+      for (const line of text.slice(4, end).split("\n")) {
         const m = line.match(/^(\w+):\s*(.*)$/);
         if (m) fm[m[1]] = m[2].trim();
       }
-      rest = text2.slice(end + 5);
+      rest = text.slice(end + 5);
     }
   }
   const tm = rest.match(/^# (.+)$/m);
@@ -22215,7 +22499,7 @@ function parseDecisionMd(raw) {
 function syncIndex(db, decisionsDir) {
   db.transaction(() => {
     if (canSyncLegacyDecisions(db, decisionsDir)) {
-      const files = existsSync4(decisionsDir) ? readdirSync5(decisionsDir).filter((f) => f.endsWith(".md")) : [];
+      const files = existsSync5(decisionsDir) ? readdirSync4(decisionsDir).filter((f) => f.endsWith(".md")) : [];
       const inDb = new Map(
         db.prepare(
           `SELECT slug, path, content_hash, created, superseded_by, source_tasks FROM decisions`
@@ -22226,8 +22510,8 @@ function syncIndex(db, decisionsDir) {
         const slug = f.slice(0, -3);
         seen.add(slug);
         const path = join6(decisionsDir, f);
-        if (!canSyncLegacyDecisions(db, dirname4(realpathSync6(path)))) continue;
-        const doc = parseDecisionMd(readFileSync5(path, "utf8"));
+        if (!canSyncLegacyDecisions(db, dirname5(realpathSync4(path)))) continue;
+        const doc = parseDecisionMd(readFileSync4(path, "utf8"));
         const title = doc.title || slug;
         const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
         const sourceTasks = JSON.stringify(doc.sourceTasks);
@@ -22314,280 +22598,6 @@ function recall(db, decisionsDir, query, opts = {}) {
     k
   });
 }
-function listCriteria(db, taskId) {
-  return db.prepare(
-    `SELECT * FROM criteria WHERE task_id = ? ORDER BY position, id`
-  ).all(taskId);
-}
-var MIME = {
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  gif: "image/gif",
-  webp: "image/webp",
-  bmp: "image/bmp",
-  ico: "image/x-icon",
-  tif: "image/tiff",
-  tiff: "image/tiff",
-  svg: "image/svg+xml",
-  pdf: "application/pdf",
-  zip: "application/zip",
-  json: "application/json",
-  csv: "text/csv",
-  md: "text/markdown",
-  txt: "text/plain",
-  log: "text/plain"
-};
-var filesDir = (dbPath) => {
-  if (dbPath === ":memory:") throw new KddError("attachments need a real board file, not :memory:");
-  return join7(dirname5(dbPath), "files");
-};
-var filePath = (dbPath, f) => join7(filesDir(dbPath), `${f.sha256}.${f.ext}`);
-function listFiles(db, taskId) {
-  return db.prepare(`SELECT * FROM files WHERE task_id = ? ORDER BY id`).all(taskId);
-}
-function getFile(db, id2) {
-  return db.prepare(`SELECT * FROM files WHERE id = ?`).get(id2);
-}
-function attachFile(db, dbPath, taskId, srcPath, opts, actor) {
-  return db.transaction(() => {
-    assertLegacyTaskMutation(db, [taskId]);
-    let data;
-    try {
-      const stat = statSync2(srcPath);
-      if (stat.isDirectory()) throw new KddError(`${srcPath} is a directory`);
-      if (stat.size > CAPS.fileBytes) {
-        throw new KddError(`file is ${stat.size} bytes, the limit is ${CAPS.fileBytes}`);
-      }
-      data = readFileSync6(srcPath);
-    } catch (e) {
-      if (e instanceof KddError) throw e;
-      throw new KddError(`cannot read ${srcPath}: ${e.message}`);
-    }
-    mustGetTask(db, taskId);
-    const sha256 = createHash6("sha256").update(data).digest("hex");
-    const ext = (extname(srcPath).slice(1) || "bin").toLowerCase();
-    const target = join7(filesDir(dbPath), `${sha256}.${ext}`);
-    if (!existsSync5(target)) {
-      mkdirSync4(filesDir(dbPath), { recursive: true });
-      const tmp = `${target}.${process.pid}.tmp`;
-      writeFileSync3(tmp, data);
-      renameSync3(tmp, target);
-    }
-    const name = capText(basename3(srcPath), CAPS.fileNameChars);
-    const r = db.prepare(
-      `INSERT INTO files (task_id, sha256, ext, original_name, mime_type, size_bytes,
-                          description, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(task_id, sha256) DO NOTHING`
-    ).run(
-      taskId,
-      sha256,
-      ext,
-      name,
-      MIME[ext] ?? null,
-      data.length,
-      opts.description ?? null,
-      now()
-    );
-    const row = db.prepare(`SELECT * FROM files WHERE task_id = ? AND sha256 = ?`).get(taskId, sha256);
-    if (r.changes === 0) {
-      if (opts.description && opts.description !== row.description) {
-        db.prepare(`UPDATE files SET description = ? WHERE id = ?`).run(opts.description, row.id);
-        appendTaskMutationEvent(db, taskId, actor, "file_attached", { id: row.id, name, described: true });
-        db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
-        return { ...row, description: opts.description };
-      }
-      return row;
-    }
-    appendTaskMutationEvent(db, taskId, actor, "file_attached", { id: row.id, name });
-    db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), taskId);
-    return row;
-  }).immediate();
-}
-function detachFile(db, dbPath, fileId, actor) {
-  db.transaction(() => {
-    const f = getFile(db, fileId);
-    if (!f) throw new KddError(`file #${fileId} not found`);
-    assertLegacyTaskMutation(db, [f.task_id]);
-    db.prepare(`DELETE FROM files WHERE id = ?`).run(fileId);
-    appendTaskMutationEvent(db, f.task_id, actor, "file_detached", { id: fileId, name: f.original_name });
-    db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), f.task_id);
-    const left = db.prepare(`SELECT COUNT(*) AS c FROM files WHERE sha256 = ? AND ext = ?`).get(f.sha256, f.ext).c;
-    if (left === 0) rmSync3(filePath(dbPath, f), { force: true });
-  }).immediate();
-}
-var LEGACY_EXECUTION_SQL = `execution_mode='manual'
-  AND NOT EXISTS (SELECT 1 FROM managed_task_policy p WHERE p.task_id=tasks.id)
-  AND NOT EXISTS (SELECT 1 FROM execution_handoffs h WHERE h.task_id=tasks.id AND h.completed_at IS NULL)`;
-function assertLegacyTaskMutation(db, taskIds) {
-  const ids = [...new Set(taskIds)];
-  if (ids.some((id2) => !Number.isSafeInteger(id2) || id2 < 1)) throw new KddError("invalid task ids");
-  if (ids.length && db.prepare(`SELECT task_id FROM managed_task_policy WHERE task_id IN (${ids.map(() => "?").join(",")}) LIMIT 1`).get(...ids)) {
-    throw new KddError("managed task requires controller authority");
-  }
-  if (ids.length && db.prepare(`SELECT task_id FROM execution_handoffs WHERE completed_at IS NULL AND task_id IN (${ids.map(() => "?").join(",")}) LIMIT 1`).get(...ids)) {
-    throw new KddError("task handoff requires controller authority");
-  }
-}
-function mustGetTrack(db, id2) {
-  const t = db.prepare(`SELECT * FROM tracks WHERE id = ?`).get(id2);
-  if (!t) throw new KddError(`track #${id2} not found`);
-  return t;
-}
-function listTracks(db, opts = {}) {
-  const where = opts.status ? `WHERE tr.status = @status` : "";
-  return db.prepare(
-    `SELECT tr.*, COUNT(t.id) AS open_tasks
-     FROM tracks tr
-     LEFT JOIN tasks t ON t.track_id = tr.id AND t.archived_at IS NULL AND t.status <> 'done'
-     ${where}
-     GROUP BY tr.id ORDER BY tr.status, tr.name`
-  ).all({ status: opts.status ?? null });
-}
-function appendEvent(db, taskId, actor, action, detail, opts) {
-  const r = db.prepare(
-    `INSERT INTO events (task_id, actor_type, actor_id, action, detail, created_at,
-                         parent_id, type, level)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    taskId,
-    actor.type,
-    actor.id ?? null,
-    action,
-    detail ? JSON.stringify(detail) : null,
-    now(),
-    opts?.parent_id ?? null,
-    opts?.type ?? null,
-    opts?.level ?? "info"
-  );
-  return Number(r.lastInsertRowid);
-}
-function appendTaskMutationEvent(db, taskId, actor, action, detail, opts) {
-  const session = actor.type === "ai" ? actor.manualSession : void 0;
-  if (!session) return appendEvent(db, taskId, actor, action, detail, opts);
-  const git3 = (args) => {
-    try {
-      return execFileSync9("git", args, {
-        cwd: session.cwd,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"]
-      }).trim() || void 0;
-    } catch {
-      return void 0;
-    }
-  };
-  const worktree = git3(["rev-parse", "--show-toplevel"]);
-  const branch = worktree ? git3(["symbolic-ref", "--quiet", "--short", "HEAD"]) : void 0;
-  const head = worktree ? git3(["rev-parse", "--verify", "HEAD"]) : void 0;
-  return appendEvent(db, taskId, actor, action, {
-    ...detail ?? {},
-    manual_provenance: {
-      client: session.client,
-      ...normalizeSessionId(session.sessionId) ? { session_id: session.sessionId } : {},
-      ...worktree ? { worktree } : {},
-      ...branch ? { branch } : {},
-      ...head ? { head_commit: head } : {}
-    }
-  }, opts);
-}
-function mustGetTask(db, id2) {
-  const t = db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id2);
-  if (!t) throw new KddError(`task #${id2} not found`);
-  return t;
-}
-function checkPriority(p) {
-  if (!PRIORITIES.includes(p)) {
-    throw new KddError(`invalid priority '${p}'; allowed: ${PRIORITIES.join(", ")}`);
-  }
-}
-function checkKind(k) {
-  if (!KINDS.includes(k)) {
-    throw new KddError(`invalid kind '${k}'; allowed: ${KINDS.join(", ")}`);
-  }
-}
-function editTask(db, id2, patch, actor) {
-  if (patch.priority !== void 0) checkPriority(patch.priority);
-  if (patch.kind !== void 0) checkKind(patch.kind);
-  if (patch.track_id != null) mustGetTrack(db, patch.track_id);
-  const fields = Object.keys(patch).filter((k) => patch[k] !== void 0);
-  if (fields.some((key) => !["title", "body", "priority", "area", "track_id", "kind"].includes(key))) throw new KddError("invalid task patch");
-  if (fields.length === 0) throw new KddError("nothing to edit");
-  return db.transaction(() => {
-    assertLegacyTaskMutation(db, [id2]);
-    mustGetTask(db, id2);
-    const sets = fields.map((f) => `${f} = ?`).join(", ");
-    db.prepare(`UPDATE tasks SET ${sets}, updated_at = ? WHERE id = ?`).run(...fields.map((f) => patch[f]), now(), id2);
-    appendTaskMutationEvent(db, id2, actor, "edited", { fields });
-    return mustGetTask(db, id2);
-  }).immediate();
-}
-function commentTask(db, id2, body, actor) {
-  if (!body.trim()) throw new KddError("comment must not be empty");
-  const text2 = actor.type === "ai" ? redact(body) : body;
-  return db.transaction(() => {
-    assertLegacyTaskMutation(db, [id2]);
-    mustGetTask(db, id2);
-    const r = db.prepare(
-      `INSERT INTO comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)`
-    ).run(id2, authorOf(actor), text2, now());
-    appendTaskMutationEvent(db, id2, actor, "commented");
-    return db.prepare(`SELECT * FROM comments WHERE id = ?`).get(Number(r.lastInsertRowid));
-  }).immediate();
-}
-function checkStatus(s) {
-  if (!STATUSES.includes(s)) {
-    throw new KddError(`invalid status '${s}'; allowed: ${STATUSES.join(", ")}`);
-  }
-}
-function openCriteria(db, taskId) {
-  return db.prepare(
-    `SELECT COUNT(*) AS c FROM criteria WHERE task_id = ? AND checked_at IS NULL`
-  ).get(taskId).c;
-}
-function submittedBy(db, taskId) {
-  const r = db.prepare(
-    `SELECT actor_type, actor_id FROM events
-      WHERE task_id = ? AND action = 'moved' AND detail LIKE '%"to":"review"%'
-      ORDER BY id DESC LIMIT 1`
-  ).get(taskId);
-  return r ? authorOf({ type: r.actor_type, id: r.actor_id ?? void 0 }) : null;
-}
-function nextPosition(db, status) {
-  return db.prepare(
-    `SELECT COALESCE(MAX(position), -1) + 1 AS p
-     FROM tasks WHERE status = ? AND archived_at IS NULL`
-  ).get(status).p;
-}
-function moveTask(db, id2, to, actor, reason) {
-  checkStatus(to);
-  return db.transaction(() => {
-    assertLegacyTaskMutation(db, [id2]);
-    const t = mustGetTask(db, id2);
-    const submitter = t.status === "review" ? submittedBy(db, id2) : null;
-    const res = checkMove(t.status, to, actor, reason, openCriteria(db, id2), t.claimed_by, submitter);
-    if (!res.ok) throw new KddError(res.error);
-    const self = t.status === "review" && to === "done" && submitter === authorOf(actor);
-    const leaving = t.status === "in_progress" && to !== "in_progress";
-    const reset = to === "review";
-    db.prepare(
-      `UPDATE tasks SET status = ?, position = ?, updated_at = ?${leaving ? ", claimed_by = NULL, claim_expires = NULL" : ""}${reset ? ", failed_attempts = 0" : ""}
-       WHERE id = ?`
-    ).run(to, nextPosition(db, to), now(), id2);
-    appendTaskMutationEvent(db, id2, actor, "moved", {
-      from: t.status,
-      to,
-      ...reason ? { reason } : {},
-      ...self ? { self_accepted: true } : {}
-    });
-    if (reason) {
-      db.prepare(
-        `INSERT INTO comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)`
-      ).run(id2, authorOf(actor), reason, now());
-    }
-    return mustGetTask(db, id2);
-  }).immediate();
-}
 var PRIORITY_ORDER = `CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
 function manualEvent(event) {
   if (event.actor_type !== "ai" || !event.detail) return void 0;
@@ -22632,7 +22642,7 @@ function manualHistory(events) {
   }
   return { ...latest ? { manual_provenance: latest } : {}, handoffs };
 }
-var READY_SQL = `(status = 'new' AND blocked = 0 AND archived_at IS NULL AND kind <> 'research' AND ${LEGACY_EXECUTION_SQL})`;
+var READY_SQL = `(status = 'new' AND blocked = 0 AND archived_at IS NULL AND kind <> 'research')`;
 function boardData(db, f = {}) {
   const where = [f.archived ? "archived_at IS NOT NULL" : "archived_at IS NULL"];
   const params = [];
@@ -22680,9 +22690,6 @@ function taskDetail(db, id2) {
      JOIN tasks t ON t.id = CASE WHEN l.from_id = ? THEN l.to_id ELSE l.from_id END
      WHERE l.from_id = ? OR l.to_id = ?`
   ).all(id2, id2, id2);
-  const agent_runs_total = db.prepare(
-    `SELECT COUNT(*) c FROM agent_events WHERE task_id = ? AND kind = 'run_start'`
-  ).get(id2).c;
   const files = listFiles(db, id2).map((f) => ({ ...f, path: filePath(db.name, f) }));
   const decisions = db.prepare(
     `SELECT d.slug, d.title, d.created, d.superseded_by
@@ -22698,7 +22705,6 @@ function taskDetail(db, id2) {
     links,
     decisions,
     files,
-    agent_runs_total,
     ...manualHistory(events)
   };
 }
@@ -22735,78 +22741,18 @@ function syncedTaskDetail(db, decisionsDir, id2, full = false) {
   return full ? taskDetail(db, id2) : taskDetailCapped(db, id2);
 }
 var DEFAULT_TTL = 15 * 60;
-var CLAIMABLE_SQL = `status = 'new' AND blocked = 0 AND archived_at IS NULL AND claimed_by IS NULL
-   AND ${LEGACY_EXECUTION_SQL}
-   AND kind <> 'research'
-   AND (SELECT COUNT(*) FROM criteria WHERE criteria.task_id = tasks.id) > 0`;
 var OK_TTL = 60 * 60 * 1e3;
 var ERR_TTL = 5 * 60 * 1e3;
 var lexical = (a, b) => a < b ? -1 : a > b ? 1 : 0;
-function detailObject(detail) {
-  if (!detail) return {};
-  try {
-    const value = JSON.parse(detail);
-    return value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
-  } catch {
-    return {};
-  }
-}
-function stringField(key, ...objects) {
-  for (const object3 of objects) {
-    const value = object3[key];
-    if (typeof value === "string") return value;
-  }
-  return void 0;
-}
-function readRunProvenance(db, taskId) {
-  const row = db.prepare(
-    `WITH latest_start AS (
-       SELECT id, worker_id, detail
-         FROM agent_events
-        WHERE task_id = ? AND kind = 'run_start'
-        ORDER BY id DESC
-        LIMIT 1
-     )
-     SELECT s.worker_id,
-            s.detail AS start_detail,
-            (SELECT ae.detail FROM agent_events ae
-              WHERE ae.task_id = ? AND ae.worker_id = s.worker_id
-                AND ae.kind = 'run_end' AND ae.id > s.id
-              ORDER BY ae.id ASC LIMIT 1) AS end_detail,
-            (SELECT ae.detail FROM agent_events ae
-              WHERE ae.task_id = ? AND ae.worker_id = s.worker_id
-                AND ae.kind = 'error' AND ae.id > s.id
-              ORDER BY ae.id DESC LIMIT 1) AS error_detail
-       FROM latest_start s`
-  ).get(taskId, taskId, taskId);
-  if (!row) return void 0;
-  const start = detailObject(row.start_detail);
-  const end = detailObject(row.end_detail);
-  const error2 = detailObject(row.error_detail);
-  const provenance = { worker_id: row.worker_id };
-  const sessionId = stringField("session_id", start, end, error2);
-  const branch = stringField("branch", start, end, error2);
-  const worktree = stringField("worktree", start, end, error2);
-  const beforeCommit = stringField("head", start);
-  const afterCommit = stringField("head", end);
-  const message = stringField("message", error2);
-  if (sessionId !== void 0) provenance.session_id = sessionId;
-  if (branch !== void 0) provenance.branch = branch;
-  if (worktree !== void 0) provenance.worktree = worktree;
-  if (beforeCommit !== void 0) provenance.before_commit = beforeCommit;
-  if (afterCommit !== void 0) provenance.after_commit = afterCommit;
-  if (message !== void 0) provenance.error = message;
-  return provenance;
-}
 function readTaskDecisions(db, decisionsDir, taskId) {
   if (!canSyncLegacyDecisions(db, decisionsDir)) {
     return db.prepare("SELECT slug,title,created,superseded_by,source_tasks FROM decisions ORDER BY slug").all().filter((row) => JSON.parse(row.source_tasks).includes(taskId)).map(({ source_tasks, ...row }) => ({ ...row, title: capText(row.title, CAPS.titleChars) }));
   }
-  if (!existsSync11(decisionsDir)) return [];
-  return readdirSync8(decisionsDir).filter((file) => file.endsWith(".md")).flatMap((file) => {
+  if (!existsSync7(decisionsDir)) return [];
+  return readdirSync5(decisionsDir).filter((file) => file.endsWith(".md")).flatMap((file) => {
     const slug = file.slice(0, -3);
-    if (!canSyncLegacyDecisions(db, dirname10(realpathSync13(join12(decisionsDir, file))))) return [];
-    const decision = parseDecisionMd(readFileSync13(join12(decisionsDir, file), "utf8"));
+    if (!canSyncLegacyDecisions(db, dirname7(realpathSync6(join8(decisionsDir, file))))) return [];
+    const decision = parseDecisionMd(readFileSync7(join8(decisionsDir, file), "utf8"));
     if (!decision.sourceTasks.includes(taskId)) return [];
     return [{
       slug,
@@ -22816,7 +22762,7 @@ function readTaskDecisions(db, decisionsDir, taskId) {
     }];
   });
 }
-function nextAction(task, criteria, controlled) {
+function nextAction(task, criteria) {
   if (task.status === "done") return { kind: "done", text: "Task is done; no action remains." };
   if (task.archived_at !== null) {
     return { kind: "archived", text: "Task is archived; no action remains." };
@@ -22827,7 +22773,6 @@ function nextAction(task, criteria, controlled) {
       text: task.block_reason ? `Resolve blocker: ${task.block_reason}` : "Resolve the task blocker."
     };
   }
-  if (controlled) return { kind: "await_controller", text: "Await controller execution or handoff." };
   if (task.status === "backlog") {
     return { kind: "start_work", text: "Move the task to new and start work." };
   }
@@ -22856,7 +22801,7 @@ function drain(brief, section) {
   while (briefBytes(brief) > CAPS.briefBytes && omitLastItem(section)) {
   }
 }
-function fitBrief(brief, sources, errorSource) {
+function fitBrief(brief, sources) {
   if (briefBytes(brief) <= CAPS.briefBytes) return brief;
   drain(brief, brief.events);
   drain(brief, brief.comments);
@@ -22864,17 +22809,8 @@ function fitBrief(brief, sources, errorSource) {
   drain(brief, brief.links);
   drain(brief, brief.decisions);
   drain(brief, brief.handoffs);
-  if (briefBytes(brief) > CAPS.briefBytes && brief.provenance?.error && errorSource) {
-    for (const cap of [128, 64, 32, 16]) {
-      brief.provenance.error = capText(errorSource, cap);
-      if (briefBytes(brief) <= CAPS.briefBytes) return brief;
-    }
-    delete brief.provenance.error;
-  }
-  for (const source of [brief.manual_provenance, brief.provenance]) {
-    for (const field of ["worktree", "branch"]) {
-      if (briefBytes(brief) > CAPS.briefBytes && source?.[field]) delete source[field];
-    }
+  for (const field of ["worktree", "branch"]) {
+    if (briefBytes(brief) > CAPS.briefBytes && brief.manual_provenance?.[field]) delete brief.manual_provenance[field];
   }
   const caps = {
     block_reason: CAPS.blockReasonChars,
@@ -22906,10 +22842,6 @@ function fitBrief(brief, sources, errorSource) {
   while (briefBytes(brief) > CAPS.briefBytes && brief.criteria.items.at(-1)?.checked_at !== null && brief.criteria.items.length > 0) {
     omitLastItem(brief.criteria);
   }
-  if (briefBytes(brief) > CAPS.briefBytes && brief.provenance) {
-    delete brief.provenance;
-    brief.worker_provenance_omitted = true;
-  }
   drain(brief, brief.criteria);
   if (briefBytes(brief) > CAPS.briefBytes) {
     throw new Error("task brief cannot fit the 4096-byte JSON budget");
@@ -22922,9 +22854,6 @@ function taskBrief(db, decisionsDir, id2) {
     const rank = (criterion) => criterion.checked_at === null ? 0 : criterion.evidence ? 1 : 2;
     return rank(a) - rank(b) || a.position - b.position || a.id - b.id;
   });
-  const provenance = readRunProvenance(db, id2);
-  const errorSource = provenance?.error;
-  if (provenance?.error) provenance.error = capText(provenance.error, 256);
   const task = {
     id: detail.task.id,
     title: capText(detail.task.title, CAPS.titleChars),
@@ -22936,8 +22865,7 @@ function taskBrief(db, decisionsDir, id2) {
     kind: detail.task.kind,
     area: detail.task.area === null ? null : capText(detail.task.area, 128),
     archived_at: detail.task.archived_at,
-    parent_id: detail.task.parent_id,
-    execution_mode: detail.task.execution_mode
+    parent_id: detail.task.parent_id
   };
   const projectedCriteria = {
     items: criteria.map((criterion) => ({
@@ -22949,8 +22877,7 @@ function taskBrief(db, decisionsDir, id2) {
     })),
     omitted: 0
   };
-  const controlled = task.execution_mode === "orchestrated" || !!db.prepare("SELECT 1 FROM managed_task_policy WHERE task_id=?").get(id2) || !!db.prepare("SELECT 1 FROM execution_handoffs WHERE task_id=? AND completed_at IS NULL").get(id2);
-  const action = nextAction(task, projectedCriteria.items, controlled);
+  const action = nextAction(task, projectedCriteria.items);
   const actionSource = action.text;
   action.text = capText(action.text, 128);
   const brief = {
@@ -23000,7 +22927,6 @@ function taskBrief(db, decisionsDir, id2) {
       items: detail.handoffs.slice(-3).reverse(),
       omitted: Math.max(0, detail.handoffs.length - 3)
     },
-    ...provenance ? { provenance } : {},
     next_action: action,
     budget: { max_bytes: CAPS.briefBytes }
   };
@@ -23010,11 +22936,11 @@ function taskBrief(db, decisionsDir, id2) {
     next_action: actionSource,
     area: detail.task.area,
     title: detail.task.title
-  }, errorSource);
+  });
 }
 
 // src/handlers.ts
-import { statSync } from "fs";
+import { statSync as statSync2 } from "fs";
 function listTracksTool(db) {
   return listTracks(db, {}).map((t) => ({
     id: t.id,
@@ -23051,14 +22977,13 @@ function updateTask(db, input, actor) {
     throw new KddError("nothing to update");
   }
   const detached = input.detach === void 0 ? void 0 : getFile(db, input.detach);
-  assertLegacyTaskMutation(db, [input.id, ...detached ? [detached.task_id] : []]);
   if (input.detach !== void 0 && detached?.task_id !== input.id) {
     throw new KddError(`file ${input.detach} is not attached to task ${input.id}`);
   }
   mustGetTask(db, input.id);
   if (input.attach) {
     try {
-      statSync(input.attach.path);
+      statSync2(input.attach.path);
     } catch (e) {
       throw new KddError(`cannot read ${input.attach.path}: ${e.message}`);
     }

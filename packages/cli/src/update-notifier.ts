@@ -28,7 +28,7 @@ export function eligible(argv: string[], env: NodeJS.ProcessEnv): boolean {
   if (env.CI || env.NO_UPDATE_NOTIFIER || env.CLAUDECODE === '1' || env.CODEX_SESSION_ID
     || env.CODEX_THREAD_ID || env.KDD_ACTOR === 'ai' || env.npm_command === 'exec') return false;
   if (argv.some((arg) => ['--json', '--help', '-h', '--version', '-V'].includes(arg))) return false;
-  return !['update', 'worker', 'help'].includes(argv[0] ?? '');
+  return !['update', 'help'].includes(argv[0] ?? '');
 }
 
 export function noticeOnStartup(

@@ -26,13 +26,11 @@
     "@kddkit/core": "workspace:*",
     "@kddkit/ui": "workspace:*",
     "commander": "^15.0.0",
-    "proper-lockfile": "^4.1.2",
     "smol-toml": "^1.9.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.18.0",
-    "@types/proper-lockfile": "^4.1.4",
     "tsup": "^8.5.1",
     "vitest": "^4.1.10"
   }

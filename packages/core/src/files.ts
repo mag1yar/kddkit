@@ -1,4 +1,3 @@
-import { assertLegacyTaskMutation } from './authority.js';
 import { createHash } from 'node:crypto';
 import {
   existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
@@ -60,7 +59,6 @@ export function attachFile(
   opts: { description?: string }, actor: Actor,
 ): FileRow {
   return db.transaction(() => {
-    assertLegacyTaskMutation(db, [taskId]);
     let data: Buffer;
     try {
       const stat = statSync(srcPath);
@@ -148,7 +146,6 @@ export function detachFile(
   db.transaction(() => {
     const f = getFile(db, fileId);
     if (!f) throw new KddError(`file #${fileId} not found`);
-    assertLegacyTaskMutation(db, [f.task_id]);
     db.prepare(`DELETE FROM files WHERE id = ?`).run(fileId);
     appendTaskMutationEvent(db, f.task_id, actor, 'file_detached', { id: fileId, name: f.original_name });
     db.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`).run(now(), f.task_id);

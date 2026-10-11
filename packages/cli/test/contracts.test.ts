@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  CAPS, addTask, editTask, openDb, openController, protectTask, taskDetailCapped, type DecisionDetail,
+  CAPS, addTask, editTask, openDb, taskDetailCapped, type DecisionDetail,
 } from '@kddkit/core';
 import { makeEnv, kdd } from './run.js';
 import { renderDecision, renderShow } from '../src/render.js';
@@ -28,22 +28,6 @@ function seed100(): void {
 }
 
 describe('output contracts (CLI-05)', () => {
-  it('refuses managed mutations from the built CLI with user actor and acceptance reason', () => {
-    const db = openDb(env.KDD_DB!, 'managed-cli');
-    const managed = addTask(db, { title: 'managed', criteria: ['proof'] }, { type: 'user' });
-    const legacy = addTask(db, { title: 'legacy' }, { type: 'user' });
-    protectTask(openController(db), managed.id);
-    const before = ['tasks', 'criteria', 'comments', 'events'].map(table => db.prepare(`SELECT * FROM ${table}`).all());
-    const forged = { ...env, KDD_ACTOR: 'user', KDD_SESSION: 'owner' };
-    for (const args of [['edit', `${managed.id}`, '--title', 'changed'], ['move', `${managed.id}`, 'done', '--reason', 'user approved'],
-      ['comment', `${managed.id}`, 'owner says yes'], ['claim', `${managed.id}`]]) {
-      expect(() => kdd(forged, ...args)).toThrow(/managed/);
-      expect(['tasks', 'criteria', 'comments', 'events'].map(table => db.prepare(`SELECT * FROM ${table}`).all())).toEqual(before);
-    }
-    kdd(forged, 'edit', `${legacy.id}`, '--title', 'ordinary');
-    expect(db.prepare('SELECT title FROM tasks WHERE id=?').get(legacy.id)).toEqual({ title: 'ordinary' });
-    db.close();
-  });
   it('shows latest manual provenance and known handoffs', () => {
     const db = openDb(':memory:', 'x');
     const task = addTask(db, { title: 'manual' }, { type: 'user' });
@@ -172,19 +156,4 @@ describe('output contracts (CLI-05)', () => {
     expect(out).toMatch(/\(\+\d+ more, use -k\)/);
     expect(EMOJI.test(out)).toBe(false);
   });
-});
-
-import { beginHandoff, finishHandoff, projectOf } from '@kddkit/core';
-import { kddFail } from './run.js';
-it('refuses built CLI claims for orchestrated work without changing its rows',async()=>{
-  const db=openDb(env.KDD_DB!,'mode-cli'),task=addTask(db,{title:'orchestrated',criteria:['proof']},{type:'user'});
-  try {
-    const handle=openController(db),ref={projectId:projectOf(db).project_id,taskId:task.id};
-    const intent=beginHandoff(handle,{commandId:'mode',task:ref,expectedMode:'manual',targetMode:'orchestrated',expectedOwners:[]});
-    await finishHandoff(handle,{handoffId:intent.id});
-    const before=db.prepare('SELECT * FROM tasks').all();
-    expect(kddFail({...env,KDD_ACTOR:'user'},'claim',String(task.id)).stderr).toMatch(/orchestrated/);
-    expect(db.prepare('SELECT * FROM tasks').all()).toEqual(before);
-    expect(JSON.parse(kdd(env,'brief',String(task.id),'--json')).task.execution_mode).toBe('orchestrated');
-  }finally{db.close()}
 });

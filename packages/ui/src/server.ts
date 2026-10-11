@@ -8,16 +8,11 @@ import { serve } from '@hono/node-server';
 import { Hono, type Context } from 'hono';
 import {
   CAPS, KddError, addCriterion, addTask, attachFile, blockTask, boardData, closeDb, commentTask,
-  createTrack, deleteTrack, detachFile, editTask, editTrack, filePath, getFile, getAutoTick,
-  getLastRun, isInlineMime, kddHome, listAgentEvents, listProjects, listTracks, logError,
-  maxWorkers, maxWorkersEnvLocked, moveTask, openDb, placeTask, releaseInfo, removeCriterion,
-  setAutoTick, setCriterionChecked, storeIdentity, taskDetail, unblockTask, type Kind, type Priority,
+  createTrack, deleteTrack, detachFile, editTask, editTrack, filePath, getFile, isInlineMime,
+  kddHome, listProjects, listTracks, logError, moveTask, openDb, placeTask, releaseInfo,
+  removeCriterion, setCriterionChecked, storeIdentity, taskDetail, unblockTask, type Kind,
+  type Priority,
 } from '@kddkit/core';
-
-export {
-  createScheduler, type ProjectRef, type Scheduler, type TickRunner, type WorkerStopper,
-} from './scheduler.js';
-import type { Scheduler } from './scheduler.js';
 
 const hashOf = (dbPath: string) => basename(dirname(dbPath));
 
@@ -98,7 +93,7 @@ const loopbackHost = (reqUrl: string, port: number | undefined): boolean => {
 };
 
 export function createApp(
-  getDb: (c: Context) => Database.Database, defaultHash = '', scheduler?: Scheduler,
+  getDb: (c: Context) => Database.Database, defaultHash = '',
   opts: { token?: string; port?: () => number | undefined } = {},
 ): Hono {
   const app = new Hono();
@@ -212,60 +207,6 @@ export function createApp(
   // поэтому getDb не трогаем. Кэш живёт в core: один фетч на процесс, а не на вкладку.
   app.get('/api/releases', async (c) => c.json(await releaseInfo()));
 
-  // Тот же fallback, что и getDb в projectPool — единая точка правды на "чей это hash",
-  // а не третья копия ?project || defaultHash рядом с планировщиком.
-  // В выставленном наружу режиме ?project вообще не слушаем: hash — это sha256 от пути
-  // репозитория, то есть держатель токена, знающий чужой путь на этой машине, вычислил бы
-  // его сам и правил бы чужую доску. Прятать её из списка при этом бессмысленно.
-  const projectHash = (c: Context): string =>
-    (token ? defaultHash : c.req.query('project') || defaultHash);
-
-  // Авто-tick: настройки в meta проекта, таймер — в планировщике сервера.
-  // scheduler необязателен: без него (сервер поднят не через `kdd ui`, тесты)
-  // настройки сохраняются, но таймеров нет и nextAt всегда null.
-  const autoTickState = (c: Context): Record<string, unknown> => {
-    const db = getDb(c);
-    // maxWorkers(db) — эффективное значение (env > meta > дефолт), а не только
-    // сохранённая настройка: иначе задизейбленное поле подписано "overridden by
-    // KDD_MAX_WORKERS" и показывает число, которое этот override как раз заменил.
-    // maxWorkers() кидает KddError при мусорном KDD_MAX_WORKERS — тут не даём 400
-    // уронить весь GET (без контрола в шапке хуже, чем с неточным числом), падаем
-    // на сохранённую настройку.
-    let effectiveWorkers: number;
-    try { effectiveWorkers = maxWorkers(db); } catch { effectiveWorkers = getAutoTick(db).maxWorkers; }
-    return {
-      ...getAutoTick(db),
-      maxWorkers: effectiveWorkers,
-      maxWorkersEnvLocked: maxWorkersEnvLocked(),
-      last: getLastRun(db),
-      nextAt: scheduler?.nextAt(projectHash(c)) ?? null,
-      // Пока проход идёт, nextAt смотрит в прошлое (перевзвод — в хвосте прохода): без этого
-      // флага UI показывал бы «next: in 0 s» всё время работы тика и не отличал бы висящий
-      // проход от простоя.
-      running: scheduler?.isRunning(projectHash(c)) ?? false,
-    };
-  };
-
-  app.get('/api/autotick', (c) => c.json(autoTickState(c)));
-
-  app.patch('/api/autotick', async (c) => {
-    const b = await jsonBody(c);
-    // Только настоящий boolean: "false"-строка от небрежного клиента не должна тихо включить tick.
-    if (b.enabled !== undefined && typeof b.enabled !== 'boolean') {
-      throw new KddError('enabled must be a boolean');
-    }
-    setAutoTick(getDb(c), {
-      enabled: b.enabled as boolean | undefined,
-      intervalSec: b.intervalSec as number | undefined,
-      maxWorkers: b.maxWorkers as number | undefined,
-    });
-    scheduler?.sync(projectHash(c));
-    // Off — это «останови автономию», а не «перестань спаунить новых»: живых воркеров добиваем.
-    // Результат не ждём — kill ждёт смерти процесса секундами, а тумблер обязан ответить сразу.
-    if (b.enabled === false) void scheduler?.killWorkers(projectHash(c));
-    return c.json(autoTickState(c));
-  });
-
   app.get('/api/tasks/:id', (c) => {
     const d = taskDetail(getDb(c), taskId(c));
     // files[].path — абсолютный путь в сторе НА ЭТОЙ машине; он заведён ради агента
@@ -274,10 +215,6 @@ export function createApp(
     // незачем рассказывать держателю токена раскладку ~/.kdd и hash доски.
     return c.json({ ...d, files: d.files.map(({ path: _path, ...f }) => f) });
   });
-
-  // Tier1 agent feed: события воркера для таска, инкрементально по since=<id>.
-  app.get('/api/tasks/:id/feed', (c) => c.json(
-    listAgentEvents(getDb(c), taskId(c), { sinceId: Number(c.req.query('since') ?? 0) })));
 
   app.post('/api/tasks', async (c) => {
     const b = await jsonBody(c);
@@ -460,20 +397,19 @@ function mountStatic(app: Hono, publicDir: string): void {
 // проектов на машине ещё до всякого выбора. Выход наружу — осознанный опт-ин с токеном.
 export function startUi(
   getDb: (c: Context) => Database.Database, port: number, defaultHash = '',
-  scheduler?: Scheduler, opts: { host?: string; token?: string } = {},
+  opts: { host?: string; token?: string } = {},
 ): Promise<{ url: string; close: () => void }> {
   // Порт узнаём только из колбэка listen (port 0 = эфемерный), а приложение собирается до —
   // поэтому Host-проверка спрашивает его функцией, а не значением. Запросов между listen и
   // присвоением быть не может: сокет до этого момента не принят.
   let listening: number | undefined;
-  const app = createApp(getDb, defaultHash, scheduler,
+  const app = createApp(getDb, defaultHash,
     { token: opts.token, port: () => listening });
   mountStatic(app, join(dirname(fileURLToPath(import.meta.url)), 'public'));
   return new Promise((res, rej) => {
     const server = serve({ fetch: app.fetch, port, hostname: opts.host ?? '127.0.0.1' }, (info) => {
       listening = info.port;
-      scheduler?.syncAll(); // таймеры включённых проектов поднимаются сами после рестарта
-      res({ url: `http://localhost:${info.port}`, close: () => { scheduler?.stopAll(); server.close(); } });
+      res({ url: `http://localhost:${info.port}`, close: () => { server.close(); } });
     });
     server.on('error', rej); // порт занят не-kdd → отдаём ошибку в cli, а не виснем
   });

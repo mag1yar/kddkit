@@ -12,7 +12,7 @@ export interface Task {
   id: number; title: string; body: string | null; status: Status;
   blocked: 0 | 1; block_reason: string | null; priority: Priority; area: string | null;
   kind: Kind;
-  parent_id: number | null; execution_mode: 'manual' | 'orchestrated';
+  parent_id: number | null;
   track_id: number | null;
   ready: 0 | 1; // takeable агентом прямо сейчас: new & не blocked & не archived (core: READY_SQL)
   criteria_checked: number; criteria_total: number;
@@ -40,16 +40,10 @@ export interface FileRow {
   original_name: string; mime_type: string | null; size_bytes: number;
   description: string | null; created_at: number;
 }
-export interface AgentEvent {
-  id: number; task_id: number; worker_id: string;
-  kind: 'run_start' | 'text' | 'tool_start' | 'tool_finish' | 'error' | 'run_end';
-  name: string | null; detail: string | null; created_at: number;
-}
 export type Board = Record<Status, Task[]>;
 export interface TaskDetail {
   task: Task; criteria: Criterion[]; comments: Comment[]; events: EventRow[]; links: Link[];
   files: FileRow[];
-  agent_runs_total: number;
 }
 
 // ?project=<hash> из URL пробрасывается во все запросы — сервер отдаёт нужную базу.
@@ -92,15 +86,6 @@ export interface ReleaseInfo {
   current: string; latest: string | null; hasUpdate: boolean;
   releases: Release[]; repoUrl: string | null; error: string | null;
 }
-export interface TickRun {
-  at: number; reclaimed: number; killed: number; stuck: number;
-  spawned: number; active: number; reaped: number;
-  skipped?: boolean; error?: string;
-}
-export interface AutoTickState {
-  enabled: boolean; intervalSec: number; maxWorkers: number;
-  maxWorkersEnvLocked: boolean; last: TickRun | null; nextAt: number | null; running: boolean;
-}
 export const getProjects = () => req<Project[]>('/api/projects');
 export const getPing = () => req<{ kdd: boolean; default: string }>('/api/ping');
 export const getTracks = () => req<Track[]>('/api/tracks');
@@ -113,10 +98,6 @@ export const deleteTrack = (id: number) =>
 export const getBoard = () => req<Board>('/api/board');
 export const getVersion = () => req<{ version: number }>('/api/version');
 export const getReleases = () => req<ReleaseInfo>('/api/releases');
-export const getAutoTick = () => req<AutoTickState>('/api/autotick');
-export const patchAutoTick = (
-  b: Partial<Pick<AutoTickState, 'enabled' | 'intervalSec' | 'maxWorkers'>>,
-) => req<AutoTickState>('/api/autotick', { method: 'PATCH', body: JSON.stringify(b) });
 export const getTask = (id: number) => req<TaskDetail>(`/api/tasks/${id}`);
 export const createTask =
   (b: { title: string; body?: string; priority?: Priority; kind?: Kind; track_id?: number }) =>
@@ -139,8 +120,6 @@ export const blockTask = (id: number, reason: string) =>
   req<Task>(`/api/tasks/${id}/block`, { method: 'POST', body: JSON.stringify({ reason }) });
 export const unblockTask = (id: number) =>
   req<Task>(`/api/tasks/${id}/unblock`, { method: 'POST' });
-export const getFeed = (id: number, since = 0) =>
-  req<AgentEvent[]>(`/api/tasks/${id}/feed?since=${since}`);
 
 // Ссылка на файл, годная в src/href: ?project и ?token в неё обязаны попасть — <img> идёт
 // в сеть сам, мимо req(), и без них получил бы чужую доску или 401.

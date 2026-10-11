@@ -85,9 +85,9 @@ describe('actor detection', () => {
   });
 
   it('KDD_SESSION wins over the detected id', () => {
-    kdd(cc({ KDD_SESSION: 'tick:1-0' }), 'add', 'воркер');
+    kdd(cc({ KDD_SESSION: 'manual-1' }), 'add', 'воркер');
     const out = JSON.parse(kdd(env, 'show', '1', '--json'));
-    expect(out.events[0]).toMatchObject({ actor_type: 'ai', actor_id: 'tick:1-0' });
+    expect(out.events[0]).toMatchObject({ actor_type: 'ai', actor_id: 'manual-1' });
   });
 
   // Смысл всей задачи: гейты ядра начинают действовать сами, без ручной переменной.

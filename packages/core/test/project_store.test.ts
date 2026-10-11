@@ -122,6 +122,34 @@ describe('project store review regressions', () => {
     expect(core.resolveDbPath(source).dbPath).toBe(dbPath);
   });
 
+  // Override-доска хранит в project_path чекаут, а не common-dir: после переезда источника
+  // rebind обязан узнать его по старому пути, иначе project_path и решения остаются на месте.
+  it('rebinds a moved legacy override source and moves its project path and decisions', () => {
+    const source = repo('source');const dir=join(source,'.planning','decisions');
+    const dbPath = legacy(source,dir,true);
+    process.env.KDD_DB=dbPath;
+    const db=core.openDb(dbPath,core.resolveDbPath(source).projectPath,source);handles.push(db);
+    core.setProjectToplevel(db,source);
+    const oldCommon=core.canonicalCommonDir(source);
+    const moved=join(root,'moved');renameSync(source,moved);
+    core.rebindRepository(db,dbPath,home,{fromCommonDir:oldCommon,cwd:moved},user);
+    expect(core.projectPathOf(db)).toBe(core.canonicalCommonDir(moved));
+    expect(core.projectToplevelOf(db)).toBe(realpathSync(moved));
+    expect(core.canSyncLegacyDecisions(db,join(moved,'.planning','decisions'))).toBe(true);
+  });
+
+  // Первое открытие после апгрейда из linked worktree: binding.checkout_path — этот worktree,
+  // а project_path override-доски — основной чекаут; источник узнаётся по общему common-dir.
+  it('keeps a legacy override source when the first upgrade opens from a linked worktree', () => {
+    const source = repo('source');const dir=join(source,'.planning','decisions');
+    const dbPath = legacy(source,dir,true);
+    const wt=join(root,'linked');git(source,'worktree','add','-b','linked',wt);
+    process.env.KDD_DB=dbPath;
+    const db=core.openDb(dbPath,core.resolveDbPath(wt).projectPath,wt);handles.push(db);
+    expect(core.bindingsOf(db)[0].checkout_path).toBe(realpathSync(wt));
+    expect(core.canSyncLegacyDecisions(db,dir)).toBe(true);
+  });
+
   it('rejects a nested repository occupying the default decisions directory', () => {
     const source=repo('source');const {db,dbPath}=open(source);
     const dir=join(source,'.planning','decisions');
@@ -129,7 +157,7 @@ describe('project store review regressions', () => {
     const before=db.prepare('SELECT * FROM decisions').all();
     const fts=db.prepare("SELECT * FROM search_index WHERE kind='decision'").all();
     git(dir,'init');
-    core.addRepository(db,dbPath,home,{cwd:dir,purpose:'backend',access:'context_only'},user);
+    core.addRepository(db,dbPath,home,{cwd:dir,purpose:'backend'},user);
     writeFileSync(d.path,'# Conflict\n\nforeign');
     expect(core.canSyncLegacyDecisions(db,dir)).toBe(false);
     core.syncIndex(db,dir);
@@ -171,7 +199,7 @@ describe('project store migration', () => {
       INSERT INTO agent_events VALUES(4,41,'old-worker','text',NULL,'old stream',1);
       INSERT INTO errors VALUES(2,'old','retained',1);
     `);
-    const tables = ['tasks','criteria','comments','events','tracks','task_links','files','decisions','search_index','agent_events','errors','meta'];
+    const tables = ['tasks','criteria','comments','events','tracks','task_links','files','decisions','search_index','errors','meta'];
     const snapshot = (db: Database.Database) => tables.map(t => db.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all());
     const before = snapshot(raw);
     const assets = ['files/evidence.txt','knowledge/old.md','workspaces/dirty.txt'];
@@ -182,12 +210,12 @@ describe('project store migration', () => {
     }
     const db = core.openDb(path);
     handles.push(db);
-    expect(snapshot(db).map((rows,index) => index === 0 ? (rows as Record<string, unknown>[]).map(({parent_id,execution_mode,...old}) => old) : rows)).toEqual(before);
+    // v20 сняла failed_attempts, v15 добавила parent_id — остальное байт в байт.
+    expect(snapshot(db).map((rows,index) => index === 0 ? (rows as Record<string, unknown>[]).map(({parent_id,...old}) => old) : rows))
+      .toEqual(before.map((rows,index) => index === 0 ? (rows as Record<string, unknown>[]).map(({failed_attempts,...old}) => old) : rows));
     expect(db.prepare('PRAGMA table_info(project)').all().map((r: any) => r.name)).toContain('project_id');
     const project = core.projectOf(db);
     expect(project.project_id).toMatch(/^[0-9a-f]{32}$/);
-    expect(project.autonomy_enabled).toBe(false);
-    expect(project.default_execution_mode).toBe('manual');
     const backup = new Database(`${path}.v12.bak`, { readonly: true });
     handles.push(backup);
     expect(backup.pragma('user_version', { simple: true })).toBe(12);
@@ -247,7 +275,7 @@ describe('explicit repository bindings', () => {
     const db=core.openDb(dbPath,core.canonicalCommonDir(source),source);
     handles.push(db);
     const alias=repo('alias');
-    core.bindRepository(db,dbPath,home,{cwd:alias,repoId:core.projectOf(db).primary_repo_id!,kind:'managed'},user);
+    core.bindRepository(db,dbPath,home,{cwd:alias,repoId:core.projectOf(db).primary_repo_id!},user);
     rmSync(join(home,'registry.db'));
     expect(core.resolveDbPath(alias).dbPath).toBe(dbPath);
   });
@@ -258,7 +286,7 @@ describe('explicit repository bindings', () => {
     const moduleUrl = new URL('../dist/index.js',import.meta.url).href;
     const script = `import {openDb,bindRepository} from ${JSON.stringify(moduleUrl)};
       const [path,home,cwd,repoId]=process.argv.slice(1);const db=openDb(path);
-      try{bindRepository(db,path,home,{cwd,repoId,kind:'managed'},{type:'ai',id:'race'});}
+      try{bindRepository(db,path,home,{cwd,repoId},{type:'ai',id:'race'});}
       catch(e){console.error(e.message);process.exitCode=1;}finally{db.close();}`;
     const run = (owner: typeof a) => new Promise<number>(resolve => {
       const child = spawn(process.execPath,['--input-type=module','-e',script,owner.dbPath,home,alias,core.projectOf(owner.db).primary_repo_id!],{stdio:'pipe'});
@@ -279,8 +307,7 @@ describe('explicit repository bindings', () => {
     expect(core.resolveDbPath(clone).dbPath).not.toBe(dbPath);
     const before = git(source,'show-ref');
     const repoId = core.projectOf(db).primary_repo_id!;
-    expect(() => core.bindRepository(db,dbPath,home,{cwd:clone,repoId,kind:'source'},user)).toThrow(/source.*rebind/);
-    core.bindRepository(db,dbPath,home,{ cwd: clone,repoId,kind:'managed' },user);
+    core.bindRepository(db,dbPath,home,{ cwd: clone,repoId},user);
     expect(core.resolveDbPath(wt).dbPath).toBe(dbPath);
     const task = core.addTask(db,{title:'shared'},user);
     const cloneDb = open(wt).db;
@@ -290,7 +317,7 @@ describe('explicit repository bindings', () => {
     core.commentTask(cloneDb,task.id,'clone change',user);
     expect(core.taskDetail(db,task.id).comments[0].body).toBe('clone change');
     const eventsBefore = db.prepare('SELECT COUNT(*) n FROM events').get();
-    core.bindRepository(db,dbPath,home,{ cwd: clone,repoId,kind:'managed' },user);
+    core.bindRepository(db,dbPath,home,{ cwd: clone,repoId},user);
     expect(db.prepare('SELECT COUNT(*) n FROM events').get()).toEqual(eventsBefore);
     expect(git(source,'show-ref')).toBe(before);
     const reg = new Database(join(home,'registry.db'));
@@ -298,10 +325,10 @@ describe('explicit repository bindings', () => {
     reg.close();
     const other = open(repo('other'));
     expect(() => core.bindRepository(other.db,other.dbPath,home,
-      {cwd:clone,repoId:core.projectOf(other.db).primary_repo_id!,kind:'managed'},user)).toThrow(/conflict/);
+      {cwd:clone,repoId:core.projectOf(other.db).primary_repo_id!},user)).toThrow(/conflict/);
     expect(core.resolveDbPath(clone).dbPath).toBe(dbPath);
     const backend = repo('backend');
-    const added = core.addRepository(db,dbPath,home,{cwd:backend,purpose:'backend',access:'context_only'},user);
+    const added = core.addRepository(db,dbPath,home,{cwd:backend,purpose:'backend'},user);
     expect(added.repository.repo_id).not.toBe(repoId);
     expect(core.resolveDbPath(backend).dbPath).toBe(dbPath);
     expect(core.projectOf(db).primary_repo_id).toBe(repoId);
@@ -314,8 +341,8 @@ describe('explicit repository bindings', () => {
     const oldCommon = core.canonicalCommonDir(source);
     const other = repo('other');
     open(other);
-    expect(() => core.addRepository(db,dbPath,home,{cwd:other,purpose:'backend',access:'implementation'},user)).toThrow(/conflict/);
-    expect(() => core.bindRepository(db,dbPath,home,{cwd:other,repoId:'bad',kind:'managed'},user)).toThrow();
+    expect(() => core.addRepository(db,dbPath,home,{cwd:other,purpose:'backend'},user)).toThrow(/conflict/);
+    expect(() => core.bindRepository(db,dbPath,home,{cwd:other,repoId:'bad'},user)).toThrow();
     const moved = join(root,'moved');
     renameSync(source,moved);
     core.rebindRepository(db,dbPath,home,{fromCommonDir:oldCommon,cwd:moved},user);
@@ -345,7 +372,7 @@ describe('explicit repository bindings', () => {
     handles.push(db);
     const projectId = core.projectOf(db).project_id;
     expect(core.projectOf(db).primary_repo_id).toBeNull();
-    expect(() => core.addRepository(db,dbPath,home,{cwd:repo('backend'),purpose:'backend',access:'context_only'},user)).toThrow(/source/);
+    expect(() => core.addRepository(db,dbPath,home,{cwd:repo('backend'),purpose:'backend'},user)).toThrow(/source/);
     core.rebindRepository(db,dbPath,home,{fromCommonDir:resolved.projectPath,cwd:moved},user);
     expect(core.resolveDbPath(moved).dbPath).toBe(dbPath);
     rmSync(join(home,'registry.db'));
@@ -362,7 +389,7 @@ describe('shared legacy decisions', () => {
     const dir=join(source,'.planning','decisions');
     const d=core.addDecision(db,dir,{title:'Original',decision:'primarytoken'});
     const backend=repo('backend');
-    core.addRepository(db,dbPath,home,{cwd:backend,purpose:'backend',access:'context_only'},user);
+    core.addRepository(db,dbPath,home,{cwd:backend,purpose:'backend'},user);
     const file=join(backend,'foreign.md');writeFileSync(file,'# Conflict\n\nforeign');
     rmSync(d.path);symlinkSync(file,d.path);
     expect(core.recall(db,dir,'primarytoken',{kind:'decision'})).toHaveLength(1);
@@ -390,7 +417,7 @@ describe('shared legacy decisions', () => {
     const before=db.prepare('SELECT * FROM decisions ORDER BY slug').all();
     const fts=db.prepare("SELECT * FROM search_index WHERE kind='decision' ORDER BY ref").all();
     const backend=repo('backend');
-    core.addRepository(db,dbPath,home,{cwd:backend,purpose:'backend',access:'context_only'},user);
+    core.addRepository(db,dbPath,home,{cwd:backend,purpose:'backend'},user);
     const foreign=join(backend,'.planning','decisions');
     const assertRecall=() => {
       expect(core.recall(db,foreign,'primarytoken',{kind:'decision'})).toHaveLength(1);
@@ -427,7 +454,7 @@ describe('shared legacy decisions', () => {
     const sourceDir=join(source,'.planning','decisions');
     const d=core.addDecision(db,sourceDir,{title:'source',decision:'primarytoken'});
     const backend=repo('backend');
-    core.addRepository(db,dbPath,home,{cwd:backend,purpose:'backend',access:'context_only'},user);
+    core.addRepository(db,dbPath,home,{cwd:backend,purpose:'backend'},user);
     const foreign=join(backend,'decisions');
     mkdirSync(foreign);
     writeFileSync(join(foreign,`${d.slug}.md`),'# Evil\n\nforeign');
@@ -437,7 +464,7 @@ describe('shared legacy decisions', () => {
     expect(core.recall(db,sourceDir,'primarytoken')).toHaveLength(1);
     const clone=join(root,'clone');
     git(root,'clone','--no-hardlinks',source,clone);
-    core.bindRepository(db,dbPath,home,{cwd:clone,repoId:core.projectOf(db).primary_repo_id!,kind:'managed'},user);
+    core.bindRepository(db,dbPath,home,{cwd:clone,repoId:core.projectOf(db).primary_repo_id!},user);
     expect(core.canSyncLegacyDecisions(db,join(clone,'.planning','decisions'))).toBe(false);
   });
 });

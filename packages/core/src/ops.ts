@@ -1,9 +1,7 @@
-import { assertLegacyTaskMutation } from './authority.js';
 import { execFileSync } from 'node:child_process';
 import type Database from 'better-sqlite3';
-import { redact } from './agent_events.js';
+import { redact } from './redact.js';
 import { now } from './db.js';
-import { projectOf } from './project_store.js';
 import { KddError } from './errors.js';
 import { authorOf, checkMove, KINDS, normalizeSessionId, PRIORITIES, STATUSES, type Actor, type Kind, type Priority, type Status } from './state.js';
 import type { Comment, Task } from './types.js';
@@ -100,10 +98,10 @@ export function addTask(
   return db.transaction(() => {
     const ts = now();
     const r = db.prepare(
-      `INSERT INTO tasks (title, body, priority, kind, area, track_id, position, created_at, updated_at, execution_mode)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (title, body, priority, kind, area, track_id, position, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(input.title, input.body ?? null, priority, kind, input.area ?? null,
-      input.track_id ?? null, nextPosition(db, 'new'), ts, ts, projectOf(db).default_execution_mode);
+      input.track_id ?? null, nextPosition(db, 'new'), ts, ts);
     const id = Number(r.lastInsertRowid);
     // criteria при создании — без criterion_added-событий: их покрывает 'created'
     const ins = db.prepare(
@@ -130,7 +128,6 @@ export function editTask(
   if (fields.some(key => !['title', 'body', 'priority', 'area', 'track_id', 'kind'].includes(key))) throw new KddError('invalid task patch');
   if (fields.length === 0) throw new KddError('nothing to edit');
   return db.transaction(() => {
-    assertLegacyTaskMutation(db, [id]);
     mustGetTask(db, id);
     const sets = fields.map((f) => `${f} = ?`).join(', ');
     db.prepare(`UPDATE tasks SET ${sets}, updated_at = ? WHERE id = ?`)
@@ -144,12 +141,10 @@ export function commentTask(
   db: Database.Database, id: number, body: string, actor: Actor,
 ): Comment {
   if (!body.trim()) throw new KddError('comment must not be empty');
-  // Воркеру промптом велено оставить итоговый комментарий — и он приходит в ту же базу мимо
-  // редакции фида: агент, вставивший в резюме строку из `env`, клал бы токен навсегда через
-  // соседнюю дверь. Человеку текст не трогаем: он пишет своё, а не пересказывает вывод тулов.
+  // Текст агента редактируем: вставив в комментарий строку из `env`, он положил бы токен в базу
+  // навсегда. Человеку текст не трогаем: он пишет своё, а не пересказывает вывод тулов.
   const text = actor.type === 'ai' ? redact(body) : body;
   return db.transaction(() => {
-    assertLegacyTaskMutation(db, [id]);
     mustGetTask(db, id);
     const r = db.prepare(
       `INSERT INTO comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)`,
@@ -201,7 +196,6 @@ export function moveTask(
 ): Task {
   checkStatus(to);
   return db.transaction(() => {
-    assertLegacyTaskMutation(db, [id]);
     const t = mustGetTask(db, id);
     const submitter = t.status === 'review' ? submittedBy(db, id) : null;
     const res = checkMove(t.status, to, actor, reason, openCriteria(db, id), t.claimed_by, submitter);
@@ -210,9 +204,8 @@ export function moveTask(
     // иначе «закрыл сам себя» неотличимо от «принял кто-то другой» ровно там, где это и важно.
     const self = t.status === 'review' && to === 'done' && submitter === authorOf(actor);
     const leaving = t.status === 'in_progress' && to !== 'in_progress';
-    const reset = to === 'review'; // достигли review = продуктивный прогресс, обнуляем счётчик неудач
     db.prepare(
-      `UPDATE tasks SET status = ?, position = ?, updated_at = ?${leaving ? ', claimed_by = NULL, claim_expires = NULL' : ''}${reset ? ', failed_attempts = 0' : ''}
+      `UPDATE tasks SET status = ?, position = ?, updated_at = ?${leaving ? ', claimed_by = NULL, claim_expires = NULL' : ''}
        WHERE id = ?`,
     ).run(to, nextPosition(db, to), now(), id); // CLI-move дописывает в конец колонки; выход из in_progress снимает claim
     appendTaskMutationEvent(db, id, actor, 'moved', {
@@ -234,7 +227,6 @@ export function placeTask(
 ): Task {
   checkStatus(to);
   return db.transaction(() => {
-    assertLegacyTaskMutation(db, [id, ...orderedIds]);
     const t = mustGetTask(db, id);
     if (t.status !== to) {
       const res = checkMove(t.status, to, actor, undefined, openCriteria(db, id), t.claimed_by,
@@ -245,9 +237,8 @@ export function placeTask(
     const setPos = db.prepare(`UPDATE tasks SET position = ? WHERE id = ?`);
     orderedIds.forEach((tid, i) => setPos.run(i, tid));
     const leaving = t.status === 'in_progress' && to !== 'in_progress';
-    const reset = to === 'review';
     db.prepare(
-      `UPDATE tasks SET status = ?, updated_at = ?${leaving ? ', claimed_by = NULL, claim_expires = NULL' : ''}${reset ? ', failed_attempts = 0' : ''}
+      `UPDATE tasks SET status = ?, updated_at = ?${leaving ? ', claimed_by = NULL, claim_expires = NULL' : ''}
        WHERE id = ?`,
     ).run(to, now(), id);
     return mustGetTask(db, id);
@@ -259,7 +250,6 @@ export function blockTask(
 ): Task {
   if (!reason.trim()) throw new KddError('block reason must not be empty');
   return db.transaction(() => {
-    assertLegacyTaskMutation(db, [id]);
     mustGetTask(db, id);
     db.prepare(`UPDATE tasks SET blocked = 1, block_reason = ?, updated_at = ? WHERE id = ?`)
       .run(reason, now(), id);
@@ -270,7 +260,6 @@ export function blockTask(
 
 export function unblockTask(db: Database.Database, id: number, actor: Actor): Task {
   return db.transaction(() => {
-    assertLegacyTaskMutation(db, [id]);
     mustGetTask(db, id);
     db.prepare(`UPDATE tasks SET blocked = 0, block_reason = NULL, updated_at = ? WHERE id = ?`)
       .run(now(), id);
@@ -283,7 +272,6 @@ export function linkTasks(
   db: Database.Database, fromId: number, toId: number, kind: string, actor: Actor,
 ): void {
   db.transaction(() => {
-    assertLegacyTaskMutation(db, [fromId, toId]);
     mustGetTask(db, fromId);
     mustGetTask(db, toId);
     const r = db.prepare(
@@ -295,7 +283,6 @@ export function linkTasks(
 
 export function archiveTask(db: Database.Database, id: number, actor: Actor): Task {
   return db.transaction(() => {
-    assertLegacyTaskMutation(db, [id]);
     mustGetTask(db, id);
     db.prepare(`UPDATE tasks SET archived_at = ?, updated_at = ? WHERE id = ?`)
       .run(now(), now(), id);
@@ -306,7 +293,6 @@ export function archiveTask(db: Database.Database, id: number, actor: Actor): Ta
 
 export function unarchiveTask(db: Database.Database, id: number, actor: Actor): Task {
   return db.transaction(() => {
-    assertLegacyTaskMutation(db, [id]);
     mustGetTask(db, id);
     db.prepare(`UPDATE tasks SET archived_at = NULL, updated_at = ? WHERE id = ?`)
       .run(now(), id);

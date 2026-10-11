@@ -2,7 +2,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type Database from 'better-sqlite3';
 import { CAPS, capText } from './caps.js';
-import { authorOf, MAX_FAILED_ATTEMPTS, normalizeSessionId, STATUSES, type Kind, type Status } from './state.js';
+import { authorOf, normalizeSessionId, STATUSES, type Kind, type Status } from './state.js';
 import type {
   AttentionInbox, AttentionItem, Comment, Criterion, DecisionDetail, DecisionSummary,
   EventRow, FileRow, ManualProvenance, SessionHandoff, Task, TaskListRow, Track,
@@ -13,9 +13,8 @@ import { filePath, listFiles } from './files.js';
 import { parseDecisionMd } from './decisions.js';
 import { KddError } from './errors.js';
 import { syncIndex } from './recall.js';
-import { redact } from './agent_events.js';
+import { redact } from './redact.js';
 import { canSyncLegacyDecisions } from './project_store.js';
-import { LEGACY_EXECUTION_SQL } from './execution.js';
 
 export const PRIORITY_ORDER =
   `CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END`;
@@ -64,11 +63,11 @@ function manualHistory(events: EventRow[]): {
 }
 
 // takeable «прямо сейчас»: new-очередь, не заблокирована, не в архиве, и это работа с кодом —
-// kind='research' исключён тем же условием, что CLAIMABLE_SQL (core/claim.ts), иначе ready
-// и claimable расходятся: research отрапортует ready=1, board --ready её покажет, а взять
-// агент её всё равно не может — ready перестаёт значить «takeable».
+// kind='research' исключён, потому что claimTask отказывает в ней агенту (core/claim.ts): иначе
+// research отрапортует ready=1, board --ready её покажет, а взять агент её всё равно не может —
+// ready перестаёт значить «takeable».
 // Один источник правды — используется и как колонка, и как фильтр.
-const READY_SQL = `(status = 'new' AND blocked = 0 AND archived_at IS NULL AND kind <> 'research' AND ${LEGACY_EXECUTION_SQL})`;
+const READY_SQL = `(status = 'new' AND blocked = 0 AND archived_at IS NULL AND kind <> 'research')`;
 
 export function boardData(
   db: Database.Database,
@@ -103,10 +102,6 @@ export function taskDetail(db: Database.Database, id: number): {
   // path — абсолютный, вычислен здесь (db.name уже под рукой), а не в клиентах: агент открывает
   // вложение через MCP get_task так же, как человек через kdd show — один источник пути.
   files: (FileRow & { path: string })[];
-  // Не события агента, а число его прогонов: лента едет отдельной ручкой (инкрементально,
-  // по since=<id>), а вкладке нужно лишь знать, будили ли по задаче агента и сколько раз.
-  // Сырые события считать бесполезно — «30» не соответствует ничему, что видно глазами.
-  agent_runs_total: number;
   manual_provenance?: ManualProvenance;
   handoffs: SessionHandoff[];
 } {
@@ -121,9 +116,6 @@ export function taskDetail(db: Database.Database, id: number): {
      JOIN tasks t ON t.id = CASE WHEN l.from_id = ? THEN l.to_id ELSE l.from_id END
      WHERE l.from_id = ? OR l.to_id = ?`,
   ).all(id, id, id) as { id: number; title: string; kind: string }[];
-  const agent_runs_total = (db.prepare(
-    `SELECT COUNT(*) c FROM agent_events WHERE task_id = ? AND kind = 'run_start'`,
-  ).get(id) as { c: number }).c;
   const files = listFiles(db, id).map((f) => ({ ...f, path: filePath(db.name, f) }));
   const decisions = db.prepare(
     `SELECT d.slug, d.title, d.created, d.superseded_by
@@ -131,7 +123,7 @@ export function taskDetail(db: Database.Database, id: number): {
       WHERE CAST(source.value AS INTEGER) = ?
       ORDER BY d.slug`,
   ).all(id) as DecisionSummary[];
-  return { task, criteria, comments, events, links, decisions, files, agent_runs_total,
+  return { task, criteria, comments, events, links, decisions, files,
     ...manualHistory(events) };
 }
 
@@ -251,9 +243,6 @@ export function attentionData(db: Database.Database, nowSeconds: number): Attent
         MAX(t.updated_at, COALESCE(
           (SELECT MAX(e.created_at) FROM events e WHERE e.task_id = t.id), t.updated_at
         )) AS last_activity,
-        (SELECT e.type FROM events e
-          WHERE e.task_id = t.id AND e.action = 'blocked'
-          ORDER BY e.id DESC LIMIT 1) AS latest_blocked_type,
         (SELECT MAX(e.id) FROM events e
           WHERE e.task_id = t.id AND e.action = 'moved'
             AND e.detail LIKE '%"to":"review"%') AS last_review_id
@@ -262,11 +251,7 @@ export function attentionData(db: Database.Database, nowSeconds: number): Attent
     ), classified AS (
       SELECT f.*,
         CASE
-          WHEN f.blocked = 1 AND (
-            substr(f.block_reason, 1, 12) = 'needs human:' OR (
-              f.failed_attempts >= @maxFailed AND f.latest_blocked_type = 'claim'
-            )
-          ) THEN 'needs_input'
+          WHEN f.blocked = 1 AND substr(f.block_reason, 1, 12) = 'needs human:' THEN 'needs_input'
           WHEN f.blocked = 0 AND f.status IN ('review', 'in_progress')
             AND f.last_review_id IS NOT NULL
             AND EXISTS (
@@ -300,7 +285,6 @@ export function attentionData(db: Database.Database, nowSeconds: number): Attent
     ORDER BY reason_rank, last_activity, id
     LIMIT @limit
   `).all({
-    maxFailed: MAX_FAILED_ATTEMPTS,
     cutoff: nowSeconds - 86_400,
     limit: CAPS.attentionRows,
   }) as Row[];
@@ -358,7 +342,7 @@ export function exportBoard(
   return db.transaction(() => {
     const tasks = db.prepare(`SELECT id,title,body,status,blocked,block_reason,priority,area,kind,
       track_id,position,archived_at,created_at,updated_at FROM tasks ORDER BY id`).all() as
-      Omit<Task, 'claimed_by' | 'claim_expires' | 'failed_attempts'>[];
+      Omit<Task, 'claimed_by' | 'claim_expires'>[];
     const tracks = db.prepare(`SELECT id,name,description,status,created_at FROM tracks ORDER BY id`).all() as Track[];
     const criteria = db.prepare(`SELECT id,task_id,text,checked_at,evidence,checked_by,position,
       created_at FROM criteria ORDER BY id`).all() as Criterion[];

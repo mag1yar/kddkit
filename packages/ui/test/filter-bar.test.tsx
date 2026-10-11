@@ -7,7 +7,7 @@ import { STATUSES, type Board, type Task, type Track } from '../src/web/api';
 
 const task = (over: Partial<Task> = {}): Task => ({
   id: 1, title: 'do a thing', body: null, status: 'new', blocked: 0, block_reason: null,
-  priority: 'medium', kind: 'feature', area: null, parent_id: null, execution_mode: 'manual', track_id: null, ready: 1,
+  priority: 'medium', kind: 'feature', area: null, parent_id: null, track_id: null, ready: 1,
   criteria_checked: 0, criteria_total: 0, created_at: 0, updated_at: 0, ...over,
 });
 
@@ -127,7 +127,7 @@ describe('FilterBar', () => {
   });
 
   // Ревью: гвард ловил любой [role="dialog"], а Base UI вешает эту роль и на Popover.Popup —
-  // '/' переставал работать, пока открыт любой фасет, ReleasesPopover или AutoTickPopover.
+  // '/' переставал работать, пока открыт любой фасет, или ReleasesPopover.
   it('still focuses the search while a facet popover is open', () => {
     show(EMPTY_FILTERS);
     fireEvent.click(screen.getByRole('button', { name: 'Kind' }));

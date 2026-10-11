@@ -59,11 +59,7 @@ release is available. The check refreshes in the background; set
 | `brief` | Show a compact task resume packet. | `kdd brief 12 --json` |
 | `attention` | List tasks needing human action. | `kdd attention` |
 | `move` | Change a task's status. | `kdd move 12 in_progress` |
-| `claim` | Claim or renew a task lease. | `kdd claim --next` |
-| `tick` | Run one agent scheduling pass. | `kdd tick` |
-| `stop` | Disable agent scheduling and stop live workers. | `kdd stop` |
-| `worker` | Supervise an agent working on a task. | `kdd worker 12` |
-| `feed` | Show agent events for a task. | `kdd feed 12 --since 5` |
+| `claim` | Claim or renew a task lease. | `kdd claim 12` |
 | `edit` | Change task fields. | `kdd edit 12 --priority urgent` |
 | `comment` | Add a task comment. | `kdd comment 12 "Ready for review"` |
 | `attach` | Attach a local file to a task. | `kdd attach 12 ./screenshot.png` |

@@ -2,7 +2,7 @@ import { statSync } from 'node:fs';
 import type Database from 'better-sqlite3';
 import {
   CAPS, capText, boardData, recall, editTask, moveTask,
-  commentTask, mustGetTask, listTracks, attachFile, detachFile, getFile, KddError, assertLegacyTaskMutation,
+  commentTask, mustGetTask, listTracks, attachFile, detachFile, getFile, KddError,
   type Actor, type Priority, type Status, type Kind,
 } from '@kddkit/core';
 
@@ -70,7 +70,6 @@ export function updateTask(db: Database.Database, input: UpdateInput, actor: Act
     throw new KddError('nothing to update');
   }
   const detached = input.detach === undefined ? undefined : getFile(db, input.detach);
-  assertLegacyTaskMutation(db, [input.id, ...(detached ? [detached.task_id] : [])]);
   if (input.detach !== undefined && detached?.task_id !== input.id) {
     throw new KddError(`file ${input.detach} is not attached to task ${input.id}`);
   }

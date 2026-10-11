@@ -14,7 +14,7 @@ npx @kddkit/cli ui     # spawns this server, opens the board at http://localhost
 ```
 
 The board is a drag-and-drop kanban with a markdown editor for task bodies and
-decisions, a live agent-activity feed, and per-repo project switching.
+decisions, per-task audit history, and per-repo project switching.
 
 ## Install
 

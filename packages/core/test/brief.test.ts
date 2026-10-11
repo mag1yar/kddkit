@@ -3,9 +3,9 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  CAPS, addCriterion, addTask, appendAgentEvent, attachFile, blockTask, capText, commentTask,
+  CAPS, addCriterion, addTask, attachFile, blockTask, capText, commentTask,
   editTask,
-  linkTasks, openDb, setCriterionChecked, taskBrief, taskDetail,
+  linkTasks, openDb, setCriterionChecked, taskBrief, taskDetail, taskDetailCapped,
 } from '../src/index.js';
 
 const user = { type: 'user' as const };
@@ -66,7 +66,7 @@ describe('taskBrief', () => {
     expect(first.task).toEqual({
       id: task.id,
       title: 'resume me',
-      parent_id: null, execution_mode: 'manual',
+      parent_id: null,
       goal: 'ship the packet',
       status: 'new',
       blocked: false,
@@ -133,38 +133,7 @@ describe('taskBrief', () => {
     expect(brief.decisions.items[0].title).toBe(capText(decisionTitle, CAPS.titleChars));
   });
 
-  it('reads only the latest run skeleton and its latest following error', () => {
-    const { db, decisionsDir } = setup();
-    const task = addTask(db, { title: 'run context' }, user);
-    appendAgentEvent(db, task.id, 'old-worker', 'run_start', { detail: { head: 'old-a' } });
-    appendAgentEvent(db, task.id, 'old-worker', 'error', { detail: { message: 'old error' } });
-    appendAgentEvent(db, task.id, 'old-worker', 'run_end', { detail: { head: 'old-b' } });
-    appendAgentEvent(db, task.id, 'new-worker', 'run_start', {
-      detail: { head: 'new-a', branch: 'task/139', session_id: 'session-2' },
-    });
-    const insertNoise = db.prepare(
-      `INSERT INTO agent_events (task_id, worker_id, kind, detail, created_at)
-       VALUES (?, 'new-worker', 'text', 'not-json', 100)`,
-    );
-    db.transaction(() => {
-      for (let i = 0; i < 2_000; i++) insertNoise.run(task.id);
-    })();
-    appendAgentEvent(db, task.id, 'new-worker', 'error', { detail: { message: 'first error' } });
-    appendAgentEvent(db, task.id, 'other-worker', 'error', { detail: { message: 'other error' } });
-    appendAgentEvent(db, task.id, 'new-worker', 'error', { detail: { message: 'last error' } });
-    appendAgentEvent(db, task.id, 'new-worker', 'run_end', { detail: { head: 'new-b' } });
-
-    expect(taskBrief(db, decisionsDir, task.id).provenance).toEqual({
-      worker_id: 'new-worker',
-      session_id: 'session-2',
-      branch: 'task/139',
-      before_commit: 'new-a',
-      after_commit: 'new-b',
-      error: 'last error',
-    });
-  });
-
-  it('shows manual and worker provenance side by side with separate commit meanings', () => {
+  it('shows manual provenance and session handoffs', () => {
     const { db, decisionsDir } = setup();
     const task = addTask(db, { title: 'both sources' }, user);
     const actor = (sessionId: string) => ({
@@ -173,41 +142,16 @@ describe('taskBrief', () => {
     });
     editTask(db, task.id, { area: 'first' }, actor('session-A'));
     editTask(db, task.id, { area: 'second' }, actor('session-B'));
-    appendAgentEvent(db, task.id, 'worker-1', 'run_start', { detail: { head: 'before-worker' } });
-    appendAgentEvent(db, task.id, 'worker-1', 'run_end', { detail: { head: 'after-worker' } });
 
     const brief = taskBrief(db, decisionsDir, task.id);
     expect(brief.manual_provenance).toMatchObject({
       client: 'codex', session_id: 'session-B',
       head_commit: expect.stringMatching(/^[0-9a-f]{40}$/),
     });
-    expect(brief.provenance).toEqual({
-      worker_id: 'worker-1', before_commit: 'before-worker', after_commit: 'after-worker',
-    });
     expect(brief.handoffs).toMatchObject({
       items: [{ from_session_id: 'session-A', to_session_id: 'session-B' }], omitted: 0,
     });
     expect(Buffer.byteLength(JSON.stringify(brief), 'utf8')).toBeLessThanOrEqual(4096);
-  });
-
-  it('keeps compact manual identity when two individually fitting sources compete', () => {
-    const make = (manual: boolean, worker: boolean) => {
-      const { db, decisionsDir } = setup();
-      const task = addTask(db, { title: 'competing sources' }, user);
-      if (manual) editTask(db, task.id, { area: 'manual' }, {
-        type: 'ai', id: 'codex:short',
-        manualSession: { client: 'codex', sessionId: 's'.repeat(256), cwd: '/not-a-repo' },
-      });
-      if (worker) appendAgentEvent(db, task.id, 'w'.repeat(3500), 'run_start');
-      return taskBrief(db, decisionsDir, task.id);
-    };
-    expect(make(true, false).manual_provenance?.session_id).toBe('s'.repeat(256));
-    expect(make(false, true).provenance?.worker_id).toBe('w'.repeat(3500));
-    const both = make(true, true);
-    expect(both.manual_provenance?.session_id).toBe('s'.repeat(256));
-    expect(both.provenance).toBeUndefined();
-    expect(both.worker_provenance_omitted).toBe(true);
-    expect(Buffer.byteLength(JSON.stringify(both), 'utf8')).toBeLessThanOrEqual(4096);
   });
 
   it('drops oversized optional Git fields whole and counts omitted handoffs', () => {
@@ -279,27 +223,6 @@ describe('taskBrief', () => {
     expect(Buffer.byteLength(JSON.stringify(brief), 'utf8')).toBeLessThanOrEqual(4096);
     expect(brief.comments.items.length + brief.comments.omitted).toBe(80);
     expect(JSON.stringify(brief)).toContain('chars]');
-  });
-
-  it('caps the latest error without changing exact provenance fields', () => {
-    const { db, decisionsDir } = setup();
-    const task = addTask(db, { title: 'provenance budget' }, user);
-    const worker = `worker-${'w'.repeat(300)}`;
-    const before = 'a'.repeat(80);
-    const after = 'b'.repeat(80);
-    appendAgentEvent(db, task.id, worker, 'run_start', { detail: { head: before } });
-    appendAgentEvent(db, task.id, worker, 'error', {
-      detail: { message: `ошибка ${'🔥'.repeat(1_000)}` },
-    });
-    appendAgentEvent(db, task.id, worker, 'run_end', { detail: { head: after } });
-
-    const brief = taskBrief(db, decisionsDir, task.id);
-
-    expect(brief.provenance).toMatchObject({
-      worker_id: worker, before_commit: before, after_commit: after,
-    });
-    expect(brief.provenance?.error).toContain('chars]');
-    expect(Buffer.byteLength(JSON.stringify(brief), 'utf8')).toBeLessThanOrEqual(4096);
   });
 
   it('sacrifices criteria last and keeps every omitted total honest', () => {
@@ -375,16 +298,6 @@ describe('taskBrief', () => {
     writeFileSync(join(decisionsDir, `${slug}.md`),
       `---\ncreated: 2026-09-21\nstatus: superseded\nsuperseded_by: ${supersededBy}\n` +
       `source_tasks: [${task.id}]\n---\n# exact decision\n\n## Decision\nx\n`);
-    const worker = `worker-${'x'.repeat(100)}`;
-    const session = `session-${'i'.repeat(100)}`;
-    const branch = `branch-${'b'.repeat(100)}`;
-    const worktree = `/tmp/${'w'.repeat(100)}`;
-    const before = 'c'.repeat(80);
-    const after = 'd'.repeat(80);
-    appendAgentEvent(db, task.id, worker, 'run_start', {
-      detail: { head: before, session_id: session, branch, worktree },
-    });
-    appendAgentEvent(db, task.id, worker, 'run_end', { detail: { head: after } });
 
     const brief = taskBrief(db, decisionsDir, task.id);
     const file = brief.files.items.find((item) => item.id === attached.id);
@@ -398,27 +311,16 @@ describe('taskBrief', () => {
     expect(decision === undefined || decision.superseded_by === supersededBy).toBe(true);
     const event = brief.events.items.find((item) => item.actor_id === actorId);
     expect(event === undefined || event.actor_id === actorId).toBe(true);
-    expect(brief.provenance === undefined || brief.provenance.worker_id === worker).toBe(true);
-    expect(brief.provenance === undefined || brief.provenance.session_id === session).toBe(true);
-    expect(brief.provenance === undefined || brief.provenance.branch === branch).toBe(true);
-    expect(brief.provenance === undefined || brief.provenance.worktree === worktree).toBe(true);
-    expect(brief.provenance === undefined || brief.provenance.before_commit === before).toBe(true);
-    expect(brief.provenance === undefined || brief.provenance.after_commit === after).toBe(true);
   });
 });
 
-import * as core from '../src/index.js';
-it('preserves parent/mode in bounded reads and keeps controller work out of legacy start advice',()=>{
-  const db=core.openDb(':memory:'),parent=core.addTask(db,{title:'parent'},{type:'user'}),handle=core.openController(db);
-  const ref={projectId:core.projectOf(db).project_id,taskId:parent.id};
-  const child=core.createSubtasks(handle,{parent:ref,expectedParentHash:core.taskContractHash(handle,ref),
-    source:{kind:'manual',sourceTask:ref,instructionRef:'split'},children:[{key:'child',title:'child',criteria:['outcome'],executionMode:'orchestrated'}]}).child;
+it('preserves parent_id in bounded reads', () => {
+  const db = openDb(':memory:');
+  const parent = addTask(db, { title: 'parent' }, user);
+  const child = addTask(db, { title: 'child' }, user);
+  db.prepare('UPDATE tasks SET parent_id = ? WHERE id = ?').run(parent.id, child.id);
   try {
-    const brief=core.taskBrief(db,'/missing',child.id);
-    expect(brief.task).toMatchObject({parent_id:parent.id,execution_mode:'orchestrated'});
-    expect(brief.next_action.kind).toBe('await_controller');
-    expect(Buffer.byteLength(JSON.stringify(brief))).toBeLessThanOrEqual(4096);
-    expect(core.taskDetailCapped(db,child.id).task.parent_id).toBe(parent.id);
-    expect(Object.values(core.boardData(db,{ready:true})).flat().map(t=>t.id)).not.toContain(child.id);
-  }finally{db.close()}
+    expect(taskBrief(db, '/missing', child.id).task.parent_id).toBe(parent.id);
+    expect(taskDetailCapped(db, child.id).task.parent_id).toBe(parent.id);
+  } finally { db.close(); }
 });

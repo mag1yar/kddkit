@@ -7,28 +7,22 @@ import { KddError } from './errors.js';
 import type { Actor } from './state.js';
 import { MIGRATIONS } from './schema.js';
 
-export type RepositoryAccess = 'context_only' | 'implementation';
-export type BindingKind = 'source' | 'managed';
 export interface ProjectRecord {
   project_id: string;
   primary_repo_id: string | null;
   legacy_decisions_dir: string | null;
-  autonomy_enabled: boolean;
-  default_execution_mode: 'manual' | 'orchestrated';
   created_at: number;
 }
 export interface RepositoryRecord {
-  repo_id: string; purpose: string; access: RepositoryAccess;
+  repo_id: string; purpose: string;
   remote: string | null; created_at: number;
 }
 export interface RepositoryBinding {
-  common_dir: string; repo_id: string; checkout_path: string;
-  kind: BindingKind; created_at: number;
+  common_dir: string; repo_id: string; checkout_path: string; created_at: number;
 }
 export function projectOf(db: Database.Database): ProjectRecord {
-  const row = db.prepare('SELECT project_id,primary_repo_id,legacy_decisions_dir,autonomy_enabled,default_execution_mode,created_at FROM project WHERE singleton=1')
-    .get() as Omit<ProjectRecord, 'autonomy_enabled'> & { autonomy_enabled: number };
-  return { ...row, autonomy_enabled: row.autonomy_enabled === 1 };
+  return db.prepare('SELECT project_id,primary_repo_id,legacy_decisions_dir,created_at FROM project WHERE singleton=1')
+    .get() as ProjectRecord;
 }
 export function repositoriesOf(db: Database.Database): RepositoryRecord[] {
   return db.prepare('SELECT * FROM repositories ORDER BY repo_id').all() as RepositoryRecord[];
@@ -209,8 +203,8 @@ export function initializeProjectStore(db: Database.Database, dbPath: string, ho
         if (!decisionsDir && sourceCaller && options.configuredDecisions) decisionsDir = canonicalProjectPath(options.configuredDecisions);
       }
       const repoId = id();
-      db.prepare('INSERT INTO repositories VALUES(?,?,?,NULL,?)').run(repoId, 'primary','implementation',time());
-      db.prepare('INSERT INTO repository_bindings VALUES(?,?,?,?,?)').run(common,repoId,paths[0],'source',time());
+      db.prepare('INSERT INTO repositories VALUES(?,?,NULL,?)').run(repoId, 'primary',time());
+      db.prepare('INSERT INTO repository_bindings VALUES(?,?,?,?)').run(common,repoId,paths[0],time());
       // A default directory symlink must not grant authority to its foreign target.
       db.prepare('UPDATE project SET primary_repo_id=?,legacy_decisions_dir=? WHERE singleton=1')
         .run(repoId, decisionsDir ?? join(paths[0],'.planning','decisions'));
@@ -246,29 +240,44 @@ function assertAvailable(registry: Database.Database, common: string, home: stri
     throw new KddError(`project store conflict for ${common}`);
   }
 }
-function checkoutBinding(cwd: string, repoId: string, kind: BindingKind): RepositoryBinding {
+function checkoutBinding(cwd: string, repoId: string): RepositoryBinding {
   return { common_dir: canonicalCommonDir(cwd), repo_id: repoId,
-    checkout_path: realpathSync(git(cwd,['rev-parse','--show-toplevel'])), kind, created_at: time() };
+    checkout_path: realpathSync(git(cwd,['rev-parse','--show-toplevel'])), created_at: time() };
 }
 function insertBinding(db: Database.Database, binding: RepositoryBinding): void {
-  db.prepare('INSERT INTO repository_bindings VALUES(@common_dir,@repo_id,@checkout_path,@kind,@created_at)').run(binding);
+  db.prepare('INSERT INTO repository_bindings VALUES(@common_dir,@repo_id,@checkout_path,@created_at)').run(binding);
+}
+// Источник первичного репо — не колонка, а чекаут, на который указывает meta.project_path:
+// его ставит инициализация стора и переносит rebind ровно тогда, когда переезжает источник.
+// Прочие чекауты того же репо (клоны) источником решений не становятся.
+// Старые override-доски хранят там чекаут, а не common-dir — поэтому сверяем с обоими путями
+// записи. Без git: после переезда источника старого пути уже нет, а узнать его rebind обязан.
+export function primarySource(db: Database.Database): RepositoryBinding | undefined {
+  const source = meta(db, 'project_path');
+  if (!source) return undefined;
+  const primary = projectOf(db).primary_repo_id;
+  const p = canonicalProjectPath(source);
+  const bindings = bindingsOf(db).filter(b => b.repo_id === primary);
+  const direct = bindings.find(b => b.common_dir === p || b.checkout_path === p);
+  if (direct) return direct;
+  // Override-доска, впервые открытая из linked worktree: binding держит worktree, а project_path —
+  // основной чекаут. Свяжет их только общий common-dir; клон с отдельным .git сюда не попадёт.
+  let common: string;
+  try { if (!existsSync(p)) return undefined; common = canonicalCommonDir(p); } catch { return undefined; }
+  return bindings.find(b => b.common_dir === common);
 }
 function locateBinding(registry: Database.Database, db: Database.Database, dbPath: string, binding: RepositoryBinding): void {
   putLocator(registry, { common_dir: binding.common_dir, db_path: resolve(dbPath),
     project_id: projectOf(db).project_id, repo_id: binding.repo_id });
 }
 export function bindRepository(db: Database.Database, dbPath: string, home: string,
-  input: { cwd: string; repoId: string; kind: BindingKind }, actor: Actor): RepositoryBinding {
+  input: { cwd: string; repoId: string }, actor: Actor): RepositoryBinding {
   if (!/^[0-9a-f]{32}$/.test(input.repoId) || !repositoriesOf(db).some(r => r.repo_id === input.repoId)) throw new KddError('unknown repository id');
-  if (!['source','managed'].includes(input.kind)) throw new KddError('invalid binding kind');
-  const binding = checkoutBinding(input.cwd,input.repoId,input.kind);
+  const binding = checkoutBinding(input.cwd,input.repoId);
   return withRegistry(home, registry => registry.transaction(() => {
     assertAvailable(registry,binding.common_dir,home,dbPath,projectOf(db).project_id,input.repoId);
     const existing = bindingsOf(db).find(b => b.common_dir === binding.common_dir);
-    if (existing && (existing.repo_id !== input.repoId || existing.kind !== input.kind)) throw new KddError('repository binding conflict');
-    if (input.kind === 'source' && bindingsOf(db).some(b => b.repo_id === input.repoId && b.kind === 'source' && b.common_dir !== binding.common_dir)) {
-      throw new KddError('repository already has a source; use rebind to move it');
-    }
+    if (existing && existing.repo_id !== input.repoId) throw new KddError('repository binding conflict');
     const result = existing ?? db.transaction(() => {
       insertBinding(db,binding);
       audit(db,actor,'repository_bound',binding);
@@ -279,21 +288,20 @@ export function bindRepository(db: Database.Database, dbPath: string, home: stri
   }).immediate());
 }
 export function addRepository(db: Database.Database, dbPath: string, home: string,
-  input: { cwd: string; purpose: string; access: RepositoryAccess }, actor: Actor):
+  input: { cwd: string; purpose: string }, actor: Actor):
   { repository: RepositoryRecord; binding: RepositoryBinding } {
   if (!input.purpose?.trim()) throw new KddError('repository purpose must not be empty');
-  if (!['context_only','implementation'].includes(input.access)) throw new KddError('invalid repository access');
   if (!projectOf(db).primary_repo_id) throw new KddError('restore the primary source before adding a repository');
-  const binding = checkoutBinding(input.cwd,id(),'source');
+  const binding = checkoutBinding(input.cwd,id());
   return withRegistry(home, registry => registry.transaction(() => {
     assertAvailable(registry,binding.common_dir,home,dbPath,projectOf(db).project_id);
     const existing = bindingsOf(db).find(b => b.common_dir === binding.common_dir);
     const repository = existing ? repositoriesOf(db).find(r => r.repo_id === existing.repo_id)! : {
-      repo_id: binding.repo_id, purpose: input.purpose.trim(), access: input.access, remote: null, created_at: time(),
+      repo_id: binding.repo_id, purpose: input.purpose.trim(), remote: null, created_at: time(),
     };
-    if (existing && (repository.purpose !== input.purpose.trim() || repository.access !== input.access)) throw new KddError('repository binding conflict');
+    if (existing && repository.purpose !== input.purpose.trim()) throw new KddError('repository binding conflict');
     if (!existing) db.transaction(() => {
-      db.prepare('INSERT INTO repositories VALUES(@repo_id,@purpose,@access,@remote,@created_at)').run(repository);
+      db.prepare('INSERT INTO repositories VALUES(@repo_id,@purpose,@remote,@created_at)').run(repository);
       insertBinding(db,binding);
       audit(db,actor,'repository_added',{ repository,binding });
     }).immediate();
@@ -320,15 +328,17 @@ export function rebindRepository(db: Database.Database, dbPath: string, home: st
     const repoId = previous?.repo_id ?? existing?.repo_id ?? id();
     assertAvailable(registry,newCommon,home,dbPath,project.project_id,repoId);
     if (existing && !repeated && previous?.common_dir !== existing.common_dir) throw new KddError('repository binding conflict');
-    const binding = repeated ? existing! : checkoutBinding(input.cwd,repoId,previous?.kind ?? 'source');
+    const binding = repeated ? existing! : checkoutBinding(input.cwd,repoId);
+    // До переноса: после него project_path уже указывает на новый чекаут.
+    const wasSource = !!previous && primarySource(db)?.common_dir === previous.common_dir;
     catalogStore(db,dbPath,home);
     if (!repeated && oldPath !== newCommon) db.transaction(() => {
       if (!previous) {
-        db.prepare('INSERT INTO repositories VALUES(?,?,?,NULL,?)').run(repoId,'primary','implementation',time());
+        db.prepare('INSERT INTO repositories VALUES(?,?,NULL,?)').run(repoId,'primary',time());
         db.prepare('UPDATE project SET primary_repo_id=? WHERE singleton=1').run(repoId);
       } else db.prepare('DELETE FROM repository_bindings WHERE common_dir=?').run(oldPath);
       insertBinding(db,binding);
-      if ((previous?.kind === 'source' && project.primary_repo_id === repoId) || !project.primary_repo_id) {
+      if (wasSource || !project.primary_repo_id) {
         const oldDefault = previous ? join(previous.checkout_path,'.planning','decisions') : null;
         if (!project.legacy_decisions_dir || project.legacy_decisions_dir === oldDefault) {
           db.prepare('UPDATE project SET legacy_decisions_dir=? WHERE singleton=1').run(join(binding.checkout_path,'.planning','decisions'));
@@ -347,8 +357,7 @@ export function rebindRepository(db: Database.Database, dbPath: string, home: st
 export function canSyncLegacyDecisions(db: Database.Database, decisionsDir: string): boolean {
   const project = projectOf(db);
   if (!project.primary_repo_id && db.memory) return true;
-  const bindings = bindingsOf(db);
-  const source = bindings.find(b => b.repo_id === project.primary_repo_id && b.kind === 'source');
+  const source = primarySource(db);
   if (project.primary_repo_id && (!source || !existsSync(source.common_dir))) return false;
   const path = canonicalProjectPath(decisionsDir);
   if (project.legacy_decisions_dir && (!source || resolve(project.legacy_decisions_dir) !== join(source.checkout_path,'.planning','decisions'))) {
@@ -359,7 +368,7 @@ export function canSyncLegacyDecisions(db: Database.Database, decisionsDir: stri
   while (!existsSync(ancestor) && dirname(ancestor) !== ancestor) ancestor = dirname(ancestor);
   try {
     const common = canonicalCommonDir(ancestor);
-    return bindings.some(b => b.repo_id === project.primary_repo_id && b.kind === 'source' && b.common_dir === common);
+    return source?.common_dir === common;
   } catch { return false; }
 }
 export function assertLegacyDecisionSource(db: Database.Database, decisionsDir: string): void {

@@ -3,15 +3,12 @@ import type Database from 'better-sqlite3';
 import { openDb } from '../src/db.js';
 import { addTask, blockTask, moveTask, unblockTask } from '../src/ops.js';
 import { addCriterion, removeCriterion, setCriterionChecked } from '../src/criteria.js';
-import { recordFailedAttempt } from '../src/claim.js';
-import { MAX_FAILED_ATTEMPTS } from '../src/state.js';
 import { attentionData } from '../src/queries.js';
 import { CAPS } from '../src/caps.js';
 
 const NOW = 2_000_000;
 const DAY = 86_400;
 const user = { type: 'user' as const };
-const ai = { type: 'ai' as const, id: 'worker' };
 let db: Database.Database;
 
 beforeEach(() => { db = openDb(':memory:', 'attention'); });
@@ -39,19 +36,6 @@ describe('attentionData', () => {
     expect(attentionData(db, NOW).items).toMatchObject([
       { id: yes.id, reason: 'needs_input', block_reason: 'needs human: choose API' },
     ]);
-  });
-
-  it('requires the current blocked event to be an automatic claim escalation', () => {
-    const task = add('automatic');
-    for (let i = 0; i < MAX_FAILED_ATTEMPTS; i++) {
-      recordFailedAttempt(db, task.id, ai, `failure ${i}`);
-    }
-    expect(attentionData(db, NOW).items[0].reason).toBe('needs_input');
-
-    unblockTask(db, task.id, user);
-    expect(attentionData(db, NOW).items).toEqual([]);
-    blockTask(db, task.id, 'dependency: service offline', user);
-    expect(attentionData(db, NOW).items).toEqual([]);
   });
 
   it('uses event id for rework, ignores malformed details, and stops after recheck', () => {

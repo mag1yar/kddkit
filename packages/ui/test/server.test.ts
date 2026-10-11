@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CAPS, addTask, addRepository, createTrack, editTrack, getAutoTick, openDb, openController, protectTask, resolveDbPath, setAutoTick, setLastRun } from '@kddkit/core';
+import { CAPS, addTask, addRepository, createTrack, editTrack, openDb, resolveDbPath } from '@kddkit/core';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
@@ -13,28 +13,6 @@ const mk = () => {
   const db = openDb(':memory:', 'x');
   return { db, app: createApp(() => db) };
 };
-
-it('refuses managed UI mutations and reordering through a legacy target without side effects', async () => {
-  const { db, app } = mk(), track = createTrack(db, { name: 'shared' });
-  const managed = addTask(db, { title: 'managed', criteria: ['proof'], track_id: track.id }, user);
-  const legacy = addTask(db, { title: 'legacy', track_id: track.id }, user);
-  protectTask(openController(db), managed.id);
-  const snapshot = () => ['tasks', 'criteria', 'comments', 'events', 'tracks'].map(table => db.prepare(`SELECT * FROM ${table}`).all());
-  const before = snapshot();
-  for (const [path, method, body] of [
-    [`/api/tasks/${managed.id}`, 'PATCH', { title: 'changed', actor: 'user', owner: true }],
-    [`/api/tasks/${managed.id}/move`, 'POST', { to: 'done', reason: 'user approved' }],
-    [`/api/tasks/${legacy.id}/move`, 'POST', { to: 'new', order: [legacy.id, managed.id] }],
-    [`/api/tasks/${managed.id}/block`, 'POST', { reason: 'needs human' }],
-    [`/api/tasks/${managed.id}/comments`, 'POST', { body: 'owner says yes' }],
-    [`/api/tracks/${track.id}`, 'DELETE', {}],
-  ] as const) {
-    const response = await app.request(path, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    expect(response.status).toBe(400); expect(await response.text()).toMatch(/managed/); expect(snapshot()).toEqual(before);
-  }
-  const response = await app.request(`/api/tasks/${legacy.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'ordinary' }) });
-  expect(response.status).toBe(200); db.close();
-});
 
 describe('GET /api/board', () => {
   it('keeps the original project address and one board after binding a backend', async () => {
@@ -49,7 +27,7 @@ describe('GET /api/board', () => {
       const resolved=resolveDbPath(source);db=openDb(resolved.dbPath,resolved.projectPath,source);
       const task=addTask(db,{title:'shared UI'},user);
       const hash=basename(dirname(resolved.dbPath));
-      addRepository(db,resolved.dbPath,process.env.KDD_HOME,{cwd:backend,purpose:'backend',access:'context_only'},user);
+      addRepository(db,resolved.dbPath,process.env.KDD_HOME,{cwd:backend,purpose:'backend'},user);
       pool=projectPool(hash);const app=createApp(pool.getDb,hash);
       const projects=await (await app.request('/api/projects')).json() as {id:string}[];
       expect(projects.map(p=>p.id)).toEqual([hash]);
@@ -218,117 +196,6 @@ describe('GET /api/releases', () => {
   }, 20_000);
 });
 
-// KDD_MAX_WORKERS с машины разработчика перевернул бы maxWorkersEnvLocked
-afterEach(() => { delete process.env.KDD_MAX_WORKERS; });
-
-describe('/api/autotick', () => {
-  it('GET на пустой базе — дефолты, без таймера', async () => {
-    const { app } = mk();
-    const res = await app.request('/api/autotick');
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      enabled: false, intervalSec: 60, maxWorkers: 3,
-      maxWorkersEnvLocked: false, last: null, nextAt: null, running: false,
-    });
-  });
-
-  it('PATCH пишет настройки и отдаёт новое состояние', async () => {
-    const { db, app } = mk();
-    const res = await app.request('/api/autotick', {
-      method: 'PATCH',
-      body: JSON.stringify({ enabled: true, intervalSec: 300, maxWorkers: 4 }),
-    });
-    expect(res.status).toBe(200);
-    const s = (await res.json()) as { enabled: boolean; intervalSec: number; maxWorkers: number };
-    expect(s).toMatchObject({ enabled: true, intervalSec: 300, maxWorkers: 4 });
-    expect(getAutoTick(db)).toMatchObject({ enabled: true, intervalSec: 300, maxWorkers: 4 });
-  });
-
-  it('PATCH с мусорным интервалом — 400 и ничего не записано', async () => {
-    const { db, app } = mk();
-    const res = await app.request('/api/autotick', {
-      method: 'PATCH', body: JSON.stringify({ intervalSec: 7 }),
-    });
-    expect(res.status).toBe(400);
-    expect(getAutoTick(db).intervalSec).toBe(60);
-  });
-
-  it('PATCH с enabled строкой "false" — 400, а не тихое включение', async () => {
-    const { db, app } = mk();
-    const res = await app.request('/api/autotick', {
-      method: 'PATCH', body: JSON.stringify({ enabled: 'false' }),
-    });
-    expect(res.status).toBe(400);
-    expect(getAutoTick(db).enabled).toBe(false);
-  });
-
-  it('PATCH дёргает scheduler.sync и отдаёт его nextAt', async () => {
-    const db = openDb(':memory:', 'x');
-    const synced: string[] = [];
-    const app = createApp(() => db, 'proj', {
-      sync: (h: string) => { synced.push(h); },
-      syncAll: () => {},
-      nextAt: () => 1700000060,
-      isRunning: () => false,
-      killWorkers: async () => {},
-      stopAll: () => {},
-    });
-    const res = await app.request('/api/autotick', {
-      method: 'PATCH', body: JSON.stringify({ enabled: true }),
-    });
-    const s = (await res.json()) as { nextAt: number | null };
-    expect(synced).toEqual(['proj']);
-    expect(s.nextAt).toBe(1700000060);
-  });
-
-  // #112: off — это «останови автономию», а не «перестань спаунить новых». Без этого человек
-  // выключил тумблер, а три claude дожёвывают свои задачи, коммитят и комментируют доску.
-  it('PATCH enabled:false добивает живых воркеров, enabled:true — нет', async () => {
-    const db = openDb(':memory:', 'x');
-    const killed: string[] = [];
-    const app = createApp(() => db, 'proj', {
-      sync: () => {}, syncAll: () => {}, nextAt: () => null, isRunning: () => false,
-      killWorkers: async (h: string) => { killed.push(h); }, stopAll: () => {},
-    });
-    await app.request('/api/autotick', { method: 'PATCH', body: JSON.stringify({ enabled: true }) });
-    expect(killed).toEqual([]);
-    await app.request('/api/autotick', { method: 'PATCH', body: JSON.stringify({ enabled: false }) });
-    expect(killed).toEqual(['proj']);
-  });
-
-  // Пока проход идёт, nextAt смотрит в прошлое — UI обязан узнать про это из ответа,
-  // иначе показывает «next: in 0 s» все пять минут таймаута.
-  it('GET отдаёт running=true, пока проход в полёте', async () => {
-    const db = openDb(':memory:', 'x');
-    const app = createApp(() => db, 'proj', {
-      sync: () => {}, syncAll: () => {}, nextAt: () => 1700000000,
-      isRunning: () => true, killWorkers: async () => {}, stopAll: () => {},
-    });
-    const s = (await (await app.request('/api/autotick')).json()) as { running: boolean };
-    expect(s.running).toBe(true);
-  });
-
-  it('GET отдаёт последний проход', async () => {
-    const { db, app } = mk();
-    setLastRun(db, { at: 1700000000, reclaimed: 1, killed: 0, stuck: 0, spawned: 2, active: 3, reaped: 0 });
-    const s = (await (await app.request('/api/autotick')).json()) as
-      { last: { spawned: number } | null };
-    expect(s.last?.spawned).toBe(2);
-  });
-
-  // KDD_MAX_WORKERS переопределяет сохранённую настройку — GET должен отдавать
-  // действующее число (env), а не то, что оно заменило, иначе задизейбленное
-  // поле в UI подписано "overridden by ..." и врёт про своё собственное значение.
-  it('GET с KDD_MAX_WORKERS — отдаёт env-значение и maxWorkersEnvLocked=true', async () => {
-    const { db, app } = mk();
-    setAutoTick(db, { maxWorkers: 3 });
-    process.env.KDD_MAX_WORKERS = '5';
-    const s = (await (await app.request('/api/autotick')).json()) as
-      { maxWorkers: number; maxWorkersEnvLocked: boolean };
-    expect(s).toMatchObject({ maxWorkers: 5, maxWorkersEnvLocked: true });
-  });
-});
-
 describe('projectPool', () => {
   afterEach(() => { delete process.env.KDD_HOME; });
 
@@ -430,7 +297,7 @@ describe('GET /api/projects', () => {
 
   it('exposed with a token, lists only the project it serves', async () => {
     twoProjects();
-    const app = createApp(() => openDb(':memory:', 'x'), 'a'.repeat(16), undefined, { token: 's3cret' });
+    const app = createApp(() => openDb(':memory:', 'x'), 'a'.repeat(16), { token: 's3cret' });
     const res = await app.request('/api/projects?token=s3cret');
     expect(await res.json()).toEqual([{ id: 'a'.repeat(16), path: '/mine/.git' }]);
   });
@@ -451,7 +318,7 @@ describe('exposed mode ignores ?project', () => {
     addTask(openDb(join(home, other, 'kdd.db'), '/other/.git'), { title: 'secret' }, user);
 
     const locked = projectPool(mine, { lockToDefault: true });
-    const app = createApp(locked.getDb, mine, undefined, { token: 's3cret' });
+    const app = createApp(locked.getDb, mine, { token: 's3cret' });
     const b = (await (await app.request(`/api/board?project=${other}&token=s3cret`)).json()) as
       Record<string, { title: string }[]>;
     expect(b.new.map((t) => t.title)).toEqual(['mine']); // не 'secret'
@@ -690,10 +557,10 @@ describe('GET /api/tracks', () => {
     expect(all.map((t) => t.name).sort()).toEqual(['closed', 'live']);
   });
 });
-it('returns parent and mode through the existing HTTP board route',async()=>{
+it('returns parent through the existing HTTP board route',async()=>{
   const {db,app}=mk();addTask(db,{title:'manual'},user);
   try {
-    const response=await app.request('/api/board'),board=await response.json() as Record<string,{parent_id:number|null;execution_mode:string}[]>;
-    expect(response.status).toBe(200);expect(board.new[0]).toMatchObject({parent_id:null,execution_mode:'manual'});
+    const response=await app.request('/api/board'),board=await response.json() as Record<string,{parent_id:number|null}[]>;
+    expect(response.status).toBe(200);expect(board.new[0]).toMatchObject({parent_id:null});
   }finally{db.close()}
 });

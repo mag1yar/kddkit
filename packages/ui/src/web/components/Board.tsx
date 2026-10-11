@@ -31,10 +31,10 @@ function KindBadge({ kind }: { kind: Kind }) {
   return (
     <Badge
       variant={kind === 'bug' ? 'destructive' : 'outline'}
-      // research — единственный kind, который claimNext агенту никогда не отдаёт (core/claim.ts:
-      // CLAIMABLE_SQL). title + sr-only по образцу «no criteria» ниже: title не доходит ни до
+      // research claimTask агенту не отдаёт при любых критериях (core/claim.ts): результат —
+      // записанное решение, а не коммит. title + sr-only по образцу «no criteria» ниже: title не доходит ни до
       // скринридера, ни до тача.
-      title={kind === 'research' ? 'an agent will never pick up this task' : undefined}
+      title={kind === 'research' ? 'an agent cannot claim this task' : undefined}
       className={cn('h-5 gap-1 rounded-sm px-1.5 text-xs',
         kind !== 'bug' && 'text-muted-foreground')}
     >
@@ -167,12 +167,12 @@ function TaskCard({ task, trackName, onOpen, asHandle }: {
             в primary: это состояние «можно в review», ради него счётчик и нужен. Оба
             состояния заданы явно — вариант outline и так несёт text-foreground, условный
             класс поверх него был бы no-op. */}
-        {/* claimNext берёт только задачи хотя бы с одним критерием (core/claim.ts): критерии —
+        {/* claimTask берёт только задачи хотя бы с одним критерием (core/claim.ts): критерии —
             единственное, чем агент не может объявить работу законченной по своему усмотрению.
             Доска об этом молчала: карточка лежит в new, выглядит готовой, счётчик критериев
-            при нуле не рисуется вовсе, а тик рапортует spawned 0 без причины — наставил задач,
-            ушёл спать, утром ни строчки объяснения. Условие — ready (new & не blocked & не
-            archived): ровно то состояние, которое обманывает. У blocked своя пометка, вторая
+            при нуле не рисуется вовсе, а `kdd claim` отказывает только в момент
+            взятия. Условие — ready (new & не blocked & не archived): ровно то состояние,
+            которое обманывает. У blocked своя пометка, вторая
             рядом была бы шумом. */}
         {task.ready === 1 && task.criteria_total === 0 && (
           <Badge

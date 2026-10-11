@@ -9,7 +9,7 @@ import {
 import { KddError } from '../src/errors.js';
 
 describe('openDb', () => {
-  it('upgrades a populated v17 WAL without changing its rows and starts empty role tables', () => {
+  it('upgrades a populated v17 WAL without changing its rows', () => {
     const p = join(mkdtempSync(join(tmpdir(), 'kdd-role-mig-')), 'board.db');
     const old = new Database(p);
     old.pragma('journal_mode = WAL'); old.pragma('wal_autocheckpoint = 0');
@@ -22,9 +22,6 @@ describe('openDb', () => {
     const upgraded = openDb(p);
     expect(upgraded.pragma('user_version', { simple: true })).toBe(MIGRATIONS.length);
     expect(upgraded.prepare('SELECT * FROM comments').all()).toEqual(before);
-    for (const table of ['role_profiles', 'role_revisions', 'role_skill_files']) {
-      expect(upgraded.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
-    }
     upgraded.close();
     const reopened = openDb(p);
     expect(reopened.prepare('SELECT * FROM comments').all()).toEqual(before);
@@ -202,7 +199,7 @@ describe('schema version guard', () => {
   });
 });
 
-it('upgrades v14 without changing any old row, grant, provenance or search hit and keeps a readable backup', async () => {
+it('upgrades v14 without changing any kept row, provenance or search hit and keeps a readable backup', async () => {
   const { rmSync } = await import('node:fs');
   const root = mkdtempSync(join(tmpdir(), 'kdd-v15-preserve-')), path = join(root, 'legacy.db');
   const saved = { ...process.env }; process.env.KDD_HOME = join(root, 'home');
@@ -237,21 +234,22 @@ it('upgrades v14 without changing any old row, grant, provenance or search hit a
       INSERT INTO managed_task_policy VALUES(8,2,'controller');
       INSERT INTO run_authorities VALUES('grant',8,'external-item','run',3,9999999999,NULL,'tokenhash','{"kept":true}',3);
     `);
-    const tables = ['tasks','criteria','comments','events','task_links','files','agent_events','errors','tracks',
-      'decisions','search_index','meta','project','repositories','repository_bindings','managed_task_policy','run_authorities'];
+    const tables = ['tasks','criteria','comments','events','task_links','files','errors','tracks',
+      'decisions','search_index','meta','project','repositories','repository_bindings'];
     const before = Object.fromEntries(tables.map(t => [t, raw.prepare(`SELECT * FROM ${t}`).all()]));
     upgraded = openDb(path);
     for (const table of tables) {
       const rows = upgraded.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
-      expect(table === 'tasks' ? rows.map(({ parent_id,execution_mode,...old }) => old) : rows).toEqual(before[table]);
+      // v20 сняла колонки оркестратора: сравниваем по тем, что остались (parent_id добавлен v15).
+      const kept = rows.map(({ parent_id, ...old }) => old);
+      const keys = Object.keys(kept[0] ?? {});
+      expect(kept).toEqual((before[table] as Record<string, unknown>[])
+        .map(row => Object.fromEntries(keys.map(k => [k, row[k]]))));
     }
-    expect(upgraded.prepare('SELECT parent_id,execution_mode FROM tasks ORDER BY id').all()).toEqual([
-      { parent_id: null, execution_mode: 'manual' }, { parent_id: null, execution_mode: 'manual' }]);
+    expect(upgraded.prepare('SELECT parent_id FROM tasks ORDER BY id').all()).toEqual([
+      { parent_id: null }, { parent_id: null }]);
     expect(upgraded.prepare("SELECT ref FROM search_index WHERE search_index MATCH 'searchable'").get()).toEqual({ ref: 'decision' });
     expect(upgraded.pragma('foreign_key_check')).toEqual([]);
-    for (const table of ['work_items','work_item_results','work_item_owners','execution_handoffs']) {
-      expect(upgraded.prepare(`SELECT count(*) n FROM ${table}`).get()).toEqual({ n: 0 });
-    }
     const backup = new Database(`${path}.v14.bak`, { readonly: true });
     try {
       expect(backup.pragma('user_version', { simple: true })).toBe(14);
@@ -259,9 +257,66 @@ it('upgrades v14 without changing any old row, grant, provenance or search hit a
     } finally { backup.close(); }
     upgraded.close(); upgraded = openDb(path);
     expect(upgraded.prepare('SELECT count(*) n FROM tasks').get()).toEqual({ n: 2 });
-    expect(upgraded.prepare('SELECT count(*) n FROM managed_task_policy').get()).toEqual({ n: 1 });
   } finally {
     if (upgraded?.open) upgraded.close(); raw.close(); process.env = saved;
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+describe('migration v20', () => {
+  it('v20 drops orchestrator and tick state, keeps tasks, parents and bindings', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    for (let i = 0; i < 19; i++) { db.exec(MIGRATIONS[i]); db.pragma(`user_version = ${i + 1}`); }
+    const repo = 'a'.repeat(32);
+    db.prepare(`INSERT INTO repositories VALUES(?, 'primary', 'implementation', NULL, 1)`).run(repo);
+    db.prepare(`INSERT INTO repository_bindings VALUES('/src/.git', ?, '/src', 'source', 1)`).run(repo);
+    db.prepare(`INSERT INTO repository_bindings VALUES('/wt/.git', ?, '/wt', 'managed', 2)`).run(repo);
+    db.prepare(`INSERT INTO tasks (title, status, priority, position, created_at, updated_at) VALUES ('p','new','medium',0,1,1)`).run();
+    db.prepare(`INSERT INTO tasks (title, status, priority, position, created_at, updated_at, parent_id) VALUES ('c','new','medium',1,1,1,1)`).run();
+
+    db.transaction(() => { db.exec(MIGRATIONS[19]); db.pragma('user_version = 20'); })();
+
+    const names = (db.prepare(`SELECT name FROM sqlite_master WHERE type IN ('table','trigger','index')`).all() as { name: string }[]).map(r => r.name);
+    for (const gone of ['agent_events', 'managed_task_policy', 'run_authorities', 'work_items', 'work_item_owners',
+      'execution_handoffs', 'memory_entries', 'run_input_snapshots', 'role_profiles', 'runtime_sessions',
+      'work_item_retirements', 'idx_memory_import_commands']) expect(names).not.toContain(gone);
+    expect(names).toEqual(expect.arrayContaining(['task_parent_insert', 'task_parent_update', 'idx_repository_bindings_repo']));
+    const cols = (t: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map(c => c.name);
+    expect(cols('tasks')).not.toContain('execution_mode');
+    expect(cols('tasks')).not.toContain('failed_attempts');
+    expect(cols('repositories')).not.toContain('access');
+    expect(cols('project')).not.toContain('autonomy_enabled');
+    expect(cols('project')).not.toContain('default_execution_mode');
+    expect(cols('repository_bindings')).toEqual(['common_dir', 'repo_id', 'checkout_path', 'created_at']);
+    expect(db.prepare('SELECT common_dir FROM repository_bindings ORDER BY created_at').all())
+      .toEqual([{ common_dir: '/src/.git' }, { common_dir: '/wt/.git' }]);
+    expect((db.prepare('SELECT parent_id FROM tasks WHERE id = 2').get() as { parent_id: number }).parent_id).toBe(1);
+    expect(() => db.prepare('UPDATE tasks SET parent_id = 1 WHERE id = 1').run()).toThrow();
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+  });
+
+  it('v20 survives owners released via a handoff and a retirement (FK cycle)', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    for (let i = 0; i < 19; i++) db.transaction(() => { db.exec(MIGRATIONS[i]); db.pragma(`user_version = ${i + 1}`); })();
+    db.transaction(() => {
+      db.exec(`INSERT INTO tasks (title,status,priority,position,created_at,updated_at) VALUES ('t','new','medium',0,1,1)`);
+      for (const w of ['w1', 'w2']) {
+        db.exec(`INSERT INTO work_items VALUES('${w}',1,1,'pending',2,1)`);
+        db.exec(`INSERT INTO work_item_revisions VALUES('${w}',1,'{}','{}','x',1)`);
+      }
+      db.exec(`INSERT INTO execution_handoffs VALUES('h','c',1,'manual','orchestrated','{}',1,2,'{}')`);
+      db.exec(`INSERT INTO work_item_owners VALUES('w1',1,1,'o','manual',1,'{}',NULL,NULL,1,2,'h',NULL)`);
+      db.exec(`INSERT INTO work_item_owners VALUES('w2',1,1,'o','manual',1,'{}',NULL,NULL,1,NULL,NULL,NULL)`);
+      db.exec(`INSERT INTO work_item_retirements VALUES('r','c2','${'a'.repeat(64)}','w2',1,'{}',1,2,'{}')`);
+      db.exec(`UPDATE work_item_owners SET released_at=2, release_retirement_id='r' WHERE work_item_id='w2'`);
+    })();
+
+    expect(() => db.transaction(() => { db.exec(MIGRATIONS[19]); db.pragma('user_version = 20'); })()).not.toThrow();
+
+    const names = (db.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all() as { name: string }[]).map(r => r.name);
+    for (const gone of ['work_items', 'work_item_owners', 'execution_handoffs', 'work_item_retirements']) expect(names).not.toContain(gone);
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+  });
 });

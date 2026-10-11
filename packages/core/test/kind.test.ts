@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { MIGRATIONS, openDb } from '../src/db.js';
 import { addTask, editTask, BUG_BODY_TEMPLATE } from '../src/ops.js';
 import { KINDS } from '../src/state.js';
-import { claimNext, claimTask } from '../src/claim.js';
+import { claimTask } from '../src/claim.js';
 import { addCriterion } from '../src/criteria.js';
 import { boardData } from '../src/queries.js';
 
@@ -78,19 +78,6 @@ describe('research is out of the agent queue', () => {
     return t;
   };
 
-  it('claimNext walks past a research task and takes the next one', () => {
-    const r = ready('research');
-    const f = ready('feature');
-    const got = claimNext(db, { type: 'ai', id: 's1' }, 600);
-    expect(got?.id).toBe(f.id);
-    expect(got?.id).not.toBe(r.id);
-  });
-
-  it('claimNext returns null when research is all that is left', () => {
-    ready('research');
-    expect(claimNext(db, { type: 'ai', id: 's1' }, 600)).toBeNull();
-  });
-
   it('an explicit claim of a research task is refused, and says why', () => {
     const r = ready('research');
     const res = claimTask(db, r.id, { type: 'ai', id: 's1' }, 600);
@@ -121,9 +108,9 @@ describe('boardData kind filter', () => {
     expect(boardData(db).new).toHaveLength(2);
   });
 
-  // READY_SQL и CLAIMABLE_SQL (core/claim.ts) должны исключать research одинаково — иначе
-  // ready=1 врёт: board --ready её покажет и карточка выглядит takeable, хотя claimNext её
-  // никогда не отдаст. Заводим research с критериями специально: без них она и так не ready
+  // READY_SQL исключает research так же, как claimTask отказывает в ней агенту — иначе
+  // ready=1 врёт: board --ready её покажет и карточка выглядит takeable, хотя агент её
+  // взять не сможет. Заводим research с критериями специально: без них она и так не ready
   // по другой причине, а тут причина должна быть именно kind.
   it('READY_SQL excludes research even with criteria, so ready stays in sync with claimable', () => {
     const r = addTask(db, { title: 'r', kind: 'research' }, user);

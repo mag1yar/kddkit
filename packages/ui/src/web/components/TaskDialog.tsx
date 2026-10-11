@@ -10,7 +10,6 @@ import {
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
-import { AgentFeed } from './AgentFeed';
 import { CriteriaList } from './CriteriaList.js';
 import { FilesTab } from './FilesTab';
 import { History } from './History';
@@ -53,7 +52,7 @@ export function TaskDialog({ id, version, tracks, onClose, onChanged }: {
   // черновик критерия живёт здесь, а не в CriteriaList: закрытие диалога обязано о нём знать
   const [criterion, setCriterion] = useState('');
   const [discard, setDiscard] = useState(false);
-  const [tab, setTab] = useState<'comments' | 'files' | 'history' | 'activity'>('comments');
+  const [tab, setTab] = useState<'comments' | 'files' | 'history'>('comments');
 
   const reload = () => getTask(id!).then(setDetail).catch((e: Error) => toast.error(e.message));
   useEffect(() => {
@@ -70,7 +69,7 @@ export function TaskDialog({ id, version, tracks, onClose, onChanged }: {
   useEffect(() => { setDiscard(false); }, [comment, criterion]);
 
   if (id === null || !detail) return null;
-  const { task, criteria, comments, events, links, files, agent_runs_total } = detail;
+  const { task, criteria, comments, events, links, files } = detail;
   const after = () => { onChanged(); return reload(); };
 
   // Загрузка из редактора возвращает готовый markdown: alt — описание, а его при вставке
@@ -140,14 +139,13 @@ export function TaskDialog({ id, version, tracks, onClose, onChanged }: {
 
             <Tabs
               value={tab}
-              onValueChange={(v) => setTab(v as 'comments' | 'files' | 'history' | 'activity')}
+              onValueChange={(v) => setTab(v as 'comments' | 'files' | 'history')}
               className="border-t pt-3"
             >
               <TabsList variant="line">
                 <TabsTrigger value="comments">Comments <span className="text-muted-foreground">{comments.length}</span></TabsTrigger>
                 <TabsTrigger value="files">Files <span className="text-muted-foreground">{files.length}</span></TabsTrigger>
                 <TabsTrigger value="history">History <span className="text-muted-foreground">{events.length}</span></TabsTrigger>
-                <TabsTrigger value="activity">Activity <span className="text-muted-foreground">{agent_runs_total}</span></TabsTrigger>
               </TabsList>
 
               <TabsContent value="comments" className="flex flex-col gap-2 pt-2">
@@ -186,10 +184,6 @@ export function TaskDialog({ id, version, tracks, onClose, onChanged }: {
 
               <TabsContent value="history" className="pt-2">
                 <History events={events} />
-              </TabsContent>
-
-              <TabsContent value="activity" className="pt-2">
-                <AgentFeed taskId={task.id} />
               </TabsContent>
             </Tabs>
           </div>

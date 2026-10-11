@@ -92,7 +92,6 @@ describe('notice eligibility', () => {
   it.each([
     [['show', '1', '--json'], {}],
     [['update'], {}],
-    [['worker', '1'], {}],
     [['help', 'status'], {}],
     [['status', '--help'], {}],
     [['--version'], {}],

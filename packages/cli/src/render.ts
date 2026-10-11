@@ -194,11 +194,6 @@ export function renderBrief(brief: TaskBrief): string {
   }
   renderManual(lines, brief.manual_provenance);
   renderHandoffs(lines, brief.handoffs.items, brief.handoffs.omitted);
-  if (brief.provenance) {
-    lines.push('worker provenance:');
-    for (const [key, value] of Object.entries(brief.provenance)) lines.push(`  ${key}: ${value}`);
-  }
-  if (brief.worker_provenance_omitted) lines.push('worker provenance omitted');
   const criterion = brief.next_action.criterion_id === undefined
     ? ''
     : ` criterion #${brief.next_action.criterion_id}`;

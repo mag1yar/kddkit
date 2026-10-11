@@ -3,7 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import {
-  addCriterion, addTask, appendAgentEvent, attachFile, blockTask, commentTask, linkTasks,
+  addCriterion, addTask, attachFile, blockTask, commentTask, linkTasks,
   openDb, setCriterionChecked, taskBrief,
 } from '@kddkit/core';
 import { renderBrief } from '../src/render.js';
@@ -52,12 +52,6 @@ describe('kdd brief', () => {
     const source = join(dirname(env.KDD_DB!), 'artifact.txt');
     writeFileSync(source, 'artifact');
     const file = attachFile(db, env.KDD_DB!, task.id, source, {}, user);
-    appendAgentEvent(db, task.id, 'worker-139', 'run_start', {
-      detail: { head: 'before-commit', branch: 'master', worktree: '/tmp/worktree' },
-    });
-    appendAgentEvent(db, task.id, 'worker-139', 'run_end', {
-      detail: { head: 'after-commit', session_id: 'session-139' },
-    });
     db.close();
 
     const expectedDb = openDb(env.KDD_DB!, 'brief-cli');
@@ -72,10 +66,6 @@ describe('kdd brief', () => {
     expect(JSON.parse(first)).toMatchObject({
       task: { goal: 'finish it', status: 'new', blocked: true, block_reason: 'waiting for input' },
       next_action: { kind: 'resolve_blocker' },
-      provenance: {
-        worker_id: 'worker-139', session_id: 'session-139', branch: 'master',
-        worktree: '/tmp/worktree', before_commit: 'before-commit', after_commit: 'after-commit',
-      },
     });
     const parsed = JSON.parse(first);
     expect(parsed.criteria.items).toEqual(expect.arrayContaining([
@@ -119,7 +109,6 @@ describe('kdd brief', () => {
       from_client: 'claude', from_session_id: 'prior-session',
       to_client: 'codex', to_session_id: 'full-manual-session', event_id: 42, at: 124,
     }], omitted: 1 };
-    brief.provenance = { worker_id: 'worker-1', before_commit: 'before' };
 
     const rendered = renderBrief(brief);
 
@@ -141,8 +130,6 @@ describe('kdd brief', () => {
     expect(rendered).toContain('budget: 4096 bytes');
     expect(rendered).toContain('manual provenance:');
     expect(rendered).toContain('session_id: full-manual-session');
-    expect(rendered).toContain('worker provenance:');
-    expect(rendered).toContain('worker_id: worker-1');
     expect(rendered).toContain('claude:prior-session -> codex:full-manual-session');
     expect(rendered).toContain('(+1 omitted)');
   });

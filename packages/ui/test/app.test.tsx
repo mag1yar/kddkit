@@ -6,7 +6,7 @@ import { STATUSES, projectHref, type Board, type Task } from '../src/web/api';
 
 const task = (over: Partial<Task> = {}): Task => ({
   id: 1, title: 'do a thing', body: null, status: 'new', blocked: 0, block_reason: null,
-  priority: 'medium', kind: 'feature', area: null, parent_id: null, execution_mode: 'manual', track_id: null, ready: 1,
+  priority: 'medium', kind: 'feature', area: null, parent_id: null, track_id: null, ready: 1,
   criteria_checked: 0, criteria_total: 0, created_at: 0, updated_at: 0, ...over,
 });
 
@@ -23,10 +23,6 @@ function stubFetch(): Map<string, number> {
     if (path.startsWith('/api/version')) return { version: 1 };
     if (path.startsWith('/api/releases')) {
       return { current: '0.5.0', latest: '0.5.0', hasUpdate: false, releases: [], repoUrl: null, error: null };
-    }
-    if (path.startsWith('/api/autotick')) {
-      return { enabled: false, intervalSec: 60, maxWorkers: 3, maxWorkersEnvLocked: false,
-        last: null, nextAt: null, running: false };
     }
     if (path.startsWith('/api/ping')) return { kdd: true, default: 'abc123def4567890', needsToken: true };
     if (path.startsWith('/api/board')) return board;

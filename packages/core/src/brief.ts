@@ -7,7 +7,6 @@ import { parseDecisionMd } from './decisions.js';
 import { taskDetail } from './queries.js';
 import type { Criterion, ManualProvenance, SessionHandoff } from './types.js';
 import type { Kind, Priority, Status } from './state.js';
-import type { ExecutionMode } from './execution.js';
 
 export interface BriefSection<T> {
   items: T[];
@@ -16,7 +15,7 @@ export interface BriefSection<T> {
 
 export type NextAction = {
   kind: 'resolve_blocker' | 'start_work' | 'complete_criterion' | 'submit_review' |
-    'await_acceptance' | 'await_controller' | 'archived' | 'done';
+    'await_acceptance' | 'archived' | 'done';
   text: string;
   criterion_id?: number;
 };
@@ -33,7 +32,7 @@ export interface TaskBrief {
     kind: Kind;
     area: string | null;
     archived_at: number | null;
-    parent_id: number | null; execution_mode: ExecutionMode;
+    parent_id: number | null;
   };
   criteria: BriefSection<{
     id: number;
@@ -73,91 +72,11 @@ export interface TaskBrief {
   }>;
   manual_provenance?: ManualProvenance;
   handoffs: BriefSection<SessionHandoff>;
-  provenance?: {
-    worker_id?: string;
-    session_id?: string;
-    branch?: string;
-    worktree?: string;
-    before_commit?: string;
-    after_commit?: string;
-    error?: string;
-  };
-  worker_provenance_omitted?: boolean;
   next_action: NextAction;
   budget: { max_bytes: 4096 };
 }
 
-type Provenance = NonNullable<TaskBrief['provenance']>;
-type JsonObject = Record<string, unknown>;
-
 const lexical = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0;
-
-function detailObject(detail: string | null): JsonObject {
-  if (!detail) return {};
-  try {
-    const value: unknown = JSON.parse(detail);
-    return value !== null && typeof value === 'object' && !Array.isArray(value)
-      ? value as JsonObject
-      : {};
-  } catch {
-    return {};
-  }
-}
-
-function stringField(key: string, ...objects: JsonObject[]): string | undefined {
-  for (const object of objects) {
-    const value = object[key];
-    if (typeof value === 'string') return value;
-  }
-  return undefined;
-}
-
-function readRunProvenance(db: Database.Database, taskId: number): Provenance | undefined {
-  const row = db.prepare(
-    `WITH latest_start AS (
-       SELECT id, worker_id, detail
-         FROM agent_events
-        WHERE task_id = ? AND kind = 'run_start'
-        ORDER BY id DESC
-        LIMIT 1
-     )
-     SELECT s.worker_id,
-            s.detail AS start_detail,
-            (SELECT ae.detail FROM agent_events ae
-              WHERE ae.task_id = ? AND ae.worker_id = s.worker_id
-                AND ae.kind = 'run_end' AND ae.id > s.id
-              ORDER BY ae.id ASC LIMIT 1) AS end_detail,
-            (SELECT ae.detail FROM agent_events ae
-              WHERE ae.task_id = ? AND ae.worker_id = s.worker_id
-                AND ae.kind = 'error' AND ae.id > s.id
-              ORDER BY ae.id DESC LIMIT 1) AS error_detail
-       FROM latest_start s`,
-  ).get(taskId, taskId, taskId) as {
-    worker_id: string;
-    start_detail: string | null;
-    end_detail: string | null;
-    error_detail: string | null;
-  } | undefined;
-  if (!row) return undefined;
-
-  const start = detailObject(row.start_detail);
-  const end = detailObject(row.end_detail);
-  const error = detailObject(row.error_detail);
-  const provenance: Provenance = { worker_id: row.worker_id };
-  const sessionId = stringField('session_id', start, end, error);
-  const branch = stringField('branch', start, end, error);
-  const worktree = stringField('worktree', start, end, error);
-  const beforeCommit = stringField('head', start);
-  const afterCommit = stringField('head', end);
-  const message = stringField('message', error);
-  if (sessionId !== undefined) provenance.session_id = sessionId;
-  if (branch !== undefined) provenance.branch = branch;
-  if (worktree !== undefined) provenance.worktree = worktree;
-  if (beforeCommit !== undefined) provenance.before_commit = beforeCommit;
-  if (afterCommit !== undefined) provenance.after_commit = afterCommit;
-  if (message !== undefined) provenance.error = message;
-  return provenance;
-}
 
 function readTaskDecisions(
   db: Database.Database, decisionsDir: string, taskId: number,
@@ -186,7 +105,7 @@ function readTaskDecisions(
 }
 
 function nextAction(
-  task: TaskBrief['task'], criteria: TaskBrief['criteria']['items'], controlled: boolean,
+  task: TaskBrief['task'], criteria: TaskBrief['criteria']['items'],
 ): NextAction {
   if (task.status === 'done') return { kind: 'done', text: 'Task is done; no action remains.' };
   if (task.archived_at !== null) {
@@ -198,7 +117,6 @@ function nextAction(
       text: task.block_reason ? `Resolve blocker: ${task.block_reason}` : 'Resolve the task blocker.',
     };
   }
-  if (controlled) return { kind: 'await_controller', text: 'Await controller execution or handoff.' };
   if (task.status === 'backlog') {
     return { kind: 'start_work', text: 'Move the task to new and start work.' };
   }
@@ -241,7 +159,7 @@ function drain<T>(brief: TaskBrief, section: BriefSection<T>): void {
   }
 }
 
-function fitBrief(brief: TaskBrief, sources: ScalarSources, errorSource?: string): TaskBrief {
+function fitBrief(brief: TaskBrief, sources: ScalarSources): TaskBrief {
   if (briefBytes(brief) <= CAPS.briefBytes) return brief;
 
   drain(brief, brief.events);
@@ -251,17 +169,8 @@ function fitBrief(brief: TaskBrief, sources: ScalarSources, errorSource?: string
   drain(brief, brief.decisions);
   drain(brief, brief.handoffs);
 
-  if (briefBytes(brief) > CAPS.briefBytes && brief.provenance?.error && errorSource) {
-    for (const cap of [128, 64, 32, 16]) {
-      brief.provenance.error = capText(errorSource, cap);
-      if (briefBytes(brief) <= CAPS.briefBytes) return brief;
-    }
-    delete brief.provenance.error;
-  }
-  for (const source of [brief.manual_provenance, brief.provenance]) {
-    for (const field of ['worktree', 'branch'] as const) {
-      if (briefBytes(brief) > CAPS.briefBytes && source?.[field]) delete source[field];
-    }
+  for (const field of ['worktree', 'branch'] as const) {
+    if (briefBytes(brief) > CAPS.briefBytes && brief.manual_provenance?.[field]) delete brief.manual_provenance[field];
   }
 
   const caps: Record<keyof ScalarSources, number> = {
@@ -294,10 +203,6 @@ function fitBrief(brief: TaskBrief, sources: ScalarSources, errorSource?: string
     brief.criteria.items.length > 0) {
     omitLastItem(brief.criteria);
   }
-  if (briefBytes(brief) > CAPS.briefBytes && brief.provenance) {
-    delete brief.provenance;
-    brief.worker_provenance_omitted = true;
-  }
   drain(brief, brief.criteria);
   if (briefBytes(brief) > CAPS.briefBytes) {
     throw new Error('task brief cannot fit the 4096-byte JSON budget');
@@ -314,9 +219,6 @@ export function taskBrief(
       criterion.checked_at === null ? 0 : criterion.evidence ? 1 : 2;
     return rank(a) - rank(b) || a.position - b.position || a.id - b.id;
   });
-  const provenance = readRunProvenance(db, id);
-  const errorSource = provenance?.error;
-  if (provenance?.error) provenance.error = capText(provenance.error, 256);
   const task: TaskBrief['task'] = {
       id: detail.task.id,
       title: capText(detail.task.title, CAPS.titleChars),
@@ -329,7 +231,7 @@ export function taskBrief(
       kind: detail.task.kind,
       area: detail.task.area === null ? null : capText(detail.task.area, 128),
       archived_at: detail.task.archived_at,
-      parent_id: detail.task.parent_id, execution_mode: detail.task.execution_mode,
+      parent_id: detail.task.parent_id,
   };
   const projectedCriteria: TaskBrief['criteria'] = {
       items: criteria.map((criterion) => ({
@@ -341,10 +243,7 @@ export function taskBrief(
       })),
       omitted: 0,
   };
-  const controlled = task.execution_mode === 'orchestrated'
-    || !!db.prepare('SELECT 1 FROM managed_task_policy WHERE task_id=?').get(id)
-    || !!db.prepare('SELECT 1 FROM execution_handoffs WHERE task_id=? AND completed_at IS NULL').get(id);
-  const action = nextAction(task, projectedCriteria.items, controlled);
+  const action = nextAction(task, projectedCriteria.items);
   const actionSource = action.text;
   action.text = capText(action.text, 128);
   const brief: TaskBrief = {
@@ -396,7 +295,6 @@ export function taskBrief(
       items: detail.handoffs.slice(-3).reverse(),
       omitted: Math.max(0, detail.handoffs.length - 3),
     },
-    ...(provenance ? { provenance } : {}),
     next_action: action,
     budget: { max_bytes: CAPS.briefBytes },
   };
@@ -406,5 +304,5 @@ export function taskBrief(
     next_action: actionSource,
     area: detail.task.area,
     title: detail.task.title,
-  }, errorSource);
+  });
 }

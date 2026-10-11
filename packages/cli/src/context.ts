@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { agentId, KddError, manualSessionFromEnv, openDb, resolveDbPath, type Actor } from '@kddkit/core';
 
 /**
- * Кто дёргает CLI. KDD_ACTOR — явное слово (его ставят tick/worker), иначе смотрим на само
+ * Кто дёргает CLI. KDD_ACTOR — явное слово, иначе смотрим на само
  * окружение: Claude Code выставляет CLAUDECODE=1 каждой команде своего Bash-инструмента.
  * Раньше дефолтом был `user`, и агент без экспортированной переменной писался в лог человеком —
  * а заодно проскакивал мимо всех ai-гейтов checkMove: правило ядра работало как opt-in.

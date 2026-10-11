@@ -1,15 +1,13 @@
 import type { Status, Priority, Kind } from './state.js';
-import type { ExecutionMode } from './execution.js';
 
 export interface Task {
   id: number; title: string; body: string | null; status: Status;
   blocked: 0 | 1; block_reason: string | null; priority: Priority; area: string | null;
   kind: Kind;                   // feature | bug | chore | research; дефолт feature (см. migration 9)
-  parent_id: number | null; execution_mode: ExecutionMode;
+  parent_id: number | null;
   track_id: number | null;
   claimed_by: string | null;    // 'ai:<id>' | 'user'; NULL когда не занята (инвариант claim)
   claim_expires: number | null; // unix-сек истечения lease
-  failed_attempts: number;      // неудачные попытки агента; reset при review, block при K (claim.ts)
   position: number; archived_at: number | null; created_at: number; updated_at: number;
 }
 export type AttentionReason =

@@ -46,7 +46,7 @@ describe('bind address', () => {
 
   it('reaches the LAN address once asked to (--host)', async () => {
     const db = openDb(':memory:', 'x');
-    const { url, close } = await startUi(() => db, 0, '', undefined,
+    const { url, close } = await startUi(() => db, 0, '',
       { host: '0.0.0.0', token: 's3cret' });
     try {
       const port = new URL(url).port;
@@ -58,7 +58,7 @@ describe('bind address', () => {
 });
 
 describe('token', () => {
-  const withToken = () => startUi(() => openDb(':memory:', 'x'), 0, '', undefined,
+  const withToken = () => startUi(() => openDb(':memory:', 'x'), 0, '',
     { host: '127.0.0.1', token: 's3cret' });
 
   it('rejects an /api call without it', async () => {
@@ -94,7 +94,7 @@ describe('token', () => {
 // проваливался мимо ветки переиспользования и падал на EADDRINUSE.
 describe('ping stays reachable', () => {
   it('answers without a token and says that one is required', async () => {
-    const { url, close } = await startUi(() => openDb(':memory:', 'x'), 0, 'abc', undefined,
+    const { url, close } = await startUi(() => openDb(':memory:', 'x'), 0, 'abc',
       { host: '127.0.0.1', token: 's3cret' });
     try {
       const res = await fetch(`${url}/api/ping`);

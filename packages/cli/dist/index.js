@@ -3,18 +3,14 @@
 // src/index.ts
 import { Command } from "commander";
 import { existsSync as existsSync2, readFileSync as readFileSync6 } from "fs";
-import { basename as basename2, delimiter, dirname as dirname3, join as join6 } from "path";
-import { spawn as spawnProcess2 } from "child_process";
+import { basename as basename2, dirname as dirname2 } from "path";
 import { networkInterfaces } from "os";
-import { createInterface } from "readline";
 import { fileURLToPath as fileURLToPath2 } from "url";
-import lockfile from "proper-lockfile";
 import {
   KddError as KddError2,
   addCriterion,
   addDecision,
   addTask,
-  appendAgentEvent,
   archiveTask,
   attachFile,
   addRepository,
@@ -25,12 +21,9 @@ import {
   bindingsOf,
   kddHome as kddHome3,
   attentionData,
-  authorOf,
   blockTask,
-  closeDb,
   boardData,
   BUG_BODY_TEMPLATE,
-  claimNext,
   claimTask,
   commentTask,
   createTrack,
@@ -40,24 +33,16 @@ import {
   detachFile,
   editTask,
   editTrack,
-  ensureWorktree,
   exportBoard,
-  filesDir,
-  headCommit,
   kddVersion as kddVersion2,
   KINDS,
   linkTasks,
-  listAgentEvents,
   listCriteria,
   listProjects,
-  taskBranchHead,
   listTracks,
-  maxWorkers,
   moveTask,
-  mustGetTask,
-  now as now3,
+  now as now2,
   openDb as openDb2,
-  parseClaudeStreamLine,
   rebuild,
   recall,
   removeCriterion,
@@ -65,26 +50,18 @@ import {
   resolveDbPath as resolveDbPath2,
   resolveDecisionsDir,
   resolveToplevel,
-  setAutoTick,
   setCriterionChecked,
   setProjectToplevel,
   statusDigest,
-  stopWorkers,
   storeIdentity,
   releaseInfo,
   compareVersions as compareVersions2,
-  sweepWorktrees,
   syncedTaskDetail,
   taskBrief,
-  tick,
   unarchiveTask,
   unblockTask
 } from "@kddkit/core";
-import {
-  createScheduler,
-  projectPool,
-  startUi
-} from "@kddkit/ui";
+import { projectPool, startUi } from "@kddkit/ui";
 
 // src/context.ts
 import { agentId, KddError, manualSessionFromEnv, openDb, resolveDbPath } from "@kddkit/core";
@@ -116,84 +93,6 @@ function fail(msg, json) {
   if (json) console.log(JSON.stringify({ error: msg }));
   else console.error(`error: ${msg}`);
   process.exit(1);
-}
-
-// src/procs.ts
-import { execFileSync } from "child_process";
-import { createHash } from "crypto";
-var workerTag = (taskId, dbPath) => `kdd-worker-${taskId}@${createHash("sha256").update(dbPath).digest("hex").slice(0, 12)}`;
-var psAll = () => execFileSync(
-  "ps",
-  ["-eo", "pid=,pgid=,args="],
-  { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }
-);
-function parsePs(out2) {
-  const rows = [];
-  for (const line of out2.split("\n")) {
-    const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
-    if (m) rows.push({ pid: Number(m[1]), pgid: Number(m[2]), args: m[3] });
-  }
-  return rows;
-}
-function scan(tag, ps) {
-  const rows = parsePs(ps());
-  return {
-    // Подстроки достаточно: хвост `@<hash>` делает метку задачи 8 не префиксом метки задачи 85.
-    hits: rows.filter((r) => r.args.includes(tag)).map((r) => ({ pid: r.pid, pgid: r.pgid })),
-    own: rows.find((r) => r.pid === process.pid)?.pgid
-  };
-}
-function findWorker(tag, ps = psAll) {
-  return scan(tag, ps).hits;
-}
-function workerAlive(tag, ps = psAll) {
-  try {
-    return findWorker(tag, ps).length > 0;
-  } catch {
-    return true;
-  }
-}
-function sleepSync(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-function signalGroup(pgid, sig, own) {
-  if (pgid <= 1 || pgid === own) return;
-  try {
-    process.kill(-pgid, sig);
-  } catch (e) {
-    if (e.code !== "ESRCH") throw e;
-  }
-}
-function killWorkers(tags, opts = {}) {
-  const { ps = psAll, termWaitMs = 2e3, killWaitMs = 500 } = opts;
-  const out2 = /* @__PURE__ */ new Map();
-  if (!tags.size) return out2;
-  const sweep = () => {
-    const rows = parsePs(ps());
-    const alive = /* @__PURE__ */ new Map();
-    for (const [id, tag] of tags) {
-      const hits = rows.filter((r) => r.args.includes(tag)).map((r) => ({ pid: r.pid, pgid: r.pgid }));
-      if (hits.length) alive.set(id, hits);
-    }
-    return { alive, own: rows.find((r) => r.pid === process.pid)?.pgid };
-  };
-  const signalAll = (alive, sig, own) => {
-    const pgids = new Set([...alive.values()].flat().map((p) => p.pgid));
-    for (const pgid of pgids) signalGroup(pgid, sig, own);
-  };
-  const first = sweep();
-  for (const id of tags.keys()) if (!first.alive.has(id)) out2.set(id, "absent");
-  if (!first.alive.size) return out2;
-  signalAll(first.alive, "SIGTERM", first.own);
-  sleepSync(termWaitMs);
-  const second = sweep();
-  for (const id of first.alive.keys()) if (!second.alive.has(id)) out2.set(id, "gone");
-  if (!second.alive.size) return out2;
-  signalAll(second.alive, "SIGKILL", second.own);
-  sleepSync(killWaitMs);
-  const third = sweep();
-  for (const id of second.alive.keys()) out2.set(id, third.alive.has(id) ? "stuck" : "gone");
-  return out2;
 }
 
 // src/render.ts
@@ -364,11 +263,6 @@ function renderBrief(brief) {
   }
   renderManual(lines, brief.manual_provenance);
   renderHandoffs(lines, brief.handoffs.items, brief.handoffs.omitted);
-  if (brief.provenance) {
-    lines.push("worker provenance:");
-    for (const [key, value] of Object.entries(brief.provenance)) lines.push(`  ${key}: ${value}`);
-  }
-  if (brief.worker_provenance_omitted) lines.push("worker provenance omitted");
   const criterion = brief.next_action.criterion_id === void 0 ? "" : ` criterion #${brief.next_action.criterion_id}`;
   lines.push(`next [${brief.next_action.kind}${criterion}]: ${brief.next_action.text}`);
   lines.push(`budget: ${brief.budget.max_bytes} bytes`);
@@ -465,139 +359,6 @@ function renderStatus(d) {
   return render();
 }
 
-// src/tick-runner.ts
-import { spawn as spawnProcess } from "child_process";
-import { dirname } from "path";
-import { now as now2 } from "@kddkit/core";
-
-// src/tick-output.ts
-function parseTickOutput(out2, err, code, at) {
-  const zero = { at, reclaimed: 0, killed: 0, stuck: 0, spawned: 0, active: 0, reaped: 0 };
-  let parsed;
-  try {
-    parsed = JSON.parse(out2);
-  } catch {
-    parsed = void 0;
-  }
-  const obj = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : void 0;
-  if (code !== 0) {
-    const stdoutError = obj && typeof obj.error === "string" ? obj.error : void 0;
-    return { ...zero, error: stdoutError || err.trim() || `kdd tick exited with code ${code}` };
-  }
-  if (!obj) return { ...zero, error: `unparsable tick output: ${out2.slice(0, 200)}` };
-  if (obj.skipped) return { ...zero, skipped: true };
-  const num = (v) => typeof v === "number" ? v : 0;
-  return {
-    at,
-    reclaimed: num(obj.reclaimed),
-    killed: num(obj.killed),
-    stuck: num(obj.stuck),
-    spawned: num(obj.spawned),
-    active: num(obj.active),
-    reaped: num(obj.reaped)
-  };
-}
-
-// src/tick-runner.ts
-function createStopRunner(scriptPath, spawnFn = spawnProcess) {
-  return ({ dbPath, projectPath, toplevel }) => new Promise((resolve, reject) => {
-    const child = spawnFn(process.execPath, [scriptPath, "stop"], {
-      cwd: toplevel ?? dirname(projectPath),
-      env: { ...process.env, KDD_DB: dbPath },
-      stdio: ["ignore", "ignore", "pipe"]
-    });
-    let err = "";
-    child.stderr?.on("data", (d) => {
-      err += d.toString();
-    });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`kdd stop exited ${code}: ${err.trim()}`));
-    });
-  });
-}
-function createTickRunner(scriptPath, killTimeoutMs, spawnFn = spawnProcess, killGraceMs = 5e3) {
-  return ({ dbPath, projectPath, toplevel }) => new Promise((resolve) => {
-    const child = spawnFn(
-      process.execPath,
-      [scriptPath, "tick", "--json"],
-      {
-        // cwd нужен tick'у, чтобы резолвить toplevel для воркеров; базу пиннит KDD_DB.
-        // Родитель projectPath (git common-dir) — верный toplevel только для обычного
-        // <repo>/.git: у submodule это <super>/.git/modules, у --separate-git-dir и у
-        // bare-репо с linked worktree он тоже расходится с toplevel. Fallback нужен
-        // только для досок без project_toplevel в meta (созданы до этого поля) — и это
-        // ДОГАДКА по чужому cwd, а не факт: KDD_TICK_SPAWNED ниже запрещает этому же
-        // ребёнку поверить в свою догадку и записать её обратно в meta как истину.
-        // Такую доску чинит только `kdd tick`/`kdd ui`, запущенный руками из настоящего
-        // репозитория — там cwd honest, см. onePass/uiStart в index.ts.
-        cwd: toplevel ?? dirname(projectPath),
-        env: { ...process.env, KDD_DB: dbPath, KDD_TICK_SPAWNED: "1" },
-        stdio: ["ignore", "pipe", "pipe"]
-      }
-    );
-    let out2 = "";
-    let err = "";
-    let timedOut = false;
-    child.stdout.on("data", (d) => {
-      out2 += d.toString();
-    });
-    child.stderr.on("data", (d) => {
-      err += d.toString();
-    });
-    let escalation;
-    const killer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-      escalation = setTimeout(() => child.kill("SIGKILL"), killGraceMs);
-      escalation.unref?.();
-    }, killTimeoutMs);
-    const settle = (run2) => {
-      clearTimeout(killer);
-      if (escalation) clearTimeout(escalation);
-      resolve(run2);
-    };
-    child.on("error", (e) => {
-      settle({ at: now2(), reclaimed: 0, killed: 0, stuck: 0, spawned: 0, active: 0, reaped: 0, error: e.message });
-    });
-    child.on("close", (code) => {
-      if (timedOut) {
-        settle({
-          at: now2(),
-          reclaimed: 0,
-          killed: 0,
-          stuck: 0,
-          spawned: 0,
-          active: 0,
-          reaped: 0,
-          error: `kdd tick killed after exceeding ${killTimeoutMs}ms timeout`
-        });
-        return;
-      }
-      settle(parseTickOutput(out2, err, code, now2()));
-    });
-  });
-}
-
-// src/prompt.ts
-var COMMIT_TYPE = {
-  feature: "feat",
-  bug: "fix",
-  chore: "chore",
-  research: "docs"
-};
-var BODY = {
-  feature: "Read the acceptance criteria first \u2014 they are the definition of done \u2014 then implement them.",
-  bug: "Reproduce the failure first, then find its cause. Fix the CAUSE, not the symptom: grep every caller of the function you are about to touch, because a guard in one caller leaves its siblings broken. Add a test that fails on that cause and passes after your fix, and make sure the whole suite is green \u2014 a fix that breaks a neighbour is not a fix.",
-  chore: "Read the acceptance criteria first \u2014 they are the definition of done. No behaviour test is expected here; the existing suite must stay green.",
-  research: "The deliverable is a written decision, not code. Investigate, then propose the outcome in your summary comment \u2014 decision, rationale, and alternatives considered \u2014 for a human to record with `kdd decide`; decisions are human-gated, so do not run that command yourself."
-};
-var scopeOf = (area) => area && /^[a-z0-9._-]+$/i.test(area) ? `(${area})` : "";
-function workerPrompt(kind, area) {
-  return `You are a kdd agent worker. Read your task: run \`kdd show $KDD_TASK_ID\`. Do the work in this repository. ${BODY[kind]} Commit your work as \`${COMMIT_TYPE[kind]}${scopeOf(area)}: <subject>\` \u2014 the changelog is generated from commit subjects, and a non-conventional subject is silently dropped. When done, leave ONE concise summary comment (\`kdd comment $KDD_TASK_ID "<what you changed and why; caveats or follow-ups>"\`) \u2014 this is the durable note humans and future sessions read, so keep it tight, not a log. Then check acceptance criteria (\`kdd criteria ls $KDD_TASK_ID\`, then \`kdd criteria check $KDD_TASK_ID <criterionId> --evidence "<test command, URL, commit, attachment, or note>"\` when evidence is available) and \`kdd move $KDD_TASK_ID review\`. If you get blocked or must stop early, comment the reason first.`;
-}
-
 // src/update-notifier.ts
 import { spawn } from "child_process";
 import { readFileSync } from "fs";
@@ -616,14 +377,14 @@ function readUpdateCache(path) {
     return null;
   }
 }
-function shouldRefresh(cache, now4) {
-  if (!cache || cache.checkedAt > now4) return true;
-  return now4 - cache.checkedAt >= (cache.latest ? 24 * 60 * 6e4 : 5 * 6e4);
+function shouldRefresh(cache, now3) {
+  if (!cache || cache.checkedAt > now3) return true;
+  return now3 - cache.checkedAt >= (cache.latest ? 24 * 60 * 6e4 : 5 * 6e4);
 }
 function eligible(argv, env) {
   if (env.CI || env.NO_UPDATE_NOTIFIER || env.CLAUDECODE === "1" || env.CODEX_SESSION_ID || env.CODEX_THREAD_ID || env.KDD_ACTOR === "ai" || env.npm_command === "exec") return false;
   if (argv.some((arg) => ["--json", "--help", "-h", "--version", "-V"].includes(arg))) return false;
-  return !["update", "worker", "help"].includes(argv[0] ?? "");
+  return !["update", "help"].includes(argv[0] ?? "");
 }
 function noticeOnStartup(argv = process.argv.slice(2), env = process.env) {
   if (!eligible(argv, env)) return;
@@ -647,11 +408,11 @@ function noticeOnStartup(argv = process.argv.slice(2), env = process.env) {
 import { spawnSync } from "child_process";
 import { randomUUID } from "crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync as readFileSync5, realpathSync as realpathSync2, renameSync, statSync, unlinkSync, writeFileSync } from "fs";
-import { basename, dirname as dirname2, isAbsolute, join as join5 } from "path";
+import { basename, dirname, isAbsolute, join as join5 } from "path";
 import { kddHome as kddHome2, updateDisposition as updateDisposition3 } from "@kddkit/core";
 
 // src/update-claude.ts
-import { execFileSync as execFileSync2 } from "child_process";
+import { execFileSync } from "child_process";
 import { readFileSync as readFileSync3, realpathSync } from "fs";
 import { homedir } from "os";
 import { join as join3 } from "path";
@@ -686,7 +447,7 @@ var outcome = (status, detail) => ({ name: "claude", status, detail });
 var errorText = (r) => (r.stderr.trim() || r.error?.message || r.stdout.trim() || "unknown error").slice(0, 500);
 function gitRoot(cwd) {
   try {
-    return realpathSync(execFileSync2(
+    return realpathSync(execFileSync(
       "git",
       ["rev-parse", "--show-toplevel"],
       { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
@@ -1013,7 +774,7 @@ function readReceipt() {
 }
 function writeReceipt(receipt) {
   const path = receiptPath();
-  mkdirSync(dirname2(path), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.${randomUUID()}.tmp`;
   try {
     writeFileSync(tmp, JSON.stringify(receipt), { mode: 384, flag: "wx" });
@@ -1030,12 +791,12 @@ function npmCliFor(nodePath) {
   }
   for (const executable of candidates) {
     for (const path of [
-      join5(dirname2(dirname2(executable)), "lib/node_modules/npm/bin/npm-cli.js"),
-      join5(dirname2(executable), "node_modules/npm/bin/npm-cli.js")
+      join5(dirname(dirname(executable)), "lib/node_modules/npm/bin/npm-cli.js"),
+      join5(dirname(executable), "node_modules/npm/bin/npm-cli.js")
     ]) if (existsSync(path)) return path;
     try {
-      const sibling = realpathSync2(join5(dirname2(executable), "npm"));
-      if (basename(sibling) === "npm-cli.js" && basename(dirname2(dirname2(sibling))) === "npm")
+      const sibling = realpathSync2(join5(dirname(executable), "npm"));
+      if (basename(sibling) === "npm-cli.js" && basename(dirname(dirname(sibling))) === "npm")
         return sibling;
     } catch {
     }
@@ -1154,34 +915,6 @@ function readBody(opts) {
   if (opts.body === "-") return readFileSync6(0, "utf8");
   return opts.body;
 }
-var runMarker = (tag) => ` Ignore this run marker, it is not part of your task: ${tag}`;
-var sq = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
-var defaultSpawnCmd = (taskId, tag) => `${sq(process.execPath)} ${sq(fileURLToPath2(import.meta.url))} worker ${taskId} --tag ${tag}`;
-var nodeFirstPath = () => [dirname3(process.execPath), process.env.PATH].filter(Boolean).join(delimiter);
-var TICK_LOCK_STALE = 10 * 60 * 1e3;
-var TICK_KILL_TIMEOUT = 5 * 60 * 1e3;
-function spawnWorker(taskId, workerId, projectDir, tag) {
-  const cmd = process.env.KDD_SPAWN_CMD ?? defaultSpawnCmd(taskId, tag);
-  const shell = process.env.SHELL || "/bin/sh";
-  const ident = `export KDD_TASK_ID=${sq(String(taskId))} KDD_ACTOR=ai KDD_SESSION=${sq(workerId)}; `;
-  const child = spawnProcess2(shell, ["-lc", ident + cmd], {
-    cwd: projectDir,
-    env: { ...process.env, KDD_TASK_ID: String(taskId), KDD_ACTOR: "ai", KDD_SESSION: workerId },
-    detached: true,
-    stdio: "ignore"
-  });
-  child.on("error", (e) => {
-    process.stderr.write(`kdd tick: worker spawn failed for task ${taskId}: ${e.message}
-`);
-  });
-  child.unref();
-}
-var tickRunner = createTickRunner(fileURLToPath2(import.meta.url), TICK_KILL_TIMEOUT);
-var stopRunner = createStopRunner(fileURLToPath2(import.meta.url));
-var killerFor = (dbPath) => (taskIds) => killWorkers(new Map(taskIds.map((id) => [id, workerTag(id, dbPath)])));
-var secondsError = (name, v) => Number.isFinite(v) && v > 0 ? null : `invalid ${name} '${process.env[name]}' (seconds > 0)`;
-var ttlError = (ttl) => secondsError("KDD_WORKER_TTL", ttl);
-var DEFAULT_IDLE = 1800;
 function run(json, fn) {
   try {
     fn();
@@ -1254,296 +987,22 @@ program.command("brief").argument("<taskId>").option("--json").action((taskId, o
   out(o.json, brief, () => renderBrief(brief));
 }));
 program.command("attention").option("--json").action((o) => run(o.json, () => {
-  const inbox = withDb((db) => attentionData(db, now3()));
+  const inbox = withDb((db) => attentionData(db, now2()));
   out(o.json, inbox, () => renderAttention(inbox));
 }));
 program.command("move").argument("<id>").argument("<status>").option("--reason <text>", "why the transition skips the matrix (ai)").option("--json").action((id, status, o) => run(o.json, () => {
   const t = withDb((db) => moveTask(db, parseId(id), status, getActor(), o.reason));
   out(o.json, t, () => `#${t.id} \u2192 ${t.status}`);
 }));
-program.command("claim").argument("[id]", "task id to claim; omit when using --next").option("--next", "claim the top ready task from the queue").option("--renew", "renew the lease on a task you already hold").option("--ttl <seconds>", "lease length in seconds", String(DEFAULT_TTL)).option("--json").action((id, o) => run(o.json, () => {
+program.command("claim").argument("<id>", "task id to claim").option("--renew", "renew the lease on a task you already hold").option("--ttl <seconds>", "lease length in seconds", String(DEFAULT_TTL)).option("--json").action((id, o) => run(o.json, () => {
   const ttl = Number(o.ttl);
   const actor = getActor();
-  const { dbPath, projectPath } = resolveDbPath2();
-  const kill = killerFor(dbPath);
-  if (o.next) {
-    const t = withDbAt(dbPath, projectPath, (db) => claimNext(db, actor, ttl, { kill }));
-    if (!t) {
-      out(o.json, { task: null }, () => "no ready task");
-      return;
-    }
-    out(o.json, t, () => renderClaim(t, "claimed"));
-    return;
-  }
-  if (!id) throw new KddError2("give a task id or use --next");
-  const res = withDbAt(dbPath, projectPath, (db) => o.renew ? renewClaim(db, parseId(id), actor, ttl) : claimTask(db, parseId(id), actor, ttl, { kill }));
+  const res = withDb((db) => o.renew ? renewClaim(db, parseId(id), actor, ttl) : claimTask(db, parseId(id), actor, ttl));
   if (!res.ok) {
     fail(res.error, o.json);
     return;
   }
   out(o.json, res.task, () => renderClaim(res.task, o.renew ? "renewed" : "claimed"));
-}));
-program.command("tick").description("agent-mode: reclaim expired leases, claim ready tasks, spawn workers").option("--json").option("--watch", "loop until SIGINT/SIGTERM instead of a single pass").option("--interval <sec>", "seconds between passes in --watch mode", "30").action(async (o) => {
-  const intervalMs = Number(o.interval) * 1e3;
-  if (o.watch && (!Number.isFinite(intervalMs) || intervalMs <= 0)) {
-    fail(`--interval must be a positive number of seconds (got '${o.interval}')`, o.json);
-  }
-  const ttl = Number(process.env.KDD_WORKER_TTL ?? DEFAULT_TTL);
-  const badTtl = ttlError(ttl);
-  if (badTtl) fail(badTtl, o.json);
-  if (process.env.KDD_MAX_WORKERS !== void 0) {
-    const n = Number(process.env.KDD_MAX_WORKERS);
-    if (!Number.isInteger(n) || n < 1) {
-      fail("KDD_MAX_WORKERS must be a positive integer", o.json);
-    }
-  }
-  const onePass = () => {
-    const { dbPath, projectPath } = resolveDbPath2();
-    let release;
-    try {
-      release = lockfile.lockSync(join6(dirname3(dbPath), "tick"), { stale: TICK_LOCK_STALE, realpath: false });
-    } catch (e) {
-      if (e.code === "ELOCKED") return { skipped: true };
-      throw e;
-    }
-    try {
-      const toplevel = resolveToplevel();
-      return withDbAt(dbPath, projectPath, (db) => {
-        if (!process.env.KDD_TICK_SPAWNED) setProjectToplevel(db, toplevel);
-        const tagOf = (taskId) => workerTag(taskId, dbPath);
-        const t = tick(db, {
-          maxWorkers: maxWorkers(db),
-          ttl,
-          projectDir: toplevel,
-          spawn: (taskId, workerId, dir) => spawnWorker(taskId, workerId, dir, tagOf(taskId)),
-          kill: killerFor(dbPath)
-        });
-        return { ...t, reaped: sweepWorktrees(db, toplevel, (taskId) => workerAlive(tagOf(taskId))) };
-      });
-    } finally {
-      release();
-    }
-  };
-  const print = (r) => {
-    const ts = o.watch ? (/* @__PURE__ */ new Date()).toISOString() : "";
-    out(o.json, o.watch ? { ...r, ts } : r, () => {
-      const stamp = o.watch ? `[${ts}] ` : "";
-      return r.skipped ? `${stamp}tick: locked (another tick running)` : `${stamp}tick: reclaimed ${r.reclaimed}, killed ${r.killed}, stuck ${r.stuck}, spawned ${r.spawned}, active ${r.active}, reaped ${r.reaped}`;
-    });
-  };
-  const pass = () => {
-    try {
-      print(onePass());
-    } catch (e) {
-      const msg = e instanceof KddError2 ? e.message : String(e);
-      if (!o.watch) fail(msg, o.json);
-      process.stderr.write(`[${(/* @__PURE__ */ new Date()).toISOString()}] tick error: ${msg}
-`);
-    }
-  };
-  if (!o.watch) {
-    pass();
-    return;
-  }
-  let stop = false;
-  let wake;
-  const onSig = () => {
-    stop = true;
-    wake?.();
-  };
-  process.on("SIGINT", onSig);
-  process.on("SIGTERM", onSig);
-  try {
-    while (!stop) {
-      pass();
-      if (stop) break;
-      await new Promise((res) => {
-        const timer = setTimeout(() => {
-          wake = void 0;
-          res();
-        }, intervalMs);
-        wake = () => {
-          clearTimeout(timer);
-          wake = void 0;
-          res();
-        };
-      });
-    }
-  } finally {
-    process.off("SIGINT", onSig);
-    process.off("SIGTERM", onSig);
-  }
-});
-program.command("stop").description("agent-mode: kill live workers, release the leases of those that died").option("--json").action(async (o) => {
-  try {
-    const { dbPath, projectPath } = resolveDbPath2();
-    const release = await lockfile.lock(join6(dirname3(dbPath), "tick"), {
-      stale: TICK_LOCK_STALE,
-      realpath: false,
-      retries: { retries: 8, minTimeout: 250, maxTimeout: 4e3 }
-    });
-    try {
-      const r = withDbAt(dbPath, projectPath, (db) => {
-        setAutoTick(db, { enabled: false });
-        return stopWorkers(db, killerFor(dbPath));
-      });
-      out(o.json, r, () => `stop: killed ${r.killed}, released ${r.released}, stuck ${r.stuck}`);
-    } finally {
-      release();
-    }
-  } catch (e) {
-    fail(e instanceof KddError2 ? e.message : String(e), o.json);
-  }
-});
-program.command("worker").argument("<id>").option("--tag <tag>", "ps-visible run marker used to find this worker (set by kdd tick)").description("agent-mode supervisor: run claude on a task, ingest its stream into agent_events").action(async (id, o) => {
-  const workerId = process.env.KDD_SESSION ?? `manual:${process.pid}`;
-  let db;
-  try {
-    const taskId = parseId(id);
-    const { dbPath, projectPath } = resolveDbPath2();
-    const toplevel = resolveToplevel();
-    const claudeCmd = process.env.KDD_CLAUDE_CMD ?? "claude";
-    const allowed = process.env.KDD_ALLOWED_TOOLS ?? "Bash Read Edit Write Grep Glob";
-    const [bin, ...pre] = claudeCmd.split(/\s+/);
-    db = openDb2(dbPath, projectPath);
-    const task = mustGetTask(db, taskId);
-    const workdir = ensureWorktree(toplevel, dbPath, taskId, task.title);
-    const actor = getActor();
-    const ttl = Number(process.env.KDD_WORKER_TTL ?? DEFAULT_TTL);
-    const bad = ttlError(ttl);
-    if (bad) throw new KddError2(bad);
-    const idle = Number(process.env.KDD_WORKER_IDLE ?? DEFAULT_IDLE);
-    const badIdle = secondsError("KDD_WORKER_IDLE", idle);
-    if (badIdle) throw new KddError2(badIdle);
-    const holdsLease = task.claimed_by === authorOf(actor);
-    const leaseMismatch = !holdsLease && task.claimed_by !== null ? `held by ${task.claimed_by}, we are ${authorOf(actor)} \u2014 heartbeat disarmed, the lease will expire under a live agent (check KDD_ACTOR/KDD_SESSION in your shell profile)` : null;
-    if (leaseMismatch) process.stderr.write(`kdd worker: task #${taskId} ${leaseMismatch}
-`);
-    const marker = o.tag ?? (holdsLease ? workerTag(taskId, dbPath) : `kdd-worker-manual-${taskId}-${process.pid}`);
-    const prompt = (process.env.KDD_WORKER_PROMPT ?? workerPrompt(task.kind, task.area)) + runMarker(marker);
-    const args = [
-      ...pre,
-      "-p",
-      prompt,
-      "--output-format",
-      "stream-json",
-      "--verbose",
-      "--allowedTools",
-      allowed,
-      "--add-dir",
-      filesDir(dbPath)
-    ];
-    await new Promise((resolve) => {
-      appendAgentEvent(db, taskId, workerId, "run_start", { detail: { head: headCommit(workdir) } });
-      if (leaseMismatch) {
-        appendAgentEvent(db, taskId, workerId, "error", { detail: { message: leaseMismatch } });
-      }
-      const child = spawnProcess2(bin, args, {
-        cwd: workdir,
-        stdio: ["ignore", "pipe", "inherit"],
-        // Своя процессная группа (B3): всё, что claude поднимет через Bash и что переживёт его
-        // самого, сигнала по одному pid не получит, а метки рана в argv не несёт — значит и
-        // findWorker его больше не увидит. Порты и CPU держались бы до перезагрузки.
-        // killWorker это не ломает: он ищет claude по метке в промпте и берёт ЕГО pgid.
-        detached: true,
-        // KDD_ACTOR/KDD_SESSION НЕ хардкодим здесь — они текут из окружения самого воркера.
-        // Tick-путь: tick уже выставил их (ai / tick:<nonce>-<i>) на процессе воркера, ...process.env
-        // их пробрасывает — ai-gating на move-to-review сохраняется. Ручной `kdd worker <id>`
-        // (без claim) — debug-aid для feed: наследует user-актора из шелла, никого не гейтит.
-        // Полное продвижение задачи вручную требует предварительного `kdd claim` под тем же
-        // KDD_SESSION — воркер claim'ом сознательно не владеет, им владеет tick.
-        env: { ...process.env, KDD_TASK_ID: String(taskId), PATH: nodeFirstPath() }
-      });
-      let stopping = false;
-      const stopAgent = () => {
-        if (stopping || !child.pid) return;
-        stopping = true;
-        signalGroup(child.pid, "SIGTERM");
-        setTimeout(() => signalGroup(child.pid, "SIGKILL"), 2e3).unref();
-      };
-      const onSig = () => {
-        stopAgent();
-      };
-      process.on("SIGINT", onSig);
-      process.on("SIGTERM", onSig);
-      const beat = holdsLease ? setInterval(() => {
-        try {
-          const r = renewClaim(db, taskId, actor, ttl, { log: false });
-          if (r.ok) return;
-          clearInterval(beat);
-          stopAgent();
-          appendAgentEvent(db, taskId, workerId, "error", { detail: { message: r.error } });
-        } catch (e) {
-          process.stderr.write(
-            `kdd worker: heartbeat failed: ${e instanceof Error ? e.message : String(e)}
-`
-          );
-        }
-      }, Math.max(1, Math.floor(ttl / 3)) * 1e3) : void 0;
-      beat?.unref();
-      let lastLine = Date.now();
-      const watchdog = setInterval(() => {
-        if (Date.now() - lastLine < idle * 1e3) return;
-        clearInterval(watchdog);
-        if (beat) clearInterval(beat);
-        appendAgentEvent(
-          db,
-          taskId,
-          workerId,
-          "error",
-          { detail: { message: `agent produced no output for ${idle}s \u2014 wedged, stopping the run` } }
-        );
-        stopAgent();
-      }, Math.max(1, Math.floor(idle / 3)) * 1e3);
-      watchdog.unref();
-      let ended = false;
-      const end = (exitCode) => {
-        if (ended) return;
-        ended = true;
-        if (beat) clearInterval(beat);
-        clearInterval(watchdog);
-        process.off("SIGINT", onSig);
-        process.off("SIGTERM", onSig);
-        let head;
-        try {
-          head = taskBranchHead(toplevel, taskId) ?? headCommit(workdir);
-        } catch {
-        }
-        appendAgentEvent(db, taskId, workerId, "run_end", { detail: { exitCode, head } });
-        resolve();
-      };
-      child.on("error", (e) => {
-        appendAgentEvent(db, taskId, workerId, "error", { detail: { message: e.message } });
-        end(null);
-      });
-      const rl = createInterface({ input: child.stdout });
-      rl.on("line", (line) => {
-        lastLine = Date.now();
-        try {
-          for (const ev of parseClaudeStreamLine(line)) appendAgentEvent(db, taskId, workerId, ev.kind, ev);
-        } catch (e) {
-          process.stderr.write(`kdd worker: feed write failed: ${e instanceof Error ? e.message : String(e)}
-`);
-        }
-      });
-      child.on("close", (code) => {
-        rl.close();
-        end(code);
-      });
-    });
-  } catch (e) {
-    if (db) closeDb(db);
-    fail(e instanceof KddError2 ? e.message : String(e), false);
-  }
-  if (db) closeDb(db);
-});
-program.command("feed").argument("<id>").option("--since <n>", "only events after this id").option("--json").action((id, o) => run(o.json, () => {
-  const rows = withDb((db) => listAgentEvents(
-    db,
-    parseId(id),
-    { sinceId: o.since ? Number(o.since) : 0 }
-  ));
-  out(o.json, rows, () => rows.map((e) => `${e.kind}${e.name ? " " + e.name : ""}${e.detail ? " " + e.detail : ""}`).join("\n") || "no activity");
 }));
 program.command("edit").argument("<id>").option("--title <t>").option("--body <md>").option("--body-file <path>").option("--priority <p>").option("--area <a>").option("--kind <k>", "feature|bug|chore|research").option("--track <id>", 'track id, or "none" to detach').option("--json").action((id, o) => run(o.json, () => {
   const track_id = o.track === void 0 ? void 0 : o.track === "none" ? null : parseId(o.track);
@@ -1627,7 +1086,7 @@ program.command("ui").option("--port <n>", "port", "4499").option("--host <addr>
 }));
 async function uiStart(port, host = "127.0.0.1", token) {
   const { dbPath, projectPath } = resolveDbPath2();
-  const hash = basename2(dirname3(dbPath));
+  const hash = basename2(dirname2(dbPath));
   const db = openDb2(dbPath, projectPath);
   try {
     setProjectToplevel(db, resolveToplevel());
@@ -1663,17 +1122,14 @@ async function uiStart(port, host = "127.0.0.1", token) {
     console.log(`kdd ui: ${url} (reusing running server)`);
     return;
   }
-  const { getDb, get, closeAll } = projectPool(hash, { lockToDefault: !!token });
-  const scheduler = createScheduler(tickRunner, get, stopRunner);
+  const { getDb, closeAll } = projectPool(hash, { lockToDefault: !!token });
   try {
-    await startUi(getDb, port, hash, scheduler, { host, token });
+    await startUi(getDb, port, hash, { host, token });
   } catch (e) {
-    scheduler.stopAll();
     closeAll();
     fail(e instanceof Error ? e.message : String(e), false);
   }
   process.on("SIGINT", () => {
-    scheduler.stopAll();
     closeAll();
     process.exit(0);
   });
@@ -1739,12 +1195,12 @@ projectCommand.command("show").option("--json").action((o) => run(o.json, () => 
   const result = withDb((db) => ({ project: projectOf(db), repositories: repositoriesOf(db), bindings: bindingsOf(db) }));
   out(o.json, result, () => JSON.stringify(result, null, 2));
 }));
-projectCommand.command("add-repo").argument("<checkout>").requiredOption("--purpose <text>").requiredOption("--access <access>", "context_only|implementation").option("--json").action((cwd, o) => run(o.json, () => {
-  const result = withProjectStore((db, path) => addRepository(db, path, kddHome3(), { cwd, purpose: o.purpose, access: o.access }, getActor()));
+projectCommand.command("add-repo").argument("<checkout>").requiredOption("--purpose <text>").option("--json").action((cwd, o) => run(o.json, () => {
+  const result = withProjectStore((db, path) => addRepository(db, path, kddHome3(), { cwd, purpose: o.purpose }, getActor()));
   out(o.json, result, () => JSON.stringify(result, null, 2));
 }));
-projectCommand.command("bind").argument("<checkout>").requiredOption("--repo <id>").requiredOption("--kind <kind>", "source|managed").option("--json").action((cwd, o) => run(o.json, () => {
-  const result = withProjectStore((db, path) => bindRepository(db, path, kddHome3(), { cwd, repoId: o.repo, kind: o.kind }, getActor()));
+projectCommand.command("bind").argument("<checkout>").requiredOption("--repo <id>").option("--json").action((cwd, o) => run(o.json, () => {
+  const result = withProjectStore((db, path) => bindRepository(db, path, kddHome3(), { cwd, repoId: o.repo }, getActor()));
   out(o.json, result, () => JSON.stringify(result, null, 2));
 }));
 projectCommand.command("rebind").argument("<old-common-dir>").argument("<checkout>").option("--json").action((fromCommonDir, cwd, o) => run(o.json, () => {
