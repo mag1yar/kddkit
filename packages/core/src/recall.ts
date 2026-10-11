@@ -7,6 +7,8 @@ import { parseDecisionMd } from './decisions.js';
 import { canSyncLegacyDecisions, assertLegacyDecisionSource } from './project_store.js';
 
 export function syncIndex(db: Db, decisionsDir: string): void {
+  // IMMEDIATE: reads the watermark/decisions and then writes — a deferred read lock could not be
+  // upgraded under a concurrent writer and would fail with SQLITE_BUSY instead of waiting.
   db.transaction(() => {
     if (canSyncLegacyDecisions(db, decisionsDir)) {
       // решения: истина — файловая система
@@ -86,7 +88,7 @@ export function syncIndex(db: Db, decisionsDir: string): void {
     }
     db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_last_event_id', ?)`)
       .run(String(max));
-  })();
+  }).immediate();
 }
 
 export interface RecallHit {

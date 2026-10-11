@@ -13,7 +13,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22 # engines floor — test the minimum we claim to support
+          node-version: 22.16.0 # engines floor — test the minimum we claim to support
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm turbo build test typecheck

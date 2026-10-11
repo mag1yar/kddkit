@@ -24,7 +24,7 @@
 
 ### No Explicit Locking for Related Records
 
-**Issue:** Operations like `placeTask()` (`packages/core/src/ops.ts:148-164`) reorder multiple tasks in a single transaction, but the transaction model in better-sqlite3 with WAL mode provides statement-level isolation, not explicit row locks. Concurrent moves to the same column could theoretically cause ordering conflicts if position calculations race.
+**Issue:** Operations like `placeTask()` (`packages/core/src/ops.ts:148-164`) reorder multiple tasks in a single transaction, but the SQLite transaction model with WAL mode provides statement-level isolation, not explicit row locks. Concurrent moves to the same column could theoretically cause ordering conflicts if position calculations race.
 
 **Files:** `packages/core/src/ops.ts` (moveTask, placeTask)
 
@@ -270,7 +270,7 @@ Cutting mid-grapheme could still produce visually broken output.
 
 ### Database File I/O is Single-Process Bottleneck
 
-**Issue:** KDD uses a single SQLite file (WAL mode) per project. Better-sqlite3 is synchronous and single-threaded. While SQLite handles WAL concurrency, JavaScript is single-threaded, so all database calls block the event loop.
+**Issue:** KDD uses a single SQLite file (WAL mode) per project. node:sqlite (`DatabaseSync`) is synchronous and single-threaded. While SQLite handles WAL concurrency, JavaScript is single-threaded, so all database calls block the event loop.
 
 **Files:** `packages/core/src/db.ts`, all CLI/UI endpoints
 
@@ -294,7 +294,9 @@ Cutting mid-grapheme could still produce visually broken output.
 
 ## Dependencies at Risk
 
-### better-sqlite3 Native Module
+### better-sqlite3 Native Module — RESOLVED (2026-10-11)
+
+**Resolved:** replaced by built-in node:sqlite; no native dependency remains. See `.planning/decisions/2026-10-11-node-sqlite-instead-of-better-sqlite3.md`.
 
 **Issue:** `better-sqlite3` is a native module. Updates may require recompilation. Deployment to environments with different architectures or libc versions could fail.
 

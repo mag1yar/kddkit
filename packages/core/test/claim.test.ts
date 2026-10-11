@@ -98,6 +98,18 @@ describe('claim ops', () => {
     expect(() => renewClaim(db, id, ai, 0)).toThrow(KddError);
     expect(() => renewClaim(db, id, ai, NaN)).toThrow(KddError);
   });
+
+  it('rejects a ttl above 30 days and writes nothing', () => {
+    const id = withCriteria('t');
+    const events = (): number => (db.prepare(`SELECT COUNT(*) c FROM events`).get() as { c: number }).c;
+    const before = events();
+    expect(() => claimTask(db, id, ai, 1e16)).toThrow(/max 2592000/);
+    expect(() => claimTask(db, id, ai, 1e16)).toThrow(KddError);
+    expect(db.prepare(`SELECT status, claimed_by, claim_expires FROM tasks WHERE id = ?`).get(id))
+      .toEqual({ status: 'new', claimed_by: null, claim_expires: null });
+    expect(events()).toBe(before);
+    expect(claimTask(db, id, ai, 2_592_000).ok).toBe(true);
+  });
 });
 
 describe('expired lease', () => {

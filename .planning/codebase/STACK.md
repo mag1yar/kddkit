@@ -37,7 +37,7 @@
 ## Key Dependencies
 
 **Database:**
-- better-sqlite3 12.11.1 - Embedded SQLite database for task storage (`packages/core/src/db.ts`)
+- node:sqlite (built-in) - Embedded SQLite database for task storage (`packages/core/src/db.ts`)
 
 **CLI:**
 - commander 15.0.0 - Command-line argument parsing (`packages/cli/src/index.ts`)
@@ -88,7 +88,7 @@
 - Package-level configs:
   - `packages/cli/tsup.config.ts` - CLI build (ESM format)
   - `packages/core/tsup.config.ts` - Core build (ESM + type declarations)
-  - `packages/mcp/tsup.config.ts` - MCP build (ESM, bundles sdk and zod, external better-sqlite3)
+  - `packages/mcp/tsup.config.ts` - MCP build (ESM, bundles sdk and zod)
   - `packages/ui/tsup.config.ts` - UI server build (ESM + types)
   - `packages/ui/vite.config.ts` - Frontend build (React + TailwindCSS, alias `@` to `src/web`)
   - `packages/ui/vitest.config.ts` - Test config (separate root from vite)
@@ -102,7 +102,7 @@
 
 **Production:**
 - Node.js 22+
-- Database: SQLite via better-sqlite3 (native Node.js addon, precompiled for common platforms)
+- Database: SQLite via built-in node:sqlite (no native addon)
 - Disk space: Database stored in `~/.kdd/<project-hash>/kdd.db`
 
 **Distribution:**

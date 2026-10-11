@@ -1,25 +1,30 @@
 import { createRequire } from 'node:module';
-import type { DatabaseSyncOptions, StatementResultingChanges, StatementSync } from 'node:sqlite';
+import type { DatabaseSyncOptions, StatementResultingChanges } from 'node:sqlite';
 
 // Node 22 печатает ExperimentalWarning при первой загрузке node:sqlite — в stderr каждого
 // запуска kdd, MCP и UI. Фильтр ставится ДО загрузки модуля, поэтому node:sqlite берём через
 // require, а не статическим import: тот поднялся бы выше фильтра. Глушим только этот warning.
 const emit = process.emit;
-process.emit = function (this: NodeJS.Process, name: string | symbol, ...args: unknown[]): boolean {
+const filtered = function (this: NodeJS.Process, name: string | symbol, ...args: unknown[]): boolean {
   const w = args[0] as { name?: unknown; message?: unknown } | undefined;
   if (name === 'warning' && w?.name === 'ExperimentalWarning' && /SQLite/.test(String(w.message))) return false;
   return (emit as (this: NodeJS.Process, ...a: unknown[]) => boolean).call(this, name, ...args);
 } as typeof process.emit;
+process.emit = filtered;
 // engines is only an npm warning; plugins run whatever node is on PATH. Below 22.16 node:sqlite
-// is missing (<22.13) or lacks `timeout`, `isTransaction`, `location()` — busy timeout 0, nested
-// transactions BEGIN inside BEGIN, db.name throws. 23.x is EOL with the same gaps by minor.
-// KddError is initialised here: db.js is entered before errors.js, so its dependency evaluates first.
+// is missing (<22.13) or lacks `timeout`, `isTransaction` — busy timeout 0, nested transactions
+// BEGIN inside BEGIN. 23.x is EOL with the same gaps by minor. A plain Error, not KddError:
+// this runs at import, and depending on errors.js being evaluated first is an ordering trap.
 {
   const [major, minor] = process.versions.node.split('.').map(Number);
   if (major < 22 || (major === 22 && minor < 16) || major === 23)
-    throw new KddError(`kddkit needs Node >= 22.16 (running ${process.version})`);
+    throw new Error(`kddkit needs Node >= 22.16 (running ${process.version})`);
 }
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite');
+// The warning is emitted on process.nextTick, which runs before setImmediate — so by then it has
+// been swallowed and the filter can go: a library consumer importing core must not keep a patched
+// process.emit for its whole life. Only restore if nobody wrapped emit on top of us meanwhile.
+setImmediate(() => { if (process.emit === filtered) process.emit = emit; });
 
 // Row types: callers cast rows in place (`as Task`). node:sqlite types rows as
 // Record<string, SQLOutputValue>, which does not cast to interfaces — keep `unknown` like before.
@@ -42,17 +47,14 @@ class Connection extends DatabaseSync {
   // первой же чужой записи вместо того, чтобы подождать.
   constructor(path: string, options: DatabaseSyncOptions = {}) {
     super(path, { timeout: 5000, ...options });
+    this.#path = path;
   }
 
-  get name(): string { return this.location() ?? ':memory:'; }
-  get memory(): boolean { return this.location() === null; }
-
-  // Callers bind one params object to SQL that may not use every key (e.g. an optional filter).
-  prepare(sql: string): StatementSync {
-    const stmt = super.prepare(sql);
-    stmt.setAllowUnknownNamedParameters(true);
-    return stmt;
-  }
+  // The path as given, not location(): that resolves symlinks (a symlinked KDD_DB would put
+  // attachments next to the target, while the CLI uses the link) and throws after close().
+  readonly #path: string;
+  get name(): string { return this.#path; }
+  get memory(): boolean { return this.#path === ':memory:' || this.#path === ''; }
 
   pragma(sql: string, options?: { simple?: boolean }): unknown {
     const stmt = super.prepare(`PRAGMA ${sql}`);
@@ -144,6 +146,9 @@ export function openDb(dbPath: string, projectPath?: string, checkout?: string):
   if (dbPath !== ':memory:') mkdirSync(dirname(dbPath), { recursive: true });
   const db = new Db(dbPath);
   db.pragma('journal_mode = WAL');
+  // WAL + NORMAL survives app crashes (only an OS crash may drop the last commits); the previous
+  // driver build defaulted to it, and FULL would fsync on every commit.
+  db.pragma('synchronous = NORMAL');
   db.pragma('foreign_keys = ON');
   const from = db.pragma('user_version', { simple: true }) as number;
   // База из будущего: цикл ниже просто не выполнился бы, и kdd молча работал бы на схеме,
@@ -196,11 +201,13 @@ export function checkpointWal(db: Db): void {
   // общими 5 секундами выход из UI с тремя живыми сессиями вис бы по пять секунд на каждый
   // проект в пуле. Обрезка — оппортунистическая уборка, а не обязательство: не вышло сейчас —
   // выйдет у того, кто закроется последним.
+  let timeout: unknown;
   try {
+    timeout = db.pragma('busy_timeout', { simple: true });
     db.pragma('busy_timeout = 0');
     db.pragma('wal_checkpoint(TRUNCATE)');
   } catch { /* busy — не повод падать на выходе */ }
-  finally { try { db.pragma('busy_timeout = 5000'); } catch { /* уже закрыта */ } }
+  finally { if (typeof timeout === 'number') try { db.pragma(`busy_timeout = ${timeout}`); } catch { /* уже закрыта */ } }
 }
 
 // Закрытие долгоживущего клиента (сервер UI, MCP):

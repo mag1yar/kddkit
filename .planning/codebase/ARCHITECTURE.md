@@ -81,7 +81,7 @@ KDD is a multi-layer, multi-interface kanban and decision memory substrate for C
 - Purpose: Host both the web SPA and the REST API; manage multi-project database pool
 - Location: `packages/ui/src/server.ts`
 - Contains: Hono app with `/api/*` endpoints, static SPA serving, project pool manager
-- Depends on: Core (ops, queries, state), better-sqlite3
+- Depends on: Core (ops, queries, state), node:sqlite
 - Used by: Web UI clients, CLI (for board export), MCP (for search)
 
 **MCP Layer:**
@@ -95,14 +95,14 @@ KDD is a multi-layer, multi-interface kanban and decision memory substrate for C
 - Purpose: Shared business logic, data model, validation, query interface
 - Location: `packages/core/src/`
 - Contains: Operations (addTask, moveTask, editTask), queries (boardData, taskDetail), state validation
-- Depends on: better-sqlite3, zod (validation)
+- Depends on: node:sqlite, zod (validation)
 - Used by: All three clients (CLI, UI server, MCP)
 
 **Database Layer:**
 - Purpose: Data persistence, schema migrations, event logging, full-text search
 - Location: `packages/core/src/db.ts`, SQL schema in migrations array
 - Contains: SQLite schema, migration history, WAL pragmas
-- Depends on: better-sqlite3, Node.js fs/path
+- Depends on: node:sqlite, Node.js fs/path
 - Used by: Core operations (all mutate through db.prepare/db.transaction)
 
 ## Data Flow

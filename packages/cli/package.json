@@ -12,7 +12,7 @@
     "access": "public"
   },
   "license": "MIT",
-  "engines": { "node": ">=22.16" },
+  "engines": { "node": "^22.16.0 || >=24" },
   "repository": {
     "type": "git",
     "url": "https://github.com/mag1yar/kddkit.git",

@@ -23,7 +23,7 @@
 
 **Databases:**
 - **Type:** SQLite (embedded)
-- **Provider:** better-sqlite3 12.11.1
+- **Provider:** node:sqlite (built into Node ≥22.16, wrapped by `Db` in `packages/core/src/db.ts`)
 - **Location:** `~/.kdd/<project-hash>/kdd.db`
 - **Connection:** Via `packages/core/src/db.ts:openDb()`
 - **Schema:** 5 migration steps (tasks, comments, task_links, decisions with FTS5, tracks, criteria)

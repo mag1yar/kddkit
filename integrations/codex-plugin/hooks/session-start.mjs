@@ -31,7 +31,7 @@ try {
       if (db) core.logError(db, 'codex-session-start', String(error));
       else diagnostic('codex-session-start', error);
     } catch { diagnostic('codex-session-start', error); }
-    emit(String(error?.message).startsWith('kddkit needs Node') ? `${pointer}\nKDD unavailable: ${error.message}` : pointer);
+    emit(pointer);
   } finally {
     try { db?.close(); } catch { /* best effort */ }
   }

@@ -5,7 +5,7 @@
 ## Naming Patterns
 
 **Files:**
-- TypeScript sources: lowercase with hyphens (e.g., `db.ts`, `task-dialog.tsx`, `smart-install.mjs`)
+- TypeScript sources: lowercase with hyphens (e.g., `db.ts`, `task-dialog.tsx`)
 - React components: PascalCase matching component name (e.g., `Board.tsx`, `TaskDialog.tsx`)
 - Test files: `*.test.ts` or `*.spec.ts` co-located with source
 - Export index files: `index.ts` using barrel exports (e.g., `packages/core/src/index.ts` re-exports all public types)
@@ -54,8 +54,8 @@
 ## Import Organization
 
 **Order:**
-1. Node.js built-ins: `import { join } from 'node:path'`
-2. External packages: `import Database from 'better-sqlite3'`, `import { Command } from 'commander'`
+1. Node.js built-ins: `import { join } from 'node:path'` (node:sqlite is loaded only inside `db.ts`, via `createRequire`)
+2. External packages: `import { Command } from 'commander'`
 3. Local monorepo packages: `import { addTask, openDb } from '@kddkit/core'`
 4. Local relative imports: `import { renderAge } from './render.js'`
 5. Type imports grouped separately if multiple: `import type { Task, Status } from '@kddkit/core'`

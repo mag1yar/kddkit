@@ -9,8 +9,12 @@ export const DEFAULT_TTL = 15 * 60; // сек; hermes-дефолт, override ч�
 const SYSTEM: Actor = { type: 'ai', id: 'system' }; // provenance ленивого reclaim (не притворяемся владельцем)
 
 // NaN/0/negative ttl -> claim_expires = NaN, который проверка истечения (< ?) никогда не матчит: lease навечно.
+// Потолок в 30 дней: лиз длиннее — уже не лиз, а вечный захват; а астрономический ttl ещё и
+// выводит claim_expires за безопасные целые, и сравнения сроков в SQL перестают значить что-либо.
+const MAX_TTL = 2_592_000;
 function assertTtl(ttl: number): void {
   if (!Number.isFinite(ttl) || ttl <= 0) throw new KddError(`invalid ttl '${ttl}' (seconds > 0)`);
+  if (ttl > MAX_TTL) throw new KddError(`invalid ttl '${ttl}' (max ${MAX_TTL} seconds = 30 days)`);
 }
 
 const criteriaCount = (db: Db, id: number): number =>

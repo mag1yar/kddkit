@@ -2,5 +2,5 @@
   "name": "kddkit-codex-plugin",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22.16" }
+  "engines": { "node": "^22.16.0 || >=24" }
 }

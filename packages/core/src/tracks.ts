@@ -63,11 +63,12 @@ export function listTracks(
   db: Db, opts: { status?: 'active' | 'done' } = {},
 ): (Track & { open_tasks: number })[] {
   const where = opts.status ? `WHERE tr.status = @status` : '';
-  return db.prepare(
+  const stmt = db.prepare(
     `SELECT tr.*, COUNT(t.id) AS open_tasks
      FROM tracks tr
      LEFT JOIN tasks t ON t.track_id = tr.id AND t.archived_at IS NULL AND t.status <> 'done'
      ${where}
      GROUP BY tr.id ORDER BY tr.status, tr.name`,
-  ).all({ status: opts.status ?? null }) as (Track & { open_tasks: number })[];
+  );
+  return (opts.status ? stmt.all({ status: opts.status }) : stmt.all()) as (Track & { open_tasks: number })[];
 }

@@ -7020,11 +7020,11 @@ var util;
   };
   util2.getValidEnumValues = (obj) => {
     const validKeys = util2.objectKeys(obj).filter((k) => typeof obj[obj[k]] !== "number");
-    const filtered = {};
+    const filtered2 = {};
     for (const k of validKeys) {
-      filtered[k] = obj[k];
+      filtered2[k] = obj[k];
     }
-    return util2.objectValues(filtered);
+    return util2.objectValues(filtered2);
   };
   util2.objectValues = (obj) => {
     return util2.objectKeys(obj).map(function(e) {
@@ -21989,17 +21989,21 @@ function canSyncLegacyDecisions(db, decisionsDir) {
   }
 }
 var emit = process.emit;
-process.emit = function(name, ...args) {
+var filtered = function(name, ...args) {
   const w = args[0];
   if (name === "warning" && w?.name === "ExperimentalWarning" && /SQLite/.test(String(w.message))) return false;
   return emit.call(this, name, ...args);
 };
+process.emit = filtered;
 {
   const [major, minor] = process.versions.node.split(".").map(Number);
   if (major < 22 || major === 22 && minor < 16 || major === 23)
-    throw new KddError(`kddkit needs Node >= 22.16 (running ${process.version})`);
+    throw new Error(`kddkit needs Node >= 22.16 (running ${process.version})`);
 }
 var { DatabaseSync } = createRequire(import.meta.url)("node:sqlite");
+setImmediate(() => {
+  if (process.emit === filtered) process.emit = emit;
+});
 function settle(r) {
   if (r && typeof r.then === "function")
     throw new TypeError("Transaction function cannot return a promise");
@@ -22011,18 +22015,16 @@ var Connection = class extends DatabaseSync {
   // первой же чужой записи вместо того, чтобы подождать.
   constructor(path, options = {}) {
     super(path, { timeout: 5e3, ...options });
+    this.#path = path;
   }
+  // The path as given, not location(): that resolves symlinks (a symlinked KDD_DB would put
+  // attachments next to the target, while the CLI uses the link) and throws after close().
+  #path;
   get name() {
-    return this.location() ?? ":memory:";
+    return this.#path;
   }
   get memory() {
-    return this.location() === null;
-  }
-  // Callers bind one params object to SQL that may not use every key (e.g. an optional filter).
-  prepare(sql) {
-    const stmt = super.prepare(sql);
-    stmt.setAllowUnknownNamedParameters(true);
-    return stmt;
+    return this.#path === ":memory:" || this.#path === "";
   }
   pragma(sql, options) {
     const stmt = super.prepare(`PRAGMA ${sql}`);
@@ -22099,6 +22101,7 @@ function openDb(dbPath, projectPath, checkout) {
   if (dbPath !== ":memory:") mkdirSync2(dirname2(dbPath), { recursive: true });
   const db = new Db(dbPath);
   db.pragma("journal_mode = WAL");
+  db.pragma("synchronous = NORMAL");
   db.pragma("foreign_keys = ON");
   const from = db.pragma("user_version", { simple: true });
   if (from > MIGRATIONS.length) {
@@ -22274,13 +22277,14 @@ function mustGetTrack(db, id2) {
 }
 function listTracks(db, opts = {}) {
   const where = opts.status ? `WHERE tr.status = @status` : "";
-  return db.prepare(
+  const stmt = db.prepare(
     `SELECT tr.*, COUNT(t.id) AS open_tasks
      FROM tracks tr
      LEFT JOIN tasks t ON t.track_id = tr.id AND t.archived_at IS NULL AND t.status <> 'done'
      ${where}
      GROUP BY tr.id ORDER BY tr.status, tr.name`
-  ).all({ status: opts.status ?? null });
+  );
+  return opts.status ? stmt.all({ status: opts.status }) : stmt.all();
 }
 function appendEvent(db, taskId, actor, action, detail, opts) {
   const r = db.prepare(
@@ -22637,7 +22641,7 @@ function syncIndex(db, decisionsDir) {
       ).run(String(id2), t.title, body);
     }
     db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_last_event_id', ?)`).run(String(max));
-  })();
+  }).immediate();
 }
 function sanitizeQuery(q) {
   const parts = [];

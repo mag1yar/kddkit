@@ -19,7 +19,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.mjs\"",
-            "timeout": 10
+            "timeout": 30
           }
         ]
       }

@@ -1,5 +1,5 @@
 import * as node_sqlite from 'node:sqlite';
-import { DatabaseSyncOptions, StatementSync, StatementResultingChanges } from 'node:sqlite';
+import { DatabaseSyncOptions, StatementResultingChanges } from 'node:sqlite';
 
 declare const CAPS: {
     readonly briefBytes: 4096;
@@ -43,7 +43,6 @@ declare class Connection extends DatabaseSync {
     constructor(path: string, options?: DatabaseSyncOptions);
     get name(): string;
     get memory(): boolean;
-    prepare(sql: string): StatementSync;
     pragma(sql: string, options?: {
         simple?: boolean;
     }): unknown;

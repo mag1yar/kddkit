@@ -4,7 +4,7 @@
       "hooks": [{
         "type": "command",
         "command": "node \"${PLUGIN_ROOT}/hooks/session-start.mjs\"",
-        "timeout": 10
+        "timeout": 30
       }]
     }],
     "SubagentStart": [{

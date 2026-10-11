@@ -21,7 +21,6 @@ async function main() {
     db = core.openDb(dbPath, projectPath);
   } catch (e) {
     console.log(POINTER); // no db (not a git repo / unusable path)
-    if (String(e?.message).startsWith('kddkit needs Node')) console.log(`KDD unavailable: ${e.message}`);
     return;
   }
 

@@ -154,8 +154,8 @@ export function createServer(getCtx: CtxFn, actor?: Actor): McpServer {
 }
 
 /**
- * Ленивое подключение к базе. Кэшируем только успех: исправленный нативный модуль
- * или явный project позволяет повторить вызов без реконнекта.
+ * Ленивое подключение к базе. Кэшируем только успех: неудачное открытие повторяется
+ * на следующем вызове (или с явным project) без реконнекта.
  */
 export function lazyCtx(): CtxFn {
   const contexts = new Map<string, Ctx>();

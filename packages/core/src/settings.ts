@@ -31,12 +31,13 @@ export function getReminded(db: Db, session: string): number[] {
 }
 
 export function setReminded(db: Db, session: string, ids: number[]): void {
+  // IMMEDIATE: read-modify-write; a deferred read lock cannot be upgraded under a concurrent writer.
   db.transaction(() => {
     const kept = readReminded(db).filter(([s]) => s !== session);
     kept.push([session, ids]); // недавняя сессия — в конец
     writeMeta(db, 'stop_reminded',
       JSON.stringify(kept.slice(Math.max(0, kept.length - MAX_REMINDED_SESSIONS))));
-  })();
+  }).immediate();
 }
 
 /**

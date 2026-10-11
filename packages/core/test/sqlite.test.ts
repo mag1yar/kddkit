@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, realpathSync } from 'node:fs';
+import { mkdtempSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { Db } from '../src/db.js';
+import { spawnSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { Db, checkpointWal } from '../src/db.js';
 
 const file = (): string => join(mkdtempSync(join(tmpdir(), 'kdd-sqlite-')), 'k.db');
 const count = (db: Db): number => (db.prepare('SELECT COUNT(*) c FROM t').get() as { c: number }).c;
@@ -52,9 +53,10 @@ describe('Db', () => {
     expect(db.pragma('foreign_key_check')).toEqual([]);
   });
 
-  it('prepare tolerates extra named keys', () => {
+  // A misspelt key must fail loudly, not bind the intended one as NULL.
+  it('prepare rejects unknown named keys', () => {
     const db = new Db(':memory:');
-    expect(db.prepare('SELECT 1 AS one').all({ status: null })).toEqual([{ one: 1 }]);
+    expect(() => db.prepare('SELECT @status AS s').all({ status: 1, stauts: 2 })).toThrow(/unknown named parameter/i);
   });
 
   // better-sqlite3 bound undefined as NULL; node:sqlite throws — callers must pass `?? null`.
@@ -70,7 +72,20 @@ describe('Db', () => {
     const p = file();
     const disk = new Db(p);
     expect(disk.memory).toBe(false);
-    expect(realpathSync(disk.name)).toBe(realpathSync(p));
+    expect(disk.name).toBe(p);
+  });
+
+  // Attachments live next to db.name: through a symlinked KDD_DB they must follow the link, not its target.
+  it('name is the path as given (symlink kept) and stays readable after close', () => {
+    const target = file();
+    new Db(target).close();
+    const link = join(dirname(target), 'link.db');
+    symlinkSync(target, link);
+    const db = new Db(link);
+    expect(db.name).toBe(link);
+    db.close();
+    expect(db.name).toBe(link);
+    expect(db.memory).toBe(false);
   });
 
   it('close is idempotent', () => {
@@ -106,22 +121,23 @@ describe('Db', () => {
     expect(new Db(':memory:').pragma('busy_timeout', { simple: true })).toBe(5000);
   });
 
-  it('swallows only the SQLite ExperimentalWarning', async () => {
-    const seen: string[] = [];
-    const listener = (w: Error): void => { seen.push(w.message); };
-    // Node's default printer would dump the unfiltered warnings to stderr — detach it for the test.
-    const saved = process.listeners('warning');
-    process.removeAllListeners('warning');
-    process.on('warning', listener);
-    try {
-      process.emitWarning('SQLite is an experimental feature and might change at any time', 'ExperimentalWarning');
-      process.emitWarning('something else is experimental', 'ExperimentalWarning');
-      process.emitWarning('plain warning');
-      await new Promise((r) => setTimeout(r, 20)); // emitWarning delivers on nextTick
-    } finally {
-      process.off('warning', listener);
-      for (const l of saved) process.on('warning', l);
-    }
-    expect(seen).toEqual(['something else is experimental', 'plain warning']);
+  it('checkpointWal restores the connection\'s own busy timeout', () => {
+    const db = new Db(file(), { timeout: 1234 });
+    db.exec('PRAGMA journal_mode = WAL; CREATE TABLE t(x)');
+    checkpointWal(db);
+    expect(db.pragma('busy_timeout', { simple: true })).toBe(1234);
+    db.close();
+  });
+
+  // A fresh process: the import-time load must print nothing, and the filter must be gone a tick
+  // later — a library consumer's own SQLite warning (emitted by hand here) reaches stderr.
+  it('swallows the load-time SQLite warning, then restores process.emit', () => {
+    const core = new URL('../dist/index.js', import.meta.url).href;
+    const script = `await import(${JSON.stringify(core)});
+      setImmediate(() => setImmediate(() => process.emitWarning('late SQLite notice', 'ExperimentalWarning')));`;
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' });
+    expect(r.status).toBe(0);
+    expect(r.stderr).not.toMatch(/SQLite is an experimental/);
+    expect(r.stderr).toMatch(/late SQLite notice/);
   });
 });
