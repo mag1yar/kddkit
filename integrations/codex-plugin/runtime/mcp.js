@@ -21980,7 +21980,8 @@ function primarySource(db) {
   }
   return bindings.find((b) => b.common_dir === common);
 }
-function canSyncLegacyDecisions(db, decisionsDir, source = primarySource(db)) {
+function canSyncLegacyDecisions(db, decisionsDir, precomputed) {
+  const source = precomputed === void 0 ? primarySource(db) : precomputed;
   const project = projectOf(db);
   if (!project.primary_repo_id && db.memory) return true;
   if (project.primary_repo_id && (!source || !existsSync(source.common_dir))) return false;
@@ -22046,10 +22047,16 @@ var Connection = class extends DatabaseSync {
     const row = stmt.get();
     return row === void 0 ? void 0 : Object.values(row)[0];
   }
+  // Plain call is IMMEDIATE: almost every transaction here reads then writes (checkMove, CAS,
+  // supersede), and a DEFERRED one that upgrades to a write after another connection committed
+  // fails SQLITE_BUSY at once, bypassing busy_timeout. Taking the write lock up front makes it wait
+  // instead. `.immediate()` is the same, kept for existing call sites; read-only snapshots use
+  // `.deferred()` so they never queue behind a writer.
   transaction(fn) {
-    return Object.assign(() => this.#run(fn, "BEGIN"), { immediate: () => this.#run(fn, "BEGIN IMMEDIATE") });
+    const immediate = () => this.#run(fn, "BEGIN IMMEDIATE");
+    return Object.assign(immediate, { immediate, deferred: () => this.#run(fn, "BEGIN") });
   }
-  // Inside an open transaction both forms become a savepoint: the outer lock mode already holds.
+  // Inside an open transaction every form becomes a savepoint: the outer lock mode already holds.
   #run(fn, begin) {
     if (this.isTransaction) {
       const sp = `kdd_sp_${++this.#depth}`;
@@ -22225,7 +22232,7 @@ function agentId() {
   const codex = e.CODEX_SESSION_ID || e.CODEX_THREAD_ID;
   return e.KDD_SESSION || cc || (e.CLAUDE_PID ? `cc:pid-${e.CLAUDE_PID}` : void 0) || (codex ? `codex:${codex}` : void 0);
 }
-var leaseExpired = (claimExpires) => claimExpires !== null && claimExpires < Math.floor(Date.now() / 1e3);
+var leaseExpired = (claimExpires) => claimExpires !== null && claimExpires < now();
 function checkMove(from, to, actor, reason, openCriteria2 = 0, claimedBy = null, submittedBy2 = null, claimExpires = null) {
   if (from === to) return { ok: false, error: `task is already in ${to}` };
   if (actor.type === "user") return { ok: true };
@@ -22613,7 +22620,12 @@ function syncIndex(db, decisionsDir) {
   }).immediate();
 }
 function indexPass(db, decisionsDir, write) {
-  const source = primarySource(db);
+  const last = Number(
+    db.prepare(`SELECT value FROM meta WHERE key='fts_last_event_id'`).get()?.value ?? "0"
+  );
+  const max = db.prepare(`SELECT MAX(id) AS m FROM events`).get().m ?? 0;
+  if (!write && max > last) return true;
+  const source = primarySource(db) ?? null;
   if (canSyncLegacyDecisions(db, decisionsDir, source)) {
     const files = existsSync5(decisionsDir) ? readdirSync4(decisionsDir).filter((f) => f.endsWith(".md")) : [];
     const inDb = new Map(
@@ -22657,10 +22669,6 @@ function indexPass(db, decisionsDir, write) {
       db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
     }
   }
-  const last = Number(
-    db.prepare(`SELECT value FROM meta WHERE key='fts_last_event_id'`).get()?.value ?? "0"
-  );
-  const max = db.prepare(`SELECT MAX(id) AS m FROM events`).get().m ?? 0;
   if (max <= last) return false;
   if (!write) return true;
   const ids = db.prepare(

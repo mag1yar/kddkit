@@ -124,6 +124,32 @@ describe('Db', () => {
     a.close(); b.close();
   });
 
+  // A read-only body proves the lock mode: DEFERRED would read the WAL snapshot and return.
+  it('plain transaction opens BEGIN IMMEDIATE: waits for a writer even when it only reads', () => {
+    const p = file();
+    const a = new Db(p);
+    a.exec('PRAGMA journal_mode = WAL; CREATE TABLE t(x)');
+    a.exec('BEGIN IMMEDIATE');
+    const b = new Db(p, { timeout: 200 });
+    const started = Date.now();
+    expect(() => b.transaction(() => count(b))()).toThrow(/locked|busy/i);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(150);
+    a.exec('ROLLBACK');
+    a.close(); b.close();
+  });
+
+  it('deferred() reads while another connection holds the write lock', () => {
+    const p = file();
+    const a = new Db(p);
+    a.exec('PRAGMA journal_mode = WAL; CREATE TABLE t(x); INSERT INTO t VALUES (1)');
+    a.exec('BEGIN IMMEDIATE');
+    a.exec('INSERT INTO t VALUES (2)');
+    const b = new Db(p, { timeout: 200 });
+    expect(b.transaction(() => count(b)).deferred()).toBe(1);
+    a.exec('ROLLBACK');
+    a.close(); b.close();
+  });
+
   it('default busy timeout is 5000', () => {
     expect(new Db(':memory:').pragma('busy_timeout', { simple: true })).toBe(5000);
   });

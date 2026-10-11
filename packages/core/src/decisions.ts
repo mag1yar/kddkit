@@ -1,6 +1,6 @@
 import { assertLegacyDecisionSource } from './project_store.js';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Db } from './db.js';
 import { KddError } from './errors.js';
@@ -108,11 +108,13 @@ export function parseDecisionMd(raw: string): ParsedDecision {
   };
 }
 
-function supersede(db: Db, dir: string, oldSlug: string, newSlug: string): void {
+// Returns the undo for the file write: the caller restores it when the transaction rolls back.
+function supersede(db: Db, dir: string, oldSlug: string, newSlug: string): () => void {
   const p = join(dir, `${oldSlug}.md`);
   if (!existsSync(p)) throw new KddError(`decision '${oldSlug}' not found`);
   assertLegacyDecisionSource(db, dirname(realpathSync(p)));
-  let raw = readFileSync(p, 'utf8').replace(/\r\n/g, '\n');
+  const original = readFileSync(p);
+  let raw = original.toString('utf8').replace(/\r\n/g, '\n');
   if (raw.startsWith('---\n') && /^status:/m.test(raw)) {
     raw = raw
       .replace(/^status:.*$/m, 'status: superseded')
@@ -124,6 +126,7 @@ function supersede(db: Db, dir: string, oldSlug: string, newSlug: string): void 
   }
   writeFileSync(p, raw);
   db.prepare(`UPDATE decisions SET superseded_by = ? WHERE slug = ?`).run(newSlug, oldSlug);
+  return () => writeFileSync(p, original);
 }
 
 export function addDecision(
@@ -181,17 +184,29 @@ export function addDecision(
   for (let i = 2; taken(slug); i++) slug = `${base}-${i}`;
   const path = join(decisionsDir, `${slug}.md`);
 
-  return db.transaction(() => {
-    if (input.supersedes) supersede(db, decisionsDir, input.supersedes, slug);
-    mkdirSync(decisionsDir, { recursive: true });
-    writeFileSync(path, renderDecisionMd({ ...input, sourceTasks }, date));
-    db.prepare(
-      `INSERT INTO decisions (slug, title, path, content_hash, created, superseded_by, source_tasks)
-       VALUES (?, ?, ?, ?, ?, NULL, ?)`,
-    ).run(slug, input.title.trim(), path, hash, date, provenance);
-    db.prepare(
-      `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`,
-    ).run(slug, input.title.trim(), body);
-    return { slug, path, created: true };
-  })();
+  // Файлы пишутся внутри транзакции (supersede читает и правит старое решение под тем же
+  // локом), а откат транзакции их не вернёт — возвращаем сами: иначе .md говорил бы
+  // «superseded» ссылкой на решение, которого нет ни в базе, ни на диске.
+  let restoreSuperseded: (() => void) | undefined;
+  let wroteNew = false;
+  try {
+    return db.transaction(() => {
+      if (input.supersedes) restoreSuperseded = supersede(db, decisionsDir, input.supersedes, slug);
+      mkdirSync(decisionsDir, { recursive: true });
+      writeFileSync(path, renderDecisionMd({ ...input, sourceTasks }, date));
+      wroteNew = true;
+      db.prepare(
+        `INSERT INTO decisions (slug, title, path, content_hash, created, superseded_by, source_tasks)
+         VALUES (?, ?, ?, ?, ?, NULL, ?)`,
+      ).run(slug, input.title.trim(), path, hash, date, provenance);
+      db.prepare(
+        `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`,
+      ).run(slug, input.title.trim(), body);
+      return { slug, path, created: true };
+    })();
+  } catch (e) {
+    restoreSuperseded?.();
+    if (wroteNew) rmSync(path, { force: true });
+    throw e;
+  }
 }

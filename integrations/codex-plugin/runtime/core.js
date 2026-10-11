@@ -991,7 +991,8 @@ function rebindRepository(db, dbPath, home, input, actor) {
     return binding;
   }).immediate());
 }
-function canSyncLegacyDecisions(db, decisionsDir, source = primarySource(db)) {
+function canSyncLegacyDecisions(db, decisionsDir, precomputed) {
+  const source = precomputed === void 0 ? primarySource(db) : precomputed;
   const project = projectOf(db);
   if (!project.primary_repo_id && db.memory) return true;
   if (project.primary_repo_id && (!source || !existsSync(source.common_dir))) return false;
@@ -1063,10 +1064,16 @@ var Connection = class extends DatabaseSync {
     const row = stmt.get();
     return row === void 0 ? void 0 : Object.values(row)[0];
   }
+  // Plain call is IMMEDIATE: almost every transaction here reads then writes (checkMove, CAS,
+  // supersede), and a DEFERRED one that upgrades to a write after another connection committed
+  // fails SQLITE_BUSY at once, bypassing busy_timeout. Taking the write lock up front makes it wait
+  // instead. `.immediate()` is the same, kept for existing call sites; read-only snapshots use
+  // `.deferred()` so they never queue behind a writer.
   transaction(fn) {
-    return Object.assign(() => this.#run(fn, "BEGIN"), { immediate: () => this.#run(fn, "BEGIN IMMEDIATE") });
+    const immediate = () => this.#run(fn, "BEGIN IMMEDIATE");
+    return Object.assign(immediate, { immediate, deferred: () => this.#run(fn, "BEGIN") });
   }
-  // Inside an open transaction both forms become a savepoint: the outer lock mode already holds.
+  // Inside an open transaction every form becomes a savepoint: the outer lock mode already holds.
   #run(fn, begin) {
     if (this.isTransaction) {
       const sp = `kdd_sp_${++this.#depth}`;
@@ -1318,7 +1325,7 @@ function agentId() {
   const codex = e.CODEX_SESSION_ID || e.CODEX_THREAD_ID;
   return e.KDD_SESSION || cc || (e.CLAUDE_PID ? `cc:pid-${e.CLAUDE_PID}` : void 0) || (codex ? `codex:${codex}` : void 0);
 }
-var leaseExpired = (claimExpires) => claimExpires !== null && claimExpires < Math.floor(Date.now() / 1e3);
+var leaseExpired = (claimExpires) => claimExpires !== null && claimExpires < now();
 function checkMove(from, to, actor, reason, openCriteria2 = 0, claimedBy = null, submittedBy2 = null, claimExpires = null) {
   if (from === to) return { ok: false, error: `task is already in ${to}` };
   if (actor.type === "user") return { ok: true };
@@ -1883,7 +1890,7 @@ function detachFile(db, dbPath, fileId, actor) {
 
 // src/decisions.ts
 import { createHash as createHash3 } from "crypto";
-import { existsSync as existsSync4, mkdirSync as mkdirSync4, readFileSync as readFileSync3, readdirSync as readdirSync3, realpathSync as realpathSync3, writeFileSync as writeFileSync3 } from "fs";
+import { existsSync as existsSync4, mkdirSync as mkdirSync4, readFileSync as readFileSync3, readdirSync as readdirSync3, realpathSync as realpathSync3, rmSync as rmSync4, writeFileSync as writeFileSync3 } from "fs";
 import { dirname as dirname4, join as join5 } from "path";
 function slugify(title) {
   const s = title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 60).replace(/-+$/, "");
@@ -1971,7 +1978,8 @@ function supersede(db, dir, oldSlug, newSlug) {
   const p = join5(dir, `${oldSlug}.md`);
   if (!existsSync4(p)) throw new KddError(`decision '${oldSlug}' not found`);
   assertLegacyDecisionSource(db, dirname4(realpathSync3(p)));
-  let raw = readFileSync3(p, "utf8").replace(/\r\n/g, "\n");
+  const original = readFileSync3(p);
+  let raw = original.toString("utf8").replace(/\r\n/g, "\n");
   if (raw.startsWith("---\n") && /^status:/m.test(raw)) {
     raw = raw.replace(/^status:.*$/m, "status: superseded").replace(/^superseded_by:.*$/m, `superseded_by: ${newSlug}`);
   } else {
@@ -1985,6 +1993,7 @@ ${raw}`;
   }
   writeFileSync3(p, raw);
   db.prepare(`UPDATE decisions SET superseded_by = ? WHERE slug = ?`).run(newSlug, oldSlug);
+  return () => writeFileSync3(p, original);
 }
 function addDecision(db, decisionsDir, input) {
   assertLegacyDecisionSource(db, decisionsDir);
@@ -2031,19 +2040,28 @@ function addDecision(db, decisionsDir, input) {
   const taken = (s) => existsSync4(join5(decisionsDir, `${s}.md`)) || !!db.prepare(`SELECT 1 FROM decisions WHERE slug = ?`).get(s);
   for (let i = 2; taken(slug); i++) slug = `${base}-${i}`;
   const path = join5(decisionsDir, `${slug}.md`);
-  return db.transaction(() => {
-    if (input.supersedes) supersede(db, decisionsDir, input.supersedes, slug);
-    mkdirSync4(decisionsDir, { recursive: true });
-    writeFileSync3(path, renderDecisionMd({ ...input, sourceTasks }, date));
-    db.prepare(
-      `INSERT INTO decisions (slug, title, path, content_hash, created, superseded_by, source_tasks)
-       VALUES (?, ?, ?, ?, ?, NULL, ?)`
-    ).run(slug, input.title.trim(), path, hash, date, provenance);
-    db.prepare(
-      `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`
-    ).run(slug, input.title.trim(), body);
-    return { slug, path, created: true };
-  })();
+  let restoreSuperseded;
+  let wroteNew = false;
+  try {
+    return db.transaction(() => {
+      if (input.supersedes) restoreSuperseded = supersede(db, decisionsDir, input.supersedes, slug);
+      mkdirSync4(decisionsDir, { recursive: true });
+      writeFileSync3(path, renderDecisionMd({ ...input, sourceTasks }, date));
+      wroteNew = true;
+      db.prepare(
+        `INSERT INTO decisions (slug, title, path, content_hash, created, superseded_by, source_tasks)
+         VALUES (?, ?, ?, ?, ?, NULL, ?)`
+      ).run(slug, input.title.trim(), path, hash, date, provenance);
+      db.prepare(
+        `INSERT INTO search_index (kind, ref, title, body) VALUES ('decision', ?, ?, ?)`
+      ).run(slug, input.title.trim(), body);
+      return { slug, path, created: true };
+    })();
+  } catch (e) {
+    restoreSuperseded?.();
+    if (wroteNew) rmSync4(path, { force: true });
+    throw e;
+  }
 }
 
 // src/recall.ts
@@ -2055,7 +2073,12 @@ function syncIndex(db, decisionsDir) {
   }).immediate();
 }
 function indexPass(db, decisionsDir, write) {
-  const source = primarySource(db);
+  const last = Number(
+    db.prepare(`SELECT value FROM meta WHERE key='fts_last_event_id'`).get()?.value ?? "0"
+  );
+  const max = db.prepare(`SELECT MAX(id) AS m FROM events`).get().m ?? 0;
+  if (!write && max > last) return true;
+  const source = primarySource(db) ?? null;
   if (canSyncLegacyDecisions(db, decisionsDir, source)) {
     const files = existsSync5(decisionsDir) ? readdirSync4(decisionsDir).filter((f) => f.endsWith(".md")) : [];
     const inDb = new Map(
@@ -2099,10 +2122,6 @@ function indexPass(db, decisionsDir, write) {
       db.prepare(`DELETE FROM search_index WHERE kind='decision' AND ref = ?`).run(slug);
     }
   }
-  const last = Number(
-    db.prepare(`SELECT value FROM meta WHERE key='fts_last_event_id'`).get()?.value ?? "0"
-  );
-  const max = db.prepare(`SELECT MAX(id) AS m FROM events`).get().m ?? 0;
   if (max <= last) return false;
   if (!write) return true;
   const ids = db.prepare(
@@ -2499,7 +2518,7 @@ function exportBoard(db, decisionsDir, opts = {}) {
       snapshot,
       (_key, value) => typeof value === "string" ? redact(value) : value
     ));
-  })();
+  }).deferred();
 }
 function unsubmitted(db, author) {
   const ids = db.prepare(
@@ -2507,6 +2526,7 @@ function unsubmitted(db, author) {
       WHERE t.status = 'in_progress' AND t.archived_at IS NULL
         AND EXISTS (SELECT 1 FROM criteria c WHERE c.task_id = t.id)
         AND NOT EXISTS (SELECT 1 FROM criteria c WHERE c.task_id = t.id AND c.checked_at IS NULL)
+        -- claim_expires < now \u2014 \u0442\u043E \u0436\u0435 \u043F\u0440\u0430\u0432\u0438\u043B\u043E, \u0447\u0442\u043E leaseExpired (state.ts); NULL \u043D\u0435 \u0438\u0441\u0442\u0435\u043A\u0430\u0435\u0442.
         AND (t.claimed_by IS NULL OR t.claimed_by NOT LIKE 'ai:%' OR t.claimed_by = ?
              OR t.claim_expires < ?)
       ORDER BY id`
@@ -2534,7 +2554,7 @@ function claimTask(db, id2, actor, ttl = DEFAULT_TTL) {
   assertTtl(ttl);
   return db.transaction(() => {
     let t = mustGetTask(db, id2);
-    if (t.status === "in_progress" && t.claim_expires !== null && t.claim_expires < now()) {
+    if (t.status === "in_progress" && leaseExpired(t.claim_expires)) {
       db.prepare(`UPDATE tasks SET status='new', claimed_by=NULL, claim_expires=NULL, updated_at=? WHERE id=?`).run(now(), id2);
       appendEvent(db, id2, SYSTEM, "reclaimed", { former: t.claimed_by }, { type: "claim", level: "warn" });
       t = mustGetTask(db, id2);
@@ -2584,7 +2604,7 @@ function renewClaim(db, id2, actor, ttl = DEFAULT_TTL) {
   return db.transaction(() => {
     const expires = now() + ttl;
     const r = db.prepare(
-      `UPDATE tasks SET claim_expires=?, updated_at=? WHERE id=? AND claimed_by=?`
+      `UPDATE tasks SET claim_expires=?, updated_at=? WHERE id=? AND claimed_by=? AND status='in_progress' AND archived_at IS NULL`
     ).run(expires, now(), id2, authorOf(actor));
     if (r.changes !== 1) {
       return {

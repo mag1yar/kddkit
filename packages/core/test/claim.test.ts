@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { Db } from '../src/db.js';
 import { openDb } from '../src/db.js';
-import { addTask, moveTask, placeTask } from '../src/ops.js';
+import { addTask, archiveTask, moveTask, placeTask } from '../src/ops.js';
 import { addCriterion, setCriterionChecked } from '../src/criteria.js';
 import { claimTask, renewClaim, DEFAULT_TTL } from '../src/claim.js';
 import { now } from '../src/db.js';
@@ -65,6 +65,15 @@ describe('claim ops', () => {
     const after = db.prepare(`SELECT claim_expires e FROM tasks WHERE id=?`).get(id) as any;
     expect(after.e).toBeGreaterThanOrEqual(before.e);
     expect(renewClaim(db, id, ai2).ok).toBe(false);             // чужой lease
+  });
+
+  it('renewClaim fails on an archived in_progress task the actor still holds', () => {
+    const id = withCriteria('t');
+    claimTask(db, id, ai);
+    archiveTask(db, id, user);
+    expect(db.prepare(`SELECT status, claimed_by c FROM tasks WHERE id=?`).get(id))
+      .toEqual({ status: 'in_progress', c: 'ai:s1' });
+    expect(renewClaim(db, id, ai).ok).toBe(false);
   });
 
   it('claimTask reclaims an expired lease, logs reclaimed, and leaves other leases alone', () => {

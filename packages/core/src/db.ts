@@ -69,11 +69,17 @@ class Connection extends DatabaseSync {
     return row === undefined ? undefined : Object.values(row)[0];
   }
 
-  transaction<T>(fn: () => T): (() => T) & { immediate: () => T } {
-    return Object.assign(() => this.#run(fn, 'BEGIN'), { immediate: () => this.#run(fn, 'BEGIN IMMEDIATE') });
+  // Plain call is IMMEDIATE: almost every transaction here reads then writes (checkMove, CAS,
+  // supersede), and a DEFERRED one that upgrades to a write after another connection committed
+  // fails SQLITE_BUSY at once, bypassing busy_timeout. Taking the write lock up front makes it wait
+  // instead. `.immediate()` is the same, kept for existing call sites; read-only snapshots use
+  // `.deferred()` so they never queue behind a writer.
+  transaction<T>(fn: () => T): (() => T) & { immediate: () => T; deferred: () => T } {
+    const immediate = () => this.#run(fn, 'BEGIN IMMEDIATE');
+    return Object.assign(immediate, { immediate, deferred: () => this.#run(fn, 'BEGIN') });
   }
 
-  // Inside an open transaction both forms become a savepoint: the outer lock mode already holds.
+  // Inside an open transaction every form becomes a savepoint: the outer lock mode already holds.
   #run<T>(fn: () => T, begin: string): T {
     if (this.isTransaction) {
       const sp = `kdd_sp_${++this.#depth}`;

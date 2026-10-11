@@ -216,6 +216,21 @@ describe('addDecision', () => {
     expect(row.superseded_by).toBe(neu.slug);
   });
 
+  it('a failing database part leaves the superseded file and no new file', () => {
+    const db = openDb(':memory:', 'x');
+    const dir = tmp();
+    const old = addDecision(db, dir, { title: 'old way', decision: 'x' });
+    const before = readFileSync(old.path, 'utf8');
+    // The supersede file write happens first; the insert of the new row then aborts.
+    db.exec(`CREATE TEMP TRIGGER boom BEFORE INSERT ON decisions BEGIN SELECT RAISE(ABORT, 'boom'); END`);
+    expect(() => addDecision(db, dir, { title: 'new way', decision: 'y', supersedes: old.slug }))
+      .toThrow(/boom/);
+    expect(readFileSync(old.path, 'utf8')).toBe(before);
+    expect(readdirSync(dir)).toEqual([`${old.slug}.md`]);
+    expect((db.prepare(`SELECT superseded_by FROM decisions WHERE slug = ?`).get(old.slug) as any)
+      .superseded_by).toBeNull();
+  });
+
   it('does not inherit source tasks when superseding', () => {
     const db = openDb(':memory:', 'x');
     const dir = tmp();

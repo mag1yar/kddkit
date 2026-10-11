@@ -375,7 +375,8 @@ export function exportBoard(
       task_links, decisions, events, files };
     return opts.includeSensitive ? snapshot : JSON.parse(JSON.stringify(snapshot,
       (_key, value) => typeof value === 'string' ? redact(value) : value)) as typeof snapshot;
-  })();
+  // Only reads: a consistent snapshot without the write lock, so export does not queue behind a writer.
+  }).deferred();
 }
 
 /**
@@ -397,6 +398,7 @@ export function unsubmitted(db: Db, author: string): number[] {
       WHERE t.status = 'in_progress' AND t.archived_at IS NULL
         AND EXISTS (SELECT 1 FROM criteria c WHERE c.task_id = t.id)
         AND NOT EXISTS (SELECT 1 FROM criteria c WHERE c.task_id = t.id AND c.checked_at IS NULL)
+        -- claim_expires < now — то же правило, что leaseExpired (state.ts); NULL не истекает.
         AND (t.claimed_by IS NULL OR t.claimed_by NOT LIKE 'ai:%' OR t.claimed_by = ?
              OR t.claim_expires < ?)
       ORDER BY id`,

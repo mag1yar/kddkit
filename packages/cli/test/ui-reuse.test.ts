@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
 import { storeIdentity } from '@kddkit/core';
@@ -96,6 +96,10 @@ describe('kdd ui reuse', () => {
         expect(r.status).toBe(1);
         expect(r.stderr).toContain(`a kdd ui of ${message} already runs on :${port} — stop it and run kdd ui again`);
         expect(r.stdout).not.toContain('reusing running server');
+        // Отказ — до openDb: доска не создана и не мигрирована под чужим сервером.
+        const home = join(dir, 'home');
+        const files = existsSync(home) ? readdirSync(home, { recursive: true }).map(String) : [];
+        expect(files.filter((f) => f.endsWith('kdd.db'))).toEqual([]);
       } finally {
         server.close();
         rmSync(dir, { recursive: true, force: true });

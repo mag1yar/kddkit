@@ -1,3 +1,5 @@
+import { now } from './db.js';
+
 export type Status = 'backlog' | 'new' | 'in_progress' | 'review' | 'done';
 export const STATUSES: Status[] = ['backlog', 'new', 'in_progress', 'review', 'done'];
 
@@ -59,9 +61,11 @@ export function agentId(): string | undefined {
     || (codex ? `codex:${codex}` : undefined);
 }
 
-// NULL — бессрочный lease (старые строки), он не истекает.
+// NULL — бессрочный lease (старые строки), он не истекает. Единственное определение «lease
+// истёк»: claim-reclaim, fence в checkMove и пометка reclaimed_from не должны расходиться на секунду.
+// `now` читается только при вызове, так что цикл импорта db.js ↔ state.js порядку загрузки не мешает.
 export const leaseExpired = (claimExpires: number | null): boolean =>
-  claimExpires !== null && claimExpires < Math.floor(Date.now() / 1000);
+  claimExpires !== null && claimExpires < now();
 
 /**
  * @param submittedBy автор последнего перехода в review (`authorOf`), null — если его не было

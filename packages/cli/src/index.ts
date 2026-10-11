@@ -314,13 +314,6 @@ program.command('ui')
 async function uiStart(port: number, host = '127.0.0.1', token?: string): Promise<void> {
   const { dbPath, projectPath } = resolveDbPath();
   const hash = basename(dirname(dbPath));
-  const db = openDb(dbPath, projectPath); // создаём/мигрируем базу → проект виден в /api/projects
-  try {
-    // `kdd ui` запущен изнутри проекта — путь, который знает toplevel достоверно;
-    // project_store выводит из него primary source для legacy-доски.
-    setProjectToplevel(db, resolveToplevel());
-  } catch { /* не git-репо: путь возможен только с KDD_DB, toplevel останется неизвестным */ }
-  db.close();
   // Токен — в ссылке: страница берёт его оттуда и подставляет во все свои запросы,
   // так что перезагрузка вкладки его не теряет. Хост в ссылке — тот, по которому доска
   // реально доступна: после `--host` печатать localhost бессмысленно, ради другого
@@ -331,6 +324,8 @@ async function uiStart(port: number, host = '127.0.0.1', token?: string): Promis
     try { return await fetch(`http://localhost:${port}${path}`, { signal: AbortSignal.timeout(500) }); }
     catch { return null; } // сервера нет — поднимаем свой
   };
+  // Проба и отказы — ДО openDb: openDb мигрирует общую доску, и старый сервер, которому мы
+  // откажем, остался бы крутить старый код над уже новой схемой.
   const ping = await probe('/api/ping');
   const info = ping?.ok
     ? (await ping.json()) as { kdd?: boolean; needsToken?: boolean; store?: string; version?: string } : null;
@@ -358,6 +353,15 @@ async function uiStart(port: number, host = '127.0.0.1', token?: string): Promis
     if (token && (await probe(`/api/version?token=${encodeURIComponent(token)}`))?.status === 401) {
       fail(`the kdd ui already running on :${port} was started with a different token`, false);
     }
+  }
+  const db = openDb(dbPath, projectPath); // создаём/мигрируем базу → проект виден в /api/projects
+  try {
+    // `kdd ui` запущен изнутри проекта — путь, который знает toplevel достоверно;
+    // project_store выводит из него primary source для legacy-доски.
+    setProjectToplevel(db, resolveToplevel());
+  } catch { /* не git-репо: путь возможен только с KDD_DB, toplevel останется неизвестным */ }
+  db.close();
+  if (info?.kdd) {
     console.log(`kdd ui: ${url} (reusing running server)`);
     return;
   }

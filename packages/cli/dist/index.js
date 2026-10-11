@@ -1088,12 +1088,6 @@ program.command("ui").option("--port <n>", "port", "4499").option("--host <addr>
 async function uiStart(port, host = "127.0.0.1", token) {
   const { dbPath, projectPath } = resolveDbPath2();
   const hash = basename2(dirname2(dbPath));
-  const db = openDb2(dbPath, projectPath);
-  try {
-    setProjectToplevel(db, resolveToplevel());
-  } catch {
-  }
-  db.close();
   const url = `http://${LOOPBACK.has(host) ? "localhost" : lanAddress() ?? host}:${port}?project=${hash}` + (token ? `&token=${encodeURIComponent(token)}` : "");
   const probe = async (path) => {
     try {
@@ -1123,6 +1117,14 @@ async function uiStart(port, host = "127.0.0.1", token) {
     if (token && (await probe(`/api/version?token=${encodeURIComponent(token)}`))?.status === 401) {
       fail(`the kdd ui already running on :${port} was started with a different token`, false);
     }
+  }
+  const db = openDb2(dbPath, projectPath);
+  try {
+    setProjectToplevel(db, resolveToplevel());
+  } catch {
+  }
+  db.close();
+  if (info?.kdd) {
     console.log(`kdd ui: ${url} (reusing running server)`);
     return;
   }

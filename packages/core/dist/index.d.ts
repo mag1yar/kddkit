@@ -48,6 +48,7 @@ declare class Connection extends DatabaseSync {
     }): unknown;
     transaction<T>(fn: () => T): (() => T) & {
         immediate: () => T;
+        deferred: () => T;
     };
     close(): void;
 }
@@ -167,7 +168,7 @@ declare function rebindRepository(db: Db, dbPath: string, home: string, input: {
     fromCommonDir: string;
     cwd: string;
 }, actor: Actor): RepositoryBinding;
-declare function canSyncLegacyDecisions(db: Db, decisionsDir: string, source?: RepositoryBinding | undefined): boolean;
+declare function canSyncLegacyDecisions(db: Db, decisionsDir: string, precomputed?: RepositoryBinding | null): boolean;
 declare function assertLegacyDecisionSource(db: Db, decisionsDir: string): void;
 
 interface Task {

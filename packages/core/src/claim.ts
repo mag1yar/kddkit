@@ -1,6 +1,6 @@
 import type { Db } from './db.js';
 import { now } from './db.js';
-import type { Actor } from './state.js';
+import { leaseExpired, type Actor } from './state.js';
 import { appendEvent, appendTaskMutationEvent, authorOf, mustGetTask } from './ops.js';
 import { KddError } from './errors.js';
 import type { Task } from './types.js';
@@ -28,7 +28,7 @@ export function claimTask(
     let t = mustGetTask(db, id);
     // Ленивый TTL-reclaim только этой задачи: за лизом нет процесса, истёк — слот свободен,
     // неудачей это не считается. Чужие просроченные лизы не трогаем: claim остаётся O(1).
-    if (t.status === 'in_progress' && t.claim_expires !== null && t.claim_expires < now()) {
+    if (t.status === 'in_progress' && leaseExpired(t.claim_expires)) {
       db.prepare(`UPDATE tasks SET status='new', claimed_by=NULL, claim_expires=NULL, updated_at=? WHERE id=?`)
         .run(now(), id);
       appendEvent(db, id, SYSTEM, 'reclaimed', { former: t.claimed_by }, { type: 'claim', level: 'warn' });
@@ -63,6 +63,8 @@ export function claimTask(
 
 // Продление тем же CAS: rowcount 0 => «ты больше не владелец» (reclaim/переход), агент обязан остановиться.
 // Срок не проверяем: владение — это claimed_by, а любой reclaim или выход из in_progress его меняет.
+// Статус и архив проверяем: архив claimed_by не снимает, и lease на убранной с доски задаче
+// продлевался бы вечно, а агент считал бы, что работа ещё его.
 // Свой просроченный, но никем не забранный lease продлевается — задача всё ещё за тобой.
 export function renewClaim(
   db: Db, id: number, actor: Actor, ttl = DEFAULT_TTL,
@@ -71,7 +73,7 @@ export function renewClaim(
   return db.transaction((): { ok: true; task: Task } | { ok: false; error: string } => {
     const expires = now() + ttl;
     const r = db.prepare(
-      `UPDATE tasks SET claim_expires=?, updated_at=? WHERE id=? AND claimed_by=?`,
+      `UPDATE tasks SET claim_expires=?, updated_at=? WHERE id=? AND claimed_by=? AND status='in_progress' AND archived_at IS NULL`,
     ).run(expires, now(), id, authorOf(actor));
     if (r.changes !== 1) {
       return { ok: false,

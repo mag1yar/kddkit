@@ -366,10 +366,13 @@ export function rebindRepository(db: Db, dbPath: string, home: string,
   }).immediate());
 }
 
-// `source` — заранее посчитанный primarySource: синк решений проверяет каждый файл, а
-// primarySource стоит SQL и, бывает, git-подпроцесса.
+// `precomputed` — заранее посчитанный primarySource: синк решений проверяет каждый файл, а
+// primarySource стоит SQL и, бывает, git-подпроцесса. undefined — посчитать здесь;
+// null — вызывающий уже посчитал, и источника нет.
+// Не default-параметр: тот подменял бы и явно переданный undefined, повторяя SQL/git.
 export function canSyncLegacyDecisions(db: Db, decisionsDir: string,
-  source: RepositoryBinding | undefined = primarySource(db)): boolean {
+  precomputed?: RepositoryBinding | null): boolean {
+  const source = precomputed === undefined ? primarySource(db) : precomputed;
   const project = projectOf(db);
   if (!project.primary_repo_id && db.memory) return true;
   if (project.primary_repo_id && (!source || !existsSync(source.common_dir))) return false;

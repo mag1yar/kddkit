@@ -7,6 +7,7 @@ superseded_by:
 
 ## Decision
 Хранилище открывается встроенным `node:sqlite` (`DatabaseSync`), native-зависимостей у kddkit нет. Минимальный Node — 22.16. Форма вызовов better-sqlite3 сохранена тонким классом `Db` в `packages/core/src/db.ts`: `db.transaction(fn)()` / `.immediate()` (вложенные — SAVEPOINT по `isTransaction`), `db.pragma()`, `db.name`, `db.memory`, busy_timeout 5000 по умолчанию. ExperimentalWarning про SQLite на Node 22 глушится до загрузки модуля; остальные warning'и не трогаются.
+Простой вызов `db.transaction(fn)()` открывает `BEGIN IMMEDIATE` (`.immediate()` — синоним), транзакции, которые только читают, помечаются `.deferred()` (`BEGIN`).
 
 ## Rationale
 Один чекаут запускают два Node (24 у kdd и MCP, 22 у части инструментов), а бинарник `better_sqlite3.node` у всех один: выигрывал тот, кто пересобрал последним, остальные падали с `NODE_MODULE_VERSION`. Уже запущенные процессы держали старый модуль, и падения выглядели случайными; `pnpm rebuild` без `allowBuilds` молча ничего не делал. Это прямо противоречило ограничению «ноль барьера установки»: плагинам приходилось докачивать и чинить native-модуль на SessionStart (`smart-install.mjs`). У `node:sqlite` есть FTS5, WAL, `backup`, `isTransaction` — всё, на чём стоит kdd.

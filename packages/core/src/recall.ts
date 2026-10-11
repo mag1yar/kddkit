@@ -15,7 +15,15 @@ export function syncIndex(db: Db, decisionsDir: string): void {
 
 // write=false: only report whether anything is stale (no writes, stops at the first difference).
 function indexPass(db: Db, decisionsDir: string, write: boolean): boolean {
-  const source = primarySource(db); // once per pass, not per decision file
+  // Task watermark first: two cheap reads, and when it is stale the probe needs no directory scan.
+  const last = Number(
+    (db.prepare(`SELECT value FROM meta WHERE key='fts_last_event_id'`).get() as
+      { value: string } | undefined)?.value ?? '0',
+  );
+  const max = (db.prepare(`SELECT MAX(id) AS m FROM events`).get() as { m: number | null }).m ?? 0;
+  if (!write && max > last) return true;
+  // once per pass, not per decision file; null = "computed, there is none" (undefined would recompute)
+  const source = primarySource(db) ?? null;
   if (canSyncLegacyDecisions(db, decisionsDir, source)) {
     // решения: истина — файловая система
     const files = existsSync(decisionsDir)
@@ -73,11 +81,6 @@ function indexPass(db: Db, decisionsDir: string, write: boolean): boolean {
   }
 
   // задачи: журнал изменений — events
-  const last = Number(
-    (db.prepare(`SELECT value FROM meta WHERE key='fts_last_event_id'`).get() as
-      { value: string } | undefined)?.value ?? '0',
-  );
-  const max = (db.prepare(`SELECT MAX(id) AS m FROM events`).get() as { m: number | null }).m ?? 0;
   if (max <= last) return false;
   if (!write) return true;
   const ids = db.prepare(
