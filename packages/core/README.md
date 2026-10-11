@@ -4,8 +4,8 @@
 kanban + memory substrate for humans and Claude.
 
 All of kddkit's logic lives here: the SQLite store and schema migrations, the
-task state machine, the claim / tick agent driver, and FTS5 `recall` over tasks
-and decisions. The CLI, web UI and MCP server are thin clients over this package.
+task state machine with its acceptance-criteria and review gates, task claims with
+expiring leases, and FTS5 `recall` over tasks and decisions. The CLI, web UI and MCP server are thin clients over this package.
 
 ```ts
 import { openDb, addTask, listTasks, recall } from '@kddkit/core';

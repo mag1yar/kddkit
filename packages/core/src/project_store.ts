@@ -255,8 +255,11 @@ export function primarySource(db: Db): RepositoryBinding | undefined {
   const source = meta(db, 'project_path');
   if (!source) return undefined;
   const primary = projectOf(db).primary_repo_id;
-  const p = canonicalProjectPath(source);
+  let p: string;
+  // realpath may fail (EACCES on an ancestor): treat as "no source", not a crash of every read.
+  try { p = canonicalProjectPath(source); } catch { return undefined; }
   const bindings = bindingsOf(db).filter(b => b.repo_id === primary);
+  if (!bindings.length) return undefined;
   const direct = bindings.find(b => b.common_dir === p || b.checkout_path === p);
   if (direct) return direct;
   // Override-доска, впервые открытая из linked worktree: binding держит worktree, а project_path —
@@ -264,6 +267,15 @@ export function primarySource(db: Db): RepositoryBinding | undefined {
   let common: string;
   try { if (!existsSync(p)) return undefined; common = canonicalCommonDir(p); } catch { return undefined; }
   return bindings.find(b => b.common_dir === common);
+}
+// Старая override-доска, впервые открытая из linked worktree: binding держит worktree, а
+// project_path — основной чекаут. После переезда чекаута его на диске нет, и primarySource
+// связать их уже не может. Узнаём источник без диска: common-dir binding'а первичного репо —
+// это `.git` того самого чекаута из project_path.
+function movedOverrideSource(db: Db, binding: RepositoryBinding): boolean {
+  const source = meta(db, 'project_path');
+  if (!source || binding.repo_id !== projectOf(db).primary_repo_id) return false;
+  try { return binding.common_dir === join(canonicalProjectPath(source), '.git'); } catch { return false; }
 }
 function locateBinding(registry: Db, db: Db, dbPath: string, binding: RepositoryBinding): void {
   putLocator(registry, { common_dir: binding.common_dir, db_path: resolve(dbPath),
@@ -329,7 +341,8 @@ export function rebindRepository(db: Db, dbPath: string, home: string,
     if (existing && !repeated && previous?.common_dir !== existing.common_dir) throw new KddError('repository binding conflict');
     const binding = repeated ? existing! : checkoutBinding(input.cwd,repoId);
     // До переноса: после него project_path уже указывает на новый чекаут.
-    const wasSource = !!previous && primarySource(db)?.common_dir === previous.common_dir;
+    const wasSource = !!previous && (primarySource(db)?.common_dir === previous.common_dir
+      || movedOverrideSource(db, previous));
     catalogStore(db,dbPath,home);
     if (!repeated && oldPath !== newCommon) db.transaction(() => {
       if (!previous) {
@@ -353,10 +366,12 @@ export function rebindRepository(db: Db, dbPath: string, home: string,
   }).immediate());
 }
 
-export function canSyncLegacyDecisions(db: Db, decisionsDir: string): boolean {
+// `source` — заранее посчитанный primarySource: синк решений проверяет каждый файл, а
+// primarySource стоит SQL и, бывает, git-подпроцесса.
+export function canSyncLegacyDecisions(db: Db, decisionsDir: string,
+  source: RepositoryBinding | undefined = primarySource(db)): boolean {
   const project = projectOf(db);
   if (!project.primary_repo_id && db.memory) return true;
-  const source = primarySource(db);
   if (project.primary_repo_id && (!source || !existsSync(source.common_dir))) return false;
   const path = canonicalProjectPath(decisionsDir);
   if (project.legacy_decisions_dir && (!source || resolve(project.legacy_decisions_dir) !== join(source.checkout_path,'.planning','decisions'))) {

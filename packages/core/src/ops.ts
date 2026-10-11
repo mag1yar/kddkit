@@ -3,7 +3,7 @@ import type { Db } from './db.js';
 import { redact } from './redact.js';
 import { now } from './db.js';
 import { KddError } from './errors.js';
-import { authorOf, checkMove, KINDS, normalizeSessionId, PRIORITIES, STATUSES, type Actor, type Kind, type Priority, type Status } from './state.js';
+import { authorOf, checkMove, KINDS, leaseExpired, normalizeSessionId, PRIORITIES, STATUSES, type Actor, type Kind, type Priority, type Status } from './state.js';
 import type { Comment, Task } from './types.js';
 import { mustGetTrack } from './tracks.js';
 
@@ -183,6 +183,13 @@ function submittedBy(db: Db, taskId: number): string | null {
   return r ? authorOf({ type: r.actor_type, id: r.actor_id ?? undefined }) : null;
 }
 
+// Чужой просроченный ai-lease fence не держит (checkMove), а выход из in_progress его снимает —
+// помечаем в событии, у кого задачу забрали, иначе мёртвый lease исчезает с доски бесследно.
+function reclaimedFrom(t: Task, actor: Actor): { reclaimed_from?: string } {
+  return t.status === 'in_progress' && t.claimed_by?.startsWith('ai:') && t.claimed_by !== authorOf(actor)
+    && leaseExpired(t.claim_expires) ? { reclaimed_from: t.claimed_by } : {};
+}
+
 // Следующая свободная позиция в конце колонки (порядок на доске = position).
 function nextPosition(db: Db, status: Status): number {
   return (db.prepare(
@@ -198,7 +205,8 @@ export function moveTask(
   return db.transaction(() => {
     const t = mustGetTask(db, id);
     const submitter = t.status === 'review' ? submittedBy(db, id) : null;
-    const res = checkMove(t.status, to, actor, reason, openCriteria(db, id), t.claimed_by, submitter);
+    const res = checkMove(t.status, to, actor, reason, openCriteria(db, id), t.claimed_by, submitter,
+      t.claim_expires);
     if (!res.ok) throw new KddError(res.error);
     // Сдал и сам принял по просьбе пользователя — переход легальный, но не рядовой: помечаем,
     // иначе «закрыл сам себя» неотличимо от «принял кто-то другой» ровно там, где это и важно.
@@ -210,6 +218,7 @@ export function moveTask(
     ).run(to, nextPosition(db, to), now(), id); // CLI-move дописывает в конец колонки; выход из in_progress снимает claim
     appendTaskMutationEvent(db, id, actor, 'moved', {
       from: t.status, to, ...(reason ? { reason } : {}), ...(self ? { self_accepted: true } : {}),
+      ...reclaimedFrom(t, actor),
     });
     if (reason) {
       db.prepare(
@@ -230,9 +239,9 @@ export function placeTask(
     const t = mustGetTask(db, id);
     if (t.status !== to) {
       const res = checkMove(t.status, to, actor, undefined, openCriteria(db, id), t.claimed_by,
-        t.status === 'review' ? submittedBy(db, id) : null);
+        t.status === 'review' ? submittedBy(db, id) : null, t.claim_expires);
       if (!res.ok) throw new KddError(res.error);
-      appendTaskMutationEvent(db, id, actor, 'moved', { from: t.status, to });
+      appendTaskMutationEvent(db, id, actor, 'moved', { from: t.status, to, ...reclaimedFrom(t, actor) });
     }
     const setPos = db.prepare(`UPDATE tasks SET position = ? WHERE id = ?`);
     orderedIds.forEach((tid, i) => setPos.run(i, tid));

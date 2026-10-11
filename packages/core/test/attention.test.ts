@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Db } from '../src/db.js';
 import { openDb } from '../src/db.js';
-import { addTask, blockTask, moveTask, unblockTask } from '../src/ops.js';
+import { addTask, appendEvent, blockTask, moveTask, unblockTask } from '../src/ops.js';
 import { addCriterion, removeCriterion, setCriterionChecked } from '../src/criteria.js';
 import { attentionData } from '../src/queries.js';
 import { CAPS } from '../src/caps.js';
@@ -35,6 +35,21 @@ describe('attentionData', () => {
 
     expect(attentionData(db, NOW).items).toMatchObject([
       { id: yes.id, reason: 'needs_input', block_reason: 'needs human: choose API' },
+    ]);
+  });
+
+  // Старый драйвер агентов блокировал задачу после K неудач событием типа claim — такие
+  // строки остались на обновлённых досках и по-прежнему ждут человека.
+  it('surfaces a task the removed agent driver blocked as needs_input', () => {
+    const legacy = add('legacy');
+    const manual = add('manual');
+    db.prepare(`UPDATE tasks SET blocked = 1, block_reason = '3 failed attempts (agent driver): x' WHERE id = ?`)
+      .run(legacy.id);
+    appendEvent(db, legacy.id, { type: 'ai', id: 'driver' }, 'blocked',
+      { reason: '3 failed attempts' }, { type: 'claim', level: 'error' });
+    blockTask(db, manual.id, 'dependency: API unavailable', user);
+    expect(attentionData(db, NOW).items).toMatchObject([
+      { id: legacy.id, reason: 'needs_input' },
     ]);
   });
 

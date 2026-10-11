@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { request } from 'node:http';
 import { networkInterfaces } from 'node:os';
-import { openDb, storeIdentity } from '@kddkit/core';
+import { kddVersion, openDb, storeIdentity } from '@kddkit/core';
 import { startUi } from '../src/server.js';
 
 describe('startUi', () => {
@@ -101,7 +101,7 @@ describe('ping stays reachable', () => {
       expect(res.status).toBe(200);
       const ping = await res.json();
       expect(ping).toEqual({
-        kdd: true, default: 'abc', needsToken: true, store: storeIdentity(),
+        kdd: true, default: 'abc', needsToken: true, store: storeIdentity(), version: kddVersion(),
       });
       expect(ping.store).toMatch(/^[0-9a-f]{16}$/); // ответ без пути к домашнему каталогу
       // всё остальное по-прежнему под замком
@@ -113,7 +113,7 @@ describe('ping stays reachable', () => {
     const { url, close } = await startUi(() => openDb(':memory:', 'x'), 0, 'abc');
     try {
       expect(await (await fetch(`${url}/api/ping`)).json())
-        .toEqual({ kdd: true, default: 'abc', needsToken: false, store: storeIdentity() });
+        .toEqual({ kdd: true, default: 'abc', needsToken: false, store: storeIdentity(), version: kddVersion() });
     } finally { close(); }
   });
 });

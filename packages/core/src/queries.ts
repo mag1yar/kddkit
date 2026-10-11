@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Db } from './db.js';
+import { now } from './db.js';
 import { CAPS, capText } from './caps.js';
 import { authorOf, normalizeSessionId, STATUSES, type Kind, type Status } from './state.js';
 import type {
@@ -243,6 +244,9 @@ export function attentionData(db: Db, nowSeconds: number): AttentionInbox {
         MAX(t.updated_at, COALESCE(
           (SELECT MAX(e.created_at) FROM events e WHERE e.task_id = t.id), t.updated_at
         )) AS last_activity,
+        (SELECT e.type FROM events e
+          WHERE e.task_id = t.id AND e.action = 'blocked'
+          ORDER BY e.id DESC LIMIT 1) AS latest_blocked_type,
         (SELECT MAX(e.id) FROM events e
           WHERE e.task_id = t.id AND e.action = 'moved'
             AND e.detail LIKE '%"to":"review"%') AS last_review_id
@@ -251,7 +255,11 @@ export function attentionData(db: Db, nowSeconds: number): AttentionInbox {
     ), classified AS (
       SELECT f.*,
         CASE
-          WHEN f.blocked = 1 AND substr(f.block_reason, 1, 12) = 'needs human:' THEN 'needs_input'
+          -- Блок с типом claim ставил только удалённый драйвер агентов (после K неудач).
+          -- Новых таких нет, но на обновлённых досках они остались и ждут человека.
+          WHEN f.blocked = 1 AND (
+            substr(f.block_reason, 1, 12) = 'needs human:' OR f.latest_blocked_type = 'claim'
+          ) THEN 'needs_input'
           WHEN f.blocked = 0 AND f.status IN ('review', 'in_progress')
             AND f.last_review_id IS NOT NULL
             AND EXISTS (
@@ -381,7 +389,7 @@ export function exportBoard(
  *
  * Задача под чужим ai-lease не возвращается: `checkMove` откажет такому актору («lease lost»),
  * и напоминание стоило бы ему хода на выяснение того, что двигать её нельзя. Условие держим
- * в тех же терминах, что и fence — user-held и незанятые задачи не трогаем.
+ * в тех же терминах, что и fence — user-held, незанятые и с просроченным lease не трогаем.
  */
 export function unsubmitted(db: Db, author: string): number[] {
   const ids = db.prepare(
@@ -389,9 +397,10 @@ export function unsubmitted(db: Db, author: string): number[] {
       WHERE t.status = 'in_progress' AND t.archived_at IS NULL
         AND EXISTS (SELECT 1 FROM criteria c WHERE c.task_id = t.id)
         AND NOT EXISTS (SELECT 1 FROM criteria c WHERE c.task_id = t.id AND c.checked_at IS NULL)
-        AND (t.claimed_by IS NULL OR t.claimed_by NOT LIKE 'ai:%' OR t.claimed_by = ?)
+        AND (t.claimed_by IS NULL OR t.claimed_by NOT LIKE 'ai:%' OR t.claimed_by = ?
+             OR t.claim_expires < ?)
       ORDER BY id`,
-  ).all(author) as { id: number }[];
+  ).all(author, now()) as { id: number }[];
   const lastCheck = db.prepare(
     `SELECT actor_type, actor_id FROM events
       WHERE task_id = ? AND action = 'criterion_checked' ORDER BY id DESC LIMIT 1`,

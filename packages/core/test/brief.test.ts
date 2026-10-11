@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import {
   CAPS, addCriterion, addTask, attachFile, blockTask, capText, commentTask,
   editTask,
-  linkTasks, openDb, setCriterionChecked, taskBrief, taskDetail, taskDetailCapped,
+  linkTasks, openDb, setCriterionChecked, taskBrief, taskDetail,
 } from '../src/index.js';
 
 const user = { type: 'user' as const };
@@ -66,7 +66,6 @@ describe('taskBrief', () => {
     expect(first.task).toEqual({
       id: task.id,
       title: 'resume me',
-      parent_id: null,
       goal: 'ship the packet',
       status: 'new',
       blocked: false,
@@ -314,13 +313,13 @@ describe('taskBrief', () => {
   });
 });
 
-it('preserves parent_id in bounded reads', () => {
+// Колонка parent_id осталась в tasks, но в бриф агенту она больше не попадает.
+it('does not emit parent_id in the task brief', () => {
   const db = openDb(':memory:');
   const parent = addTask(db, { title: 'parent' }, user);
   const child = addTask(db, { title: 'child' }, user);
   db.prepare('UPDATE tasks SET parent_id = ? WHERE id = ?').run(parent.id, child.id);
   try {
-    expect(taskBrief(db, '/missing', child.id).task.parent_id).toBe(parent.id);
-    expect(taskDetailCapped(db, child.id).task.parent_id).toBe(parent.id);
+    expect(taskBrief(db, '/missing', child.id).task).not.toHaveProperty('parent_id');
   } finally { db.close(); }
 });

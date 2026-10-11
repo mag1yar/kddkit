@@ -59,12 +59,17 @@ export function agentId(): string | undefined {
     || (codex ? `codex:${codex}` : undefined);
 }
 
+// NULL — бессрочный lease (старые строки), он не истекает.
+export const leaseExpired = (claimExpires: number | null): boolean =>
+  claimExpires !== null && claimExpires < Math.floor(Date.now() / 1000);
+
 /**
  * @param submittedBy автор последнего перехода в review (`authorOf`), null — если его не было
  */
 export function checkMove(
   from: Status, to: Status, actor: Actor, reason?: string, openCriteria = 0,
   claimedBy: string | null = null, submittedBy: string | null = null,
+  claimExpires: number | null = null,
 ): { ok: true } | { ok: false; error: string } {
   if (from === to) return { ok: false, error: `task is already in ${to}` };
   if (actor.type === 'user') return { ok: true };
@@ -81,7 +86,10 @@ export function checkMove(
   // fence: задачу, занятую ЛЮБЫМ ai-актором (claimed_by 'ai:...'), не может двигать ДРУГОЙ актор.
   // Держит параллельные ai-сессии друг от друга. user-held и unclaimed
   // (null) — НЕ трогаем (doc-режим). Свой токен -> allow.
-  if (from === 'in_progress' && claimedBy?.startsWith('ai:') && claimedBy !== `ai:${actor.id ?? '?'}`) {
+  // Fence держит только живой lease: подметать просроченные некому, и мёртвая сессия
+  // иначе запирала бы задачу навсегда. Снимает такой lease сам moveTask при выходе из in_progress.
+  if (from === 'in_progress' && claimedBy?.startsWith('ai:') && claimedBy !== `ai:${actor.id ?? '?'}`
+    && !leaseExpired(claimExpires)) {
     return { ok: false,
       error: `lease lost (held by ${claimedBy}); you no longer own this task — stop work` };
   }

@@ -6,7 +6,7 @@ import { networkInterfaces } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
   KddError, addCriterion, addDecision, addTask, archiveTask, attachFile,
-  addRepository, bindRepository, rebindRepository, projectOf, repositoriesOf, bindingsOf, kddHome,
+  addRepository, bindRepository, rebindRepository, projectOf, repositoriesOf, bindingsOf, primarySource, kddHome,
   attentionData, blockTask,
   boardData, BUG_BODY_TEMPLATE, claimTask, commentTask, createTrack, decisionDetail,
   deleteTrack, DEFAULT_TTL,
@@ -332,8 +332,14 @@ async function uiStart(port: number, host = '127.0.0.1', token?: string): Promis
     catch { return null; } // сервера нет — поднимаем свой
   };
   const ping = await probe('/api/ping');
-  const info = ping?.ok ? (await ping.json()) as { kdd?: boolean; needsToken?: boolean; store?: string } : null;
+  const info = ping?.ok
+    ? (await ping.json()) as { kdd?: boolean; needsToken?: boolean; store?: string; version?: string } : null;
   if (info?.kdd) {
+    // Сервер старой версии крутит старый код (и старую схему) — переиспользовать его после
+    // обновления значит молча показать доску не той версией. Убивать чужой процесс не будем.
+    if (info.version !== kddVersion()) {
+      fail(`a kdd ui of version ${info.version ?? 'unknown'} already runs on :${port} — stop it and run kdd ui again`, false);
+    }
     if (info.store !== storeIdentity()) {
       fail(info.store
         ? `a kdd ui already runs on :${port} with a different store — stop it or choose another --port`
@@ -482,8 +488,15 @@ function withProjectStore(fn: (db: ReturnType<typeof openDb>, dbPath: string) =>
   return withDbAt(dbPath, projectPath, db => fn(db, dbPath));
 }
 projectCommand.command('show').option('--json').action(o => run(o.json, () => {
-  const result = withDb(db => ({ project: projectOf(db), repositories: repositoriesOf(db), bindings: bindingsOf(db) }));
-  out(o.json,result,() => JSON.stringify(result,null,2));
+  // Источник решений — один чекаут первичного репо; без пометки его не отличить от клонов.
+  const result = withDb(db => {
+    const source = primarySource(db)?.common_dir;
+    return { project: projectOf(db), repositories: repositoriesOf(db),
+      bindings: bindingsOf(db).map(b => ({ ...b, decisions_source: b.common_dir === source })) };
+  });
+  const source = result.bindings.find(b => b.decisions_source);
+  out(o.json,result,() => JSON.stringify(result,null,2)
+    + `\n${source ? `${source.checkout_path} (decisions source)` : 'no decisions source'}`);
 }));
 projectCommand.command('add-repo').argument('<checkout>')
   .requiredOption('--purpose <text>')

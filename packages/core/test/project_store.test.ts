@@ -42,6 +42,9 @@ function open(cwd: string) {
   return { db, dbPath };
 }
 
+const metaOf = (db: Db, key: string) =>
+  (db.prepare('SELECT value FROM meta WHERE key=?').get(key) as { value: string } | undefined)?.value ?? null;
+
 function legacy(cwd: string, decisionsDir: string, override = false) {
   const dbPath = override ? join(root,'override.db') : core.resolveDbPath(cwd).dbPath;
   mkdirSync(join(dbPath,'..'),{recursive:true});
@@ -133,8 +136,8 @@ describe('project store review regressions', () => {
     const oldCommon=core.canonicalCommonDir(source);
     const moved=join(root,'moved');renameSync(source,moved);
     core.rebindRepository(db,dbPath,home,{fromCommonDir:oldCommon,cwd:moved},user);
-    expect(core.projectPathOf(db)).toBe(core.canonicalCommonDir(moved));
-    expect(core.projectToplevelOf(db)).toBe(realpathSync(moved));
+    expect(metaOf(db,'project_path')).toBe(core.canonicalCommonDir(moved));
+    expect(metaOf(db,'project_toplevel')).toBe(realpathSync(moved));
     expect(core.canSyncLegacyDecisions(db,join(moved,'.planning','decisions'))).toBe(true);
   });
 
@@ -148,6 +151,22 @@ describe('project store review regressions', () => {
     const db=core.openDb(dbPath,core.resolveDbPath(wt).projectPath,wt);handles.push(db);
     expect(core.bindingsOf(db)[0].checkout_path).toBe(realpathSync(wt));
     expect(core.canSyncLegacyDecisions(db,dir)).toBe(true);
+  });
+
+  // Та же доска после переезда основного чекаута: старого пути на диске нет, и rebind
+  // обязан узнать источник без него — иначе project_path и решения застревают на старом месте.
+  it('rebinds a moved legacy override source first opened from a linked worktree', () => {
+    const source = repo('source');const dir=join(source,'.planning','decisions');
+    const dbPath = legacy(source,dir,true);
+    const wt=join(root,'linked');git(source,'worktree','add','-b','linked',wt);
+    process.env.KDD_DB=dbPath;
+    const db=core.openDb(dbPath,core.resolveDbPath(wt).projectPath,wt);handles.push(db);
+    const oldCommon=core.canonicalCommonDir(source);
+    const moved=join(root,'moved');renameSync(source,moved);
+    expect(core.primarySource(db)).toBeUndefined();
+    core.rebindRepository(db,dbPath,home,{fromCommonDir:oldCommon,cwd:moved},user);
+    expect(metaOf(db,'project_path')).toBe(core.canonicalCommonDir(moved));
+    expect(core.canSyncLegacyDecisions(db,join(moved,'.planning','decisions'))).toBe(true);
   });
 
   it('rejects a nested repository occupying the default decisions directory', () => {
@@ -313,7 +332,7 @@ describe('explicit repository bindings', () => {
     const cloneDb = open(wt).db;
     core.setProjectToplevel(db,source);
     core.setProjectToplevel(cloneDb,wt);
-    expect(core.projectToplevelOf(db)).toBe(source);
+    expect(metaOf(db,'project_toplevel')).toBe(source);
     core.commentTask(cloneDb,task.id,'clone change',user);
     expect(core.taskDetail(db,task.id).comments[0].body).toBe('clone change');
     const eventsBefore = db.prepare('SELECT COUNT(*) n FROM events').get();
@@ -348,7 +367,7 @@ describe('explicit repository bindings', () => {
     core.rebindRepository(db,dbPath,home,{fromCommonDir:oldCommon,cwd:moved},user);
     expect(core.resolveDbPath(moved).dbPath).toBe(dbPath);
     expect(core.projectOf(db).project_id).toBe(projectId);
-    expect(core.projectPathOf(db)).toBe(core.canonicalCommonDir(moved));
+    expect(metaOf(db,'project_path')).toBe(core.canonicalCommonDir(moved));
     const count = db.prepare('SELECT COUNT(*) n FROM events').get();
     core.rebindRepository(db,dbPath,home,{fromCommonDir:oldCommon,cwd:moved},user);
     expect(db.prepare('SELECT COUNT(*) n FROM events').get()).toEqual(count);

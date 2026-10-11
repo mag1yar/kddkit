@@ -57,6 +57,18 @@ The last command should show `kddkit@kddkit` as `installed, enabled`. Then start
 restart Codex **from inside the project you want to use kddkit with**.
 MCP writes and Stop reminders use the same full Codex session identity.
 
+## Upgrading from 0.9.x
+
+0.9.x could run agents on its own (`kdd tick` / autotick). That driver is gone and the
+upgrade does not stop what it left behind. Once, per project:
+
+```bash
+ps -eo pid,pgid,args | grep '[k]dd-worker-'   # stray workers: kill -- -<pgid>
+git worktree list | grep kdd/task-            # leftover task worktrees
+git worktree remove <path>                    # after saving anything you want to keep
+git branch -D kdd/task-N                      # its branch, once merged or unwanted
+```
+
 ## Requirements
 
 - **Node.js ≥ 22.16** on your `PATH` — the SessionStart hook and the MCP server run

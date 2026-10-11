@@ -61,7 +61,9 @@ export function claimTask(
   }).immediate();
 }
 
-// Продление тем же CAS: rowcount 0 => «ты больше не владелец» (истёк/reclaim), агент обязан остановиться.
+// Продление тем же CAS: rowcount 0 => «ты больше не владелец» (reclaim/переход), агент обязан остановиться.
+// Срок не проверяем: владение — это claimed_by, а любой reclaim или выход из in_progress его меняет.
+// Свой просроченный, но никем не забранный lease продлевается — задача всё ещё за тобой.
 export function renewClaim(
   db: Db, id: number, actor: Actor, ttl = DEFAULT_TTL,
 ): { ok: true; task: Task } | { ok: false; error: string } {
@@ -69,8 +71,8 @@ export function renewClaim(
   return db.transaction((): { ok: true; task: Task } | { ok: false; error: string } => {
     const expires = now() + ttl;
     const r = db.prepare(
-      `UPDATE tasks SET claim_expires=?, updated_at=? WHERE id=? AND claimed_by=? AND (claim_expires IS NULL OR claim_expires >= ?)`,
-    ).run(expires, now(), id, authorOf(actor), now());
+      `UPDATE tasks SET claim_expires=?, updated_at=? WHERE id=? AND claimed_by=?`,
+    ).run(expires, now(), id, authorOf(actor));
     if (r.changes !== 1) {
       return { ok: false,
         error: `#${id} not held by ${authorOf(actor)} (lease lost or reclaimed) — stop work` };

@@ -81,10 +81,15 @@ describe('claim ops', () => {
       .toEqual({ status: 'in_progress', claimed_by: 'ai:s1' });
   });
 
-  it('renewClaim refuses a lease that already expired', () => {
+  // Владение — claimed_by, а не срок: свой просроченный и никем не забранный lease продлевается.
+  it('renewClaim extends its own expired lease nobody reclaimed, and fails after a reclaim', () => {
     const id = withCriteria('t');
     claimTask(db, id, ai, 900);
     db.prepare(`UPDATE tasks SET claim_expires = ? WHERE id = ?`).run(now() - 1, id);
+    const r = renewClaim(db, id, ai, 900);
+    expect(r.ok && r.task.claim_expires).toBeGreaterThanOrEqual(now() + 899);
+    db.prepare(`UPDATE tasks SET claim_expires = ? WHERE id = ?`).run(now() - 1, id);
+    expect(claimTask(db, id, ai2).ok).toBe(true); // reclaim другим актором
     expect(renewClaim(db, id, ai).ok).toBe(false);
   });
 
@@ -199,6 +204,25 @@ describe('run-token fence', () => {
     setCriterionChecked(db, t.id, c.id, true, { type: 'user' });
     moveTask(db, t.id, 'in_progress', { type: 'ai', id: 's9' }); // raw move, без claim -> claimed_by NULL
     expect(() => moveTask(db, t.id, 'review', { type: 'ai', id: 's9' })).not.toThrow();
+  });
+
+  // Подметать просроченные lease некому: мёртвая сессия не должна запирать задачу навсегда.
+  it('lets another ai move a task whose foreign lease expired, and clears the lease', () => {
+    const db = openDb(':memory:');
+    const id = readyClaimed(db, 's1');
+    db.prepare(`UPDATE tasks SET claim_expires = ? WHERE id = ?`).run(now() - 1, id);
+    const t = moveTask(db, id, 'review', { type: 'ai', id: 's2' });
+    expect([t.status, t.claimed_by, t.claim_expires]).toEqual(['review', null, null]);
+    const ev = db.prepare(`SELECT detail FROM events WHERE task_id=? AND action='moved' ORDER BY id DESC LIMIT 1`)
+      .get(id) as { detail: string };
+    expect(JSON.parse(ev.detail).reclaimed_from).toBe('ai:s1');
+  });
+
+  it('still fences on an active foreign lease', () => {
+    const db = openDb(':memory:');
+    const id = readyClaimed(db, 's1');
+    expect(() => moveTask(db, id, 'review', { type: 'ai', id: 's2' })).toThrow(/lease lost/);
+    expect(() => placeTask(db, id, 'review', [id], { type: 'ai', id: 's2' })).toThrow(/lease lost/);
   });
 
   it('placeTask fences an ai move on a task held by another ai session', () => {

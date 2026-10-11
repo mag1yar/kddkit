@@ -223,24 +223,11 @@ export function closeDb(db: Db): void {
   db.close();
 }
 
-// Читает project_path напрямую из уже открытой базы — без обхода ~/.kdd через listProjects(),
-// который каждому проекту стоит отдельного readonly-подключения ко всем остальным.
-export function projectPathOf(db: Db): string | null {
-  return (db.prepare(`SELECT value FROM meta WHERE key = 'project_path'`).get() as
-    { value: string } | undefined)?.value ?? null;
-}
-
 // Рабочее дерево проекта. Хранится отдельно от project_path, потому что project_path — это
 // git common-dir, и вывести toplevel из него нельзя: у submodule он лежит в
 // <super>/.git/modules/<name>, у `git init --separate-git-dir` — вообще вне репозитория,
-// у bare-репо с linked worktree — сам по себе. Пишут те, кто резолвил toplevel из настоящего
-// cwd внутри репозитория (`kdd ui`); читают те, кому нужен рабочий каталог проекта,
-// но у кого нет своего cwd в нём (web-сервер, мультиплексирующий проекты).
-export function projectToplevelOf(db: Db): string | null {
-  return (db.prepare(`SELECT value FROM meta WHERE key = 'project_toplevel'`).get() as
-    { value: string } | undefined)?.value ?? null;
-}
-
+// у bare-репо с linked worktree — сам по себе. Пишет `kdd ui`, резолвивший toplevel из настоящего
+// cwd внутри репозитория; читает инициализация стора (первый binding источника), rebind переносит.
 export function setProjectToplevel(db: Db, toplevel: string): void {
   const primary = projectOf(db).primary_repo_id;
   if (primary) {

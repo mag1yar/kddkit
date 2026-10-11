@@ -4,7 +4,7 @@ import type { Db } from './db.js';
 import { CAPS } from './caps.js';
 import { KddError } from './errors.js';
 import { parseDecisionMd } from './decisions.js';
-import { canSyncLegacyDecisions, assertLegacyDecisionSource } from './project_store.js';
+import { canSyncLegacyDecisions, assertLegacyDecisionSource, primarySource } from './project_store.js';
 
 export function syncIndex(db: Db, decisionsDir: string): void {
   // Usually nothing changed: detect that lock-free first, so recall/show never wait on a writer.
@@ -15,7 +15,8 @@ export function syncIndex(db: Db, decisionsDir: string): void {
 
 // write=false: only report whether anything is stale (no writes, stops at the first difference).
 function indexPass(db: Db, decisionsDir: string, write: boolean): boolean {
-  if (canSyncLegacyDecisions(db, decisionsDir)) {
+  const source = primarySource(db); // once per pass, not per decision file
+  if (canSyncLegacyDecisions(db, decisionsDir, source)) {
     // решения: истина — файловая система
     const files = existsSync(decisionsDir)
       ? readdirSync(decisionsDir).filter((f) => f.endsWith('.md'))
@@ -34,7 +35,7 @@ function indexPass(db: Db, decisionsDir: string, write: boolean): boolean {
       const slug = f.slice(0, -3);
       seen.add(slug);
       const path = join(decisionsDir, f);
-      if (!canSyncLegacyDecisions(db, dirname(realpathSync(path)))) continue;
+      if (!canSyncLegacyDecisions(db, dirname(realpathSync(path)), source)) continue;
       const doc = parseDecisionMd(readFileSync(path, 'utf8'));
       const title = doc.title || slug;
       const supersededBy =

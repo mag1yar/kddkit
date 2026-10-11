@@ -4,7 +4,7 @@ import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
-  MIGRATIONS, openDb, projectPathOf, projectToplevelOf, setProjectToplevel,
+  MIGRATIONS, openDb, setProjectToplevel,
 } from '../src/db.js';
 import { KddError } from '../src/errors.js';
 
@@ -131,23 +131,16 @@ describe('openDb', () => {
     db.close();
   });
 
-  it('projectPathOf reads back what openDb wrote, and null when the row is missing', () => {
-    const db = openDb(':memory:', 'C:/proj');
-    expect(projectPathOf(db)).toBe('C:/proj');
-    db.prepare(`DELETE FROM meta WHERE key = 'project_path'`).run();
-    expect(projectPathOf(db)).toBeNull();
-  });
-
-  // Ключа нет у досок, созданных до его появления, — читатель обязан получить null и
-  // уметь откатиться на свою старую догадку, а не сломаться.
-  it('projectToplevelOf is null until written, then reads back the last write', () => {
+  it('setProjectToplevel overwrites one row and leaves project_path alone', () => {
     const db = openDb(':memory:', '/super/.git/modules/sub');
-    expect(projectToplevelOf(db)).toBeNull();
+    const meta = (key: string) => (db.prepare(`SELECT value FROM meta WHERE key = ?`).get(key) as
+      { value: string } | undefined)?.value ?? null;
+    expect(meta('project_toplevel')).toBeNull();
     setProjectToplevel(db, '/super/sub');
-    expect(projectToplevelOf(db)).toBe('/super/sub');
+    expect(meta('project_toplevel')).toBe('/super/sub');
     setProjectToplevel(db, '/elsewhere/sub'); // репо переехало — перезапись, не второй ряд
-    expect(projectToplevelOf(db)).toBe('/elsewhere/sub');
-    expect(projectPathOf(db)).toBe('/super/.git/modules/sub'); // project_path не тронут
+    expect(meta('project_toplevel')).toBe('/elsewhere/sub');
+    expect(meta('project_path')).toBe('/super/.git/modules/sub'); // project_path не тронут
   });
 
   it('rejects bad status via CHECK', () => {
@@ -260,6 +253,26 @@ it('upgrades v14 without changing any kept row, provenance or search hit and kee
     upgraded?.close(); raw.close(); process.env = saved;
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+describe('migration v21', () => {
+  it('v21 deletes the tick-only meta keys and nothing else', () => {
+    const db = new Db(':memory:');
+    for (let i = 0; i < 20; i++) db.transaction(() => { db.exec(MIGRATIONS[i]); db.pragma(`user_version = ${i + 1}`); })();
+    const put = db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`);
+    for (const k of ['autotick_enabled', 'autotick_interval_sec', 'autotick_max_workers', 'autotick_last',
+      'agent_events_pruned_at']) put.run(k, '1');
+    put.run('project_path', '/src/.git');
+    put.run('stop_reminded', '[]');
+    put.run('autotickish', 'keep'); // похожий, но чужой ключ не трогаем
+    const before = db.prepare(`SELECT key, value FROM meta WHERE key NOT LIKE 'autotick\\_%' ESCAPE '\\'
+      AND key <> 'agent_events_pruned_at' ORDER BY key`).all();
+
+    db.transaction(() => { db.exec(MIGRATIONS[20]); db.pragma('user_version = 21'); })();
+
+    expect(db.prepare(`SELECT key, value FROM meta ORDER BY key`).all()).toEqual(before);
+    expect(before).toEqual(expect.arrayContaining([{ key: 'autotickish', value: 'keep' }]));
+  });
 });
 
 describe('migration v20', () => {

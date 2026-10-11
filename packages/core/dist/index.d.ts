@@ -60,8 +60,6 @@ declare const now: () => number;
 declare function openDb(dbPath: string, projectPath?: string, checkout?: string): Db;
 declare function checkpointWal(db: Db): void;
 declare function closeDb(db: Db): void;
-declare function projectPathOf(db: Db): string | null;
-declare function projectToplevelOf(db: Db): string | null;
 declare function setProjectToplevel(db: Db, toplevel: string): void;
 
 declare class KddError extends Error {
@@ -110,10 +108,11 @@ declare const authorOf: (a: Actor) => string;
  * ещё и fence по lease, поэтому pid сессии берём как последнюю зацепку, а не как первую.
  */
 declare function agentId(): string | undefined;
+declare const leaseExpired: (claimExpires: number | null) => boolean;
 /**
  * @param submittedBy автор последнего перехода в review (`authorOf`), null — если его не было
  */
-declare function checkMove(from: Status, to: Status, actor: Actor, reason?: string, openCriteria?: number, claimedBy?: string | null, submittedBy?: string | null): {
+declare function checkMove(from: Status, to: Status, actor: Actor, reason?: string, openCriteria?: number, claimedBy?: string | null, submittedBy?: string | null, claimExpires?: number | null): {
     ok: true;
 } | {
     ok: false;
@@ -168,7 +167,7 @@ declare function rebindRepository(db: Db, dbPath: string, home: string, input: {
     fromCommonDir: string;
     cwd: string;
 }, actor: Actor): RepositoryBinding;
-declare function canSyncLegacyDecisions(db: Db, decisionsDir: string): boolean;
+declare function canSyncLegacyDecisions(db: Db, decisionsDir: string, source?: RepositoryBinding | undefined): boolean;
 declare function assertLegacyDecisionSource(db: Db, decisionsDir: string): void;
 
 interface Task {
@@ -515,7 +514,7 @@ declare function exportBoard(db: Db, decisionsDir: string, opts?: {
  *
  * Задача под чужим ai-lease не возвращается: `checkMove` откажет такому актору («lease lost»),
  * и напоминание стоило бы ему хода на выяснение того, что двигать её нельзя. Условие держим
- * в тех же терминах, что и fence — user-held и незанятые задачи не трогаем.
+ * в тех же терминах, что и fence — user-held, незанятые и с просроченным lease не трогаем.
  */
 declare function unsubmitted(db: Db, author: string): number[];
 
@@ -629,7 +628,6 @@ interface TaskBrief {
         kind: Kind;
         area: string | null;
         archived_at: number | null;
-        parent_id: number | null;
     };
     criteria: BriefSection<{
         id: number;
@@ -680,4 +678,4 @@ interface TaskBrief {
 }
 declare function taskBrief(db: Db, decisionsDir: string, id: number): TaskBrief;
 
-export { type Actor, type AttentionInbox, type AttentionItem, type AttentionReason, BUG_BODY_TEMPLATE, type BriefSection, CAPS, type Comment, type Criterion, DEFAULT_TTL, Db, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type EventRow, type FileRow, KINDS, KddError, type Kind, MIGRATIONS, type ManualProvenance, type ManualSession, type NextAction, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type Priority, type ProjectRecord, type RecallHit, type Release, type ReleaseInfo, type RepositoryBinding, type RepositoryRecord, STATUSES, type SessionHandoff, type Statement, type Status, TRANSITIONS, type Task, type TaskBrief, type TaskDetailCapped, type TaskListRow, type Track, type UpdateChannel, _cacheUntil, _resetCache, addCriterion, addDecision, addRepository, addTask, agentId, appendEvent, appendTaskMutationEvent, archiveTask, assertLegacyDecisionSource, attachFile, attentionData, authorOf, bindRepository, bindingsOf, blockTask, boardData, canSyncLegacyDecisions, canonicalCommonDir, canonicalProjectPath, capText, checkMove, checkpointWal, claimTask, closeDb, commentTask, compareVersions, contentHash, createTrack, decisionDetail, deleteTrack, detachFile, editTask, editTrack, exportBoard, filePath, filesDir, getFile, getReminded, initializeProjectStore, isInlineMime, kddHome, kddVersion, linkTasks, listCriteria, listFiles, listProjectCheckouts, listProjects, listTracks, logError, lookupProjectStore, manualSessionFromEnv, moveTask, mustGetTask, mustGetTrack, normalizeSessionId, normalizeSourceTasks, now, openDb, parseDecisionMd, parseRepoUrl, placeTask, primarySource, projectOf, projectPathOf, projectToplevelOf, rebindRepository, rebuild, recall, redact, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, repositoriesOf, resolveDbPath, resolveDecisionsDir, resolveToplevel, sanitizeQuery, setCriterionChecked, setProjectToplevel, setReminded, slugify, statusDigest, storeIdentity, syncIndex, syncedTaskDetail, taskBrief, taskDetail, taskDetailCapped, unarchiveTask, unblockTask, unsubmitted, updateDisposition, versionChannel };
+export { type Actor, type AttentionInbox, type AttentionItem, type AttentionReason, BUG_BODY_TEMPLATE, type BriefSection, CAPS, type Comment, type Criterion, DEFAULT_TTL, Db, type DecisionDetail, type DecisionInput, type DecisionSourceTask, type DecisionSummary, type EventRow, type FileRow, KINDS, KddError, type Kind, MIGRATIONS, type ManualProvenance, type ManualSession, type NextAction, PRIORITIES, PRIORITY_ORDER, type ParsedDecision, type Priority, type ProjectRecord, type RecallHit, type Release, type ReleaseInfo, type RepositoryBinding, type RepositoryRecord, STATUSES, type SessionHandoff, type Statement, type Status, TRANSITIONS, type Task, type TaskBrief, type TaskDetailCapped, type TaskListRow, type Track, type UpdateChannel, _cacheUntil, _resetCache, addCriterion, addDecision, addRepository, addTask, agentId, appendEvent, appendTaskMutationEvent, archiveTask, assertLegacyDecisionSource, attachFile, attentionData, authorOf, bindRepository, bindingsOf, blockTask, boardData, canSyncLegacyDecisions, canonicalCommonDir, canonicalProjectPath, capText, checkMove, checkpointWal, claimTask, closeDb, commentTask, compareVersions, contentHash, createTrack, decisionDetail, deleteTrack, detachFile, editTask, editTrack, exportBoard, filePath, filesDir, getFile, getReminded, initializeProjectStore, isInlineMime, kddHome, kddVersion, leaseExpired, linkTasks, listCriteria, listFiles, listProjectCheckouts, listProjects, listTracks, logError, lookupProjectStore, manualSessionFromEnv, moveTask, mustGetTask, mustGetTrack, normalizeSessionId, normalizeSourceTasks, now, openDb, parseDecisionMd, parseRepoUrl, placeTask, primarySource, projectOf, rebindRepository, rebuild, recall, redact, releaseInfo, removeCriterion, renderDecisionBody, renderDecisionMd, renewClaim, repoSlug, repositoriesOf, resolveDbPath, resolveDecisionsDir, resolveToplevel, sanitizeQuery, setCriterionChecked, setProjectToplevel, setReminded, slugify, statusDigest, storeIdentity, syncIndex, syncedTaskDetail, taskBrief, taskDetail, taskDetailCapped, unarchiveTask, unblockTask, unsubmitted, updateDisposition, versionChannel };

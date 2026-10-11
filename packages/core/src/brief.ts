@@ -32,7 +32,6 @@ export interface TaskBrief {
     kind: Kind;
     area: string | null;
     archived_at: number | null;
-    parent_id: number | null;
   };
   criteria: BriefSection<{
     id: number;
@@ -231,7 +230,6 @@ export function taskBrief(
       kind: detail.task.kind,
       area: detail.task.area === null ? null : capText(detail.task.area, 128),
       archived_at: detail.task.archived_at,
-      parent_id: detail.task.parent_id,
   };
   const projectedCriteria: TaskBrief['criteria'] = {
       items: criteria.map((criterion) => ({

@@ -550,4 +550,9 @@ DROP TABLE repository_bindings;
 ALTER TABLE repository_bindings_v20 RENAME TO repository_bindings;
 CREATE INDEX idx_repository_bindings_repo ON repository_bindings(repo_id);
   `,
+  // v21: ключи meta, которые писали только снятые tick (настройки autotick, последний проход)
+  // и журнал agent_events (метка его чистки) — читать их больше некому.
+  `DELETE FROM meta WHERE key IN ('autotick_enabled','autotick_interval_sec','autotick_max_workers',
+  'autotick_last','agent_events_pruned_at');
+  `,
 ];

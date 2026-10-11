@@ -19,6 +19,7 @@ import {
   projectOf,
   repositoriesOf,
   bindingsOf,
+  primarySource,
   kddHome as kddHome3,
   attentionData,
   blockTask,
@@ -1104,6 +1105,9 @@ async function uiStart(port, host = "127.0.0.1", token) {
   const ping = await probe("/api/ping");
   const info = ping?.ok ? await ping.json() : null;
   if (info?.kdd) {
+    if (info.version !== kddVersion2()) {
+      fail(`a kdd ui of version ${info.version ?? "unknown"} already runs on :${port} \u2014 stop it and run kdd ui again`, false);
+    }
     if (info.store !== storeIdentity()) {
       fail(
         info.store ? `a kdd ui already runs on :${port} with a different store \u2014 stop it or choose another --port` : `the kdd ui already running on :${port} does not report its store \u2014 stop the old server or choose another --port`,
@@ -1192,8 +1196,17 @@ function withProjectStore(fn) {
   return withDbAt(dbPath, projectPath, (db) => fn(db, dbPath));
 }
 projectCommand.command("show").option("--json").action((o) => run(o.json, () => {
-  const result = withDb((db) => ({ project: projectOf(db), repositories: repositoriesOf(db), bindings: bindingsOf(db) }));
-  out(o.json, result, () => JSON.stringify(result, null, 2));
+  const result = withDb((db) => {
+    const source2 = primarySource(db)?.common_dir;
+    return {
+      project: projectOf(db),
+      repositories: repositoriesOf(db),
+      bindings: bindingsOf(db).map((b) => ({ ...b, decisions_source: b.common_dir === source2 }))
+    };
+  });
+  const source = result.bindings.find((b) => b.decisions_source);
+  out(o.json, result, () => JSON.stringify(result, null, 2) + `
+${source ? `${source.checkout_path} (decisions source)` : "no decisions source"}`);
 }));
 projectCommand.command("add-repo").argument("<checkout>").requiredOption("--purpose <text>").option("--json").action((cwd, o) => run(o.json, () => {
   const result = withProjectStore((db, path) => addRepository(db, path, kddHome3(), { cwd, purpose: o.purpose }, getActor()));

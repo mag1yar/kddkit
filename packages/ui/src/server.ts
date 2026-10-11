@@ -8,7 +8,7 @@ import { Hono, type Context } from 'hono';
 import {
   CAPS, KddError, addCriterion, addTask, attachFile, blockTask, boardData, closeDb, commentTask,
   createTrack, deleteTrack, detachFile, editTask, editTrack, filePath, getFile, isInlineMime,
-  kddHome, listProjects, listTracks, logError, moveTask, openDb, placeTask, releaseInfo,
+  kddHome, kddVersion, listProjects, listTracks, logError, moveTask, openDb, placeTask, releaseInfo,
   removeCriterion, setCriterionChecked, storeIdentity, taskDetail, unblockTask, type Kind,
   type Priority, type Db,
 } from '@kddkit/core';
@@ -152,7 +152,10 @@ export function createApp(
   // needsToken говорит второму `kdd ui`, с каким сервером он имеет дело: без этого он либо
   // молча печатал бы ссылку на сервер, поднятый совсем в другом режиме, либо (когда ping был
   // под токеном) получал 401 и падал с EADDRINUSE вместо переиспользования.
-  app.get('/api/ping', (c) => c.json({ kdd: true, default: defaultHash, needsToken: !!token, store }));
+  // version — чтобы новый `kdd ui` не переиспользовал сервер старой версии со старым кодом.
+  app.get('/api/ping', (c) => c.json({
+    kdd: true, default: defaultHash, needsToken: !!token, store, version: kddVersion(),
+  }));
   // Список — это абсолютные пути ВСЕХ досок на машине, то есть инвентарь чужой работы.
   // Переключатель проектов нужен своему человеку за loopback; выставленный наружу сервер
   // отдаёт только ту доску, ради которой его выставили.

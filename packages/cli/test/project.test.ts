@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { BIN } from './run.js';
@@ -45,7 +45,12 @@ it('binds a clone/worktree and protects source decisions during backend recall',
   expect(cli(backend,'recall','primarytoken','--kind','decision','--json')).toHaveLength(1);
   expect(cli(backend,'export').decisions).toEqual(before.decisions);
   expect(readFileSync(decision.path,'utf8')).toContain('primarytoken');
-  expect(cli(source,'project','show','--json').bindings).toHaveLength(3);
+  const shown=cli(source,'project','show','--json').bindings as {common_dir:string;decisions_source:boolean}[];
+  expect(shown).toHaveLength(3);
+  // Источник решений помечен ровно один — исходный чекаут, не клон и не backend.
+  expect(shown.filter(b => b.decisions_source).map(b => b.common_dir)).toEqual([realpathSync(join(source,'.git'))]);
+  const text=execFileSync(process.execPath,[BIN,'project','show'],{cwd:source,env,encoding:'utf8',stdio:'pipe'});
+  expect(text.trimEnd().split('\n').at(-1)).toBe(`${realpathSync(source)} (decisions source)`);
 },30_000);
 
 it('does not create an unknown target store for project mutations',() => {

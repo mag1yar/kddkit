@@ -21739,6 +21739,11 @@ INSERT INTO repository_bindings_v20 SELECT common_dir, repo_id, checkout_path, c
 DROP TABLE repository_bindings;
 ALTER TABLE repository_bindings_v20 RENAME TO repository_bindings;
 CREATE INDEX idx_repository_bindings_repo ON repository_bindings(repo_id);
+  `,
+  // v21: ключи meta, которые писали только снятые tick (настройки autotick, последний проход)
+  // и журнал agent_events (метка его чистки) — читать их больше некому.
+  `DELETE FROM meta WHERE key IN ('autotick_enabled','autotick_interval_sec','autotick_max_workers',
+  'autotick_last','agent_events_pruned_at');
   `
 ];
 function projectOf(db) {
@@ -21956,8 +21961,14 @@ function primarySource(db) {
   const source = meta(db, "project_path");
   if (!source) return void 0;
   const primary = projectOf(db).primary_repo_id;
-  const p = canonicalProjectPath(source);
+  let p;
+  try {
+    p = canonicalProjectPath(source);
+  } catch {
+    return void 0;
+  }
   const bindings = bindingsOf(db).filter((b) => b.repo_id === primary);
+  if (!bindings.length) return void 0;
   const direct = bindings.find((b) => b.common_dir === p || b.checkout_path === p);
   if (direct) return direct;
   let common;
@@ -21969,10 +21980,9 @@ function primarySource(db) {
   }
   return bindings.find((b) => b.common_dir === common);
 }
-function canSyncLegacyDecisions(db, decisionsDir) {
+function canSyncLegacyDecisions(db, decisionsDir, source = primarySource(db)) {
   const project = projectOf(db);
   if (!project.primary_repo_id && db.memory) return true;
-  const source = primarySource(db);
   if (project.primary_repo_id && (!source || !existsSync(source.common_dir))) return false;
   const path = canonicalProjectPath(decisionsDir);
   if (project.legacy_decisions_dir && (!source || resolve(project.legacy_decisions_dir) !== join(source.checkout_path, ".planning", "decisions"))) {
@@ -22215,7 +22225,8 @@ function agentId() {
   const codex = e.CODEX_SESSION_ID || e.CODEX_THREAD_ID;
   return e.KDD_SESSION || cc || (e.CLAUDE_PID ? `cc:pid-${e.CLAUDE_PID}` : void 0) || (codex ? `codex:${codex}` : void 0);
 }
-function checkMove(from, to, actor, reason, openCriteria2 = 0, claimedBy = null, submittedBy2 = null) {
+var leaseExpired = (claimExpires) => claimExpires !== null && claimExpires < Math.floor(Date.now() / 1e3);
+function checkMove(from, to, actor, reason, openCriteria2 = 0, claimedBy = null, submittedBy2 = null, claimExpires = null) {
   if (from === to) return { ok: false, error: `task is already in ${to}` };
   if (actor.type === "user") return { ok: true };
   if (reason) return { ok: true };
@@ -22225,7 +22236,7 @@ function checkMove(from, to, actor, reason, openCriteria2 = 0, claimedBy = null,
       error: `you submitted this task for review yourself; accepting it is someone else's call \u2014 ask the user, and pass a reason if they told you to close it`
     };
   }
-  if (from === "in_progress" && claimedBy?.startsWith("ai:") && claimedBy !== `ai:${actor.id ?? "?"}`) {
+  if (from === "in_progress" && claimedBy?.startsWith("ai:") && claimedBy !== `ai:${actor.id ?? "?"}` && !leaseExpired(claimExpires)) {
     return {
       ok: false,
       error: `lease lost (held by ${claimedBy}); you no longer own this task \u2014 stop work`
@@ -22396,6 +22407,9 @@ function submittedBy(db, taskId) {
   ).get(taskId);
   return r ? authorOf({ type: r.actor_type, id: r.actor_id ?? void 0 }) : null;
 }
+function reclaimedFrom(t, actor) {
+  return t.status === "in_progress" && t.claimed_by?.startsWith("ai:") && t.claimed_by !== authorOf(actor) && leaseExpired(t.claim_expires) ? { reclaimed_from: t.claimed_by } : {};
+}
 function nextPosition(db, status) {
   return db.prepare(
     `SELECT COALESCE(MAX(position), -1) + 1 AS p
@@ -22407,7 +22421,16 @@ function moveTask(db, id2, to, actor, reason) {
   return db.transaction(() => {
     const t = mustGetTask(db, id2);
     const submitter = t.status === "review" ? submittedBy(db, id2) : null;
-    const res = checkMove(t.status, to, actor, reason, openCriteria(db, id2), t.claimed_by, submitter);
+    const res = checkMove(
+      t.status,
+      to,
+      actor,
+      reason,
+      openCriteria(db, id2),
+      t.claimed_by,
+      submitter,
+      t.claim_expires
+    );
     if (!res.ok) throw new KddError(res.error);
     const self = t.status === "review" && to === "done" && submitter === authorOf(actor);
     const leaving = t.status === "in_progress" && to !== "in_progress";
@@ -22419,7 +22442,8 @@ function moveTask(db, id2, to, actor, reason) {
       from: t.status,
       to,
       ...reason ? { reason } : {},
-      ...self ? { self_accepted: true } : {}
+      ...self ? { self_accepted: true } : {},
+      ...reclaimedFrom(t, actor)
     });
     if (reason) {
       db.prepare(
@@ -22589,7 +22613,8 @@ function syncIndex(db, decisionsDir) {
   }).immediate();
 }
 function indexPass(db, decisionsDir, write) {
-  if (canSyncLegacyDecisions(db, decisionsDir)) {
+  const source = primarySource(db);
+  if (canSyncLegacyDecisions(db, decisionsDir, source)) {
     const files = existsSync5(decisionsDir) ? readdirSync4(decisionsDir).filter((f) => f.endsWith(".md")) : [];
     const inDb = new Map(
       db.prepare(
@@ -22601,7 +22626,7 @@ function indexPass(db, decisionsDir, write) {
       const slug = f.slice(0, -3);
       seen.add(slug);
       const path = join6(decisionsDir, f);
-      if (!canSyncLegacyDecisions(db, dirname5(realpathSync4(path)))) continue;
+      if (!canSyncLegacyDecisions(db, dirname5(realpathSync4(path)), source)) continue;
       const doc = parseDecisionMd(readFileSync4(path, "utf8"));
       const title = doc.title || slug;
       const supersededBy = doc.status === "superseded" ? doc.supersededBy || "?" : doc.supersededBy || null;
@@ -22959,8 +22984,7 @@ function taskBrief(db, decisionsDir, id2) {
     priority: detail.task.priority,
     kind: detail.task.kind,
     area: detail.task.area === null ? null : capText(detail.task.area, 128),
-    archived_at: detail.task.archived_at,
-    parent_id: detail.task.parent_id
+    archived_at: detail.task.archived_at
   };
   const projectedCriteria = {
     items: criteria.map((criterion) => ({

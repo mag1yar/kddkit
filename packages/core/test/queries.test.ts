@@ -384,6 +384,9 @@ describe('unsubmitted', () => {
     expect(unsubmitted(db, 'ai:s1')).toEqual([1]);
     lease(null);
     expect(unsubmitted(db, 'ai:s1')).toEqual([1]);
+    lease('ai:s2'); // чужой, но просроченный — fence его не держит
+    db.prepare(`UPDATE tasks SET claim_expires = 1 WHERE id = 1`).run();
+    expect(unsubmitted(db, 'ai:s1')).toEqual([1]);
   });
 
   it('молчит, когда задача не в работе или в архиве', () => {

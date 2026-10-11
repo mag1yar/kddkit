@@ -1,6 +1,8 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
+import { createServer as createHttpServer } from 'node:http';
+import { storeIdentity } from '@kddkit/core';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
@@ -63,4 +65,40 @@ describe('kdd ui reuse', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // Сервер прежней версии (или без поля version) на порту: переиспользовать его — показать
+  // доску старым кодом. Тот же store, тот же режим — отличается только версия.
+  it.each([['0.0.0-old', 'version 0.0.0-old'], [undefined, 'version unknown']])(
+    'refuses to reuse a server of another version (%s)', async (version, message) => {
+      const dir = mkdtempSync(join(tmpdir(), 'kdd-ui-version-'));
+      const repo = join(dir, 'repo');
+      mkdirSync(repo);
+      execFileSync('git', ['init', '-q', repo]);
+      const env = { ...process.env, KDD_HOME: join(dir, 'home'), KDD_DB: undefined };
+      const saved = { home: process.env.KDD_HOME, db: process.env.KDD_DB };
+      process.env.KDD_HOME = env.KDD_HOME; delete process.env.KDD_DB;
+      const store = storeIdentity();
+      process.env.KDD_HOME = saved.home; if (saved.db !== undefined) process.env.KDD_DB = saved.db;
+      const server = createHttpServer((_req, res) => {
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ kdd: true, default: 'x', needsToken: false, store, version }));
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const port = (server.address() as AddressInfo).port;
+      try {
+        const r = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
+          const child = spawn(process.execPath, [BIN, 'ui', '--port', String(port)], { cwd: repo, env });
+          let stdout = '', stderr = '';
+          child.stdout.on('data', (c: Buffer) => { stdout += c; });
+          child.stderr.on('data', (c: Buffer) => { stderr += c; });
+          child.on('close', (status) => resolve({ status, stdout, stderr }));
+        });
+        expect(r.status).toBe(1);
+        expect(r.stderr).toContain(`a kdd ui of ${message} already runs on :${port} — stop it and run kdd ui again`);
+        expect(r.stdout).not.toContain('reusing running server');
+      } finally {
+        server.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
 });
